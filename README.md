@@ -1,11 +1,25 @@
 # 卓欣刮削器 · 给你和你的小姐姐
 
+**中文** | [English](README.en.md)
+
 > 本地自托管的一套**成人影片刮削工具**：建库 → 语义识别 → 网站/无码/AI 三线刮削 → 生成 Jellyfin 可用的 NFO 与封面。
 > 单文件 HTTP 服务 + SQLite，**不依赖任何云服务**，数据全在本地。
 
 <p align="center">
   <b>建库</b> · <b>语义识别</b> · <b>javbus / javdb / MissAV / 123AV / FC2</b> · <b>本地大模型刮削</b> · <b>AI 看片</b> · <b>封面抽帧</b> · <b>剧集(tvshow)</b> · <b>有误人工复核</b>
 </p>
+
+## 界面
+
+![主界面（顶部控制条 / 统计卡 / 质量与语义分布 / 端口与局域网设置）](docs/ui-01-main.png)
+
+![任务日志与筛选](docs/ui-03-log.png)
+
+<sub>Jellyfin 侧记得打开「保存图像路径在NFO文件」：</sub>
+
+![Jellyfin NFO 设置](docs/jellyfin-nfo.png)
+
+> 截图中的表格内容已**像素化处理**。
 
 ---
 
