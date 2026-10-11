@@ -1,0 +1,10 @@
+# 卓"悦"刮削器 运行依赖
+# 安装：pip install -r requirements.txt
+#
+# 注意：ffmpeg / ffprobe 必须另外安装并加入 PATH（用于抽帧、取时长、AI 看片）。
+#       Ollama 也需单独安装（用于 AI 刮削 / 语义识别），详见 README。
+
+requests>=2.31.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+zhconv>=1.4.3

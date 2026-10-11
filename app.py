@@ -1034,7 +1034,7 @@ def doc_page(name):
 
 # ---------------------------------------------------------------- http
 class H(BaseHTTPRequestHandler):
-    server_version = 'ZhuoYue-Scraper/1.1'
+    server_version = 'ZhuoYue-Scraper/1.0'
 
     def _send(self, code, body, ctype='application/json; charset=utf-8'):
         b = body.encode('utf-8') if isinstance(body, str) else body
