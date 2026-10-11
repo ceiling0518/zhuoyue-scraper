@@ -109,26 +109,64 @@ def scan_root():
     return cfg_get('root', ROOT_DEFAULT)
 
 
-# ---------------------------------------------------------------- 输出语言
-# 界面语言（config.lang）决定模型输出语言 —— 切了界面，prompt 也得跟着切，
-# 否则英文界面下模型照样吐中文标题/标签。
+# ---------------------------------------------------------------- 语言
+# 两套独立设置：
+#   config.lang     = 界面语言（前端 i18n 用）
+#   config.out_lang = 元数据输出语言（模型 prompt 用）；留空 = 跟随界面语言
+LANGS = ('zh', 'en', 'ja', 'es', 'zh-Hant')
+
+
+def norm_lang(v, default='zh'):
+    """把任意输入规整为 LANGS 中的规范代码。"""
+    s = str(v or '').strip().lower().replace('_', '-')
+    if not s:
+        return default
+    if s.startswith('en'):
+        return 'en'
+    if s.startswith('ja') or s.startswith('jp'):
+        return 'ja'
+    if s.startswith('es'):
+        return 'es'
+    if s in ('zh-hant', 'zh-tw', 'zh-hk', 'tw', 'hk', 'hant', 'zhhant'):
+        return 'zh-Hant'
+    if s.startswith('zh'):
+        return 'zh'
+    return default
+
+
+def ui_lang():
+    """界面语言（config.lang）。"""
+    return norm_lang(cfg_get('lang'), 'zh')
+
+
 LANG_RULE = {
-    'zh': ('语言规则：一律输出**简体中文**；若原文是**日文则保留日文原文**（不要翻译）；'
+    'zh': ('语言规则：一律输出 **简体中文**；若原文是**日文则保留日文原文**（不要翻译）；'
            '**繁体中文转成简体**；其它语言**翻译成简体中文**。'),
-    'en': ('Language rule: write EVERYTHING in **English** — title, plot and tags. '
+    'en': ('Language rule: write EVERYTHING in **English** - title, plot and tags. '
            'If the source text is Japanese, **translate it into English** '
            '(do not keep the Japanese original).'),
+    'ja': ('言語ルール：**日本語**で出力する（タイトル・あらすじ・タグのすべて）。'
+           '原文が中国語の場合は**日本語に翻訳**する（中国語のまま残さない）。'),
+    'es': ('Regla de idioma: escribe TODO en **español** (título, sinopsis y etiquetas). '
+           'Si el texto original está en japonés o chino, **tradúcelo al español**.'),
+    'zh-Hant': ('語言規則：一律輸出 **繁體中文**；若原文是**日文則保留日文原文**（不要翻譯）；'
+                '**簡體中文轉成繁體**；其它語言**翻譯成繁體中文**。'),
 }
 LANG_TAGS = {
     'zh': '5-8 个中文标签',
     'en': '5-8 English tags',
+    'ja': '5-8 個の日本語タグ',
+    'es': '5-8 etiquetas en español',
+    'zh-Hant': '5-8 個繁體中文標籤',
 }
 
 
 def out_lang():
-    """模型输出语言，跟随界面语言（config.lang）。"""
-    v = (cfg_get('lang') or 'zh').strip().lower()
-    return 'en' if v.startswith('en') else 'zh'
+    """模型输出语言：config.out_lang 优先；留空则跟随界面语言。"""
+    v = cfg_get('out_lang')
+    if v is None or not str(v).strip():
+        v = cfg_get('lang')
+    return norm_lang(v, 'zh')
 
 
 def lang_rule():
@@ -869,9 +907,14 @@ def fetch_avsox(item):
                 return src[k]
         return ''
 
-    # JAV 的原始标题是日文，优先保留（界面中文也保留日文原文）
-    order = (('title_en', 'title', 'title_ja') if out_lang() == 'en'
-             else ('title_ja', 'title', 'title_cn', 'title_tw', 'title_en'))
+    # JAV 原始标题是日文：中/日界面优先保留日文原文；英/西优先英文标题；繁体优先台版译名
+    _ol = out_lang()
+    if _ol in ('en', 'es'):
+        order = ('title_en', 'title', 'title_ja')
+    elif _ol == 'zh-Hant':
+        order = ('title_tw', 'title_cn', 'title', 'title_ja', 'title_en')
+    else:
+        order = ('title_ja', 'title', 'title_cn', 'title_tw', 'title_en')
 
     st = src.get('studio') or {}
     genres = [g.get('genreName') for g in (src.get('genre') or [])
@@ -1249,7 +1292,12 @@ def normalize_text(s):
     if _KANA.search(s):
         return s                              # Japanese -> keep as-is
     if _HAN.search(s) and zhconv is not None:
-        return zhconv.convert(s, 'zh-hans')    # 繁體 -> 简体
+        _ol = out_lang()
+        if _ol == 'zh-Hant':
+            return zhconv.convert(s, 'zh-hant')   # -> 繁体
+        if _ol in ('en', 'es', 'ja'):
+            return s                              # 保留原样，交给模型翻译
+        return zhconv.convert(s, 'zh-hans')       # 繁 -> 简    # 繁體 -> 简体
     return s
 
 

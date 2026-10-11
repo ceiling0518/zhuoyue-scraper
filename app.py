@@ -1034,7 +1034,7 @@ def doc_page(name):
 
 # ---------------------------------------------------------------- http
 class H(BaseHTTPRequestHandler):
-    server_version = 'ZhuoYue-Scraper/1.0'
+    server_version = 'ZhuoYue-Scraper/1.10'
 
     def _send(self, code, body, ctype='application/json; charset=utf-8'):
         b = body.encode('utf-8') if isinstance(body, str) else body
@@ -1063,7 +1063,7 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
-        p, q = u.path, {k: v[0] for k, v in parse_qs(u.query).items()}
+        p, q = u.path, {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
         try:
             if p in ('/', '/index.html'):
                 return self._send(200, PAGE, 'text/html; charset=utf-8')
@@ -1074,7 +1074,7 @@ class H(BaseHTTPRequestHandler):
             if p == '/api/net':
                 return self._json(net_state())
             if p == '/api/lang':
-                return self._json({'lang': mlib.out_lang()})
+                return self._json({'lang': mlib.ui_lang(), 'out_lang': mlib.out_lang()})
             if p == '/api/stats':
                 return self._json(stats())
             if p == '/api/items':
@@ -1101,7 +1101,7 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        p, q = u.path, {k: v[0] for k, v in parse_qs(u.query).items()}
+        p, q = u.path, {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
         lim = int(q.get('limit') or 100000)
         force = q.get('force') in ('1', 'true', 'yes')
         mode = q.get('mode') or 'auto'
@@ -1162,7 +1162,7 @@ class H(BaseHTTPRequestHandler):
                                                   q.get('value') or '')})
             elif p.startswith('/api/save/'):
                 iid2 = int(p.rsplit('/', 1)[1])
-                kv2 = {k: v[0] for k, v in parse_qs(self._body() or '').items()}
+                kv2 = {k: v[0] for k, v in parse_qs(self._body() or '', keep_blank_values=True).items()}
                 return self._json({'ok': save_item(iid2, kv2)})
             elif p == '/api/thumbs/refresh':
                 tids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
@@ -1186,9 +1186,13 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': _ok, 'msg': _msg, 'port': _st['port'],
                                    'lan': _st['lan'], 'urls': _st['urls']})
             elif p == '/api/lang':
-                _lg = (q.get('lang') or 'zh').strip().lower()
-                mlib.cfg_set('lang', 'en' if _lg.startswith('en') else 'zh')
-                return self._json({'ok': True, 'lang': mlib.out_lang()})
+                if q.get('lang') is not None:
+                    mlib.cfg_set('lang', mlib.norm_lang(q.get('lang')))
+                if q.get('out_lang') is not None:
+                    _ol = (q.get('out_lang') or '').strip()
+                    mlib.cfg_set('out_lang', mlib.norm_lang(_ol) if _ol else '')
+                return self._json({'ok': True, 'lang': mlib.ui_lang(),
+                                   'out_lang': mlib.out_lang()})
             elif p == '/api/sites/check':
                 res = {}
                 for (k, n, t, u, h) in mlib.SITES:
@@ -1261,9 +1265,9 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
   <button id="b-cookie">javdb Cookie</button>
   <button id="b-sites">站点</button>
-  <button id="b-lang">EN</button>
+  <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <span class="muted">媒体库</span><input id="cfg-root" style="width:330px">
-  <span class="muted">模型</span><select id="cfg-model"></select>
+  <span class="muted">模型</span><select id="cfg-model"></select><span class="muted">输出语言</span><select id="cfg-outlang" title="元数据输出语言" style="min-width:104px"><option value="">跟随界面</option><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <button id="cfg-save">保存设置</button>
   <span id="ollama" class="muted right">ollama …</span>
@@ -1349,7 +1353,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 const $=s=>document.querySelector(s);let off=0,lim=50,THUMBV=0;
 const esc=t=>String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function post(p){const r=await fetch(p,{method:'POST'});const j=await r.json();
-  if(j.busy)alert('已有任务在跑');return j;}
+  if(j.busy)alert(T('已有任务在跑'));return j;}
 function tagsOf(s){try{const a=JSON.parse(s||'[]');return (a||[]).join(' / ');}catch(e){return s||'';}}
 async function cfg(){const s=await(await fetch('/api/stats')).json();
   if(!$('#cfg-root').value)$('#cfg-root').value=s.root;
@@ -1411,28 +1415,28 @@ function selSet(b,on){const id=b.dataset.id,tr=b.closest('tr');
   else{SEL.delete(id);tr.classList.remove('sel');b.textContent='选择';}}
 $('#a-selall').onclick=()=>{document.querySelectorAll('.selbtn').forEach(b=>selSet(b,true));selinfo();};
 $('#a-selnone').onclick=()=>{SEL.clear();document.querySelectorAll('.selbtn').forEach(b=>selSet(b,false));selinfo();};
-function batchRun(mode){return async()=>{if(!SEL.size)return alert('先选条目');let n=0;
+function batchRun(mode){return async()=>{if(!SEL.size)return alert(T('先选条目'));let n=0;
   for(const id of SEL){const r=await post('/api/queue/'+id+'?mode='+mode);n=r.queue;}
   $('#qcount').textContent=n;await post('/api/queue/run');};}
 $('#a-web').onclick=batchRun('website');
 $('#a-ai').onclick=batchRun('ai');
 $('#a-fill').onclick=async()=>{
   const ids=[...SEL].join(',');
-  if(!SEL.size&&!confirm('未选中条目 —— 将对【全部 有简介但没标签】的条目按简介补标签，继续？'))return;
+  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部 有简介但没标签】的条目按简介补标签，继续？')))return;
   await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value+(ids?'&ids='+ids:''));};
 $('#a-vscan').onclick=async()=>{
   const ids=[...SEL].join(',');
-  if(!SEL.size&&!confirm('未选中条目 —— 将对【全部 无/有误】的条目抽帧看视频（较慢），继续？'))return;
+  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部 无/有误】的条目抽帧看视频（较慢），继续？')))return;
   await post('/api/vscan?limit='+$('#limit').value+(ids?'&ids='+ids:''));};
 $('#a-auto').onclick=batchRun('auto');
-$('#a-queue').onclick=async()=>{if(!SEL.size)return alert('先选条目');let n=0;
+$('#a-queue').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));let n=0;
   for(const id of SEL){const r=await post('/api/queue/'+id+'?mode='+$('#qmode').value);n=r.queue;}
   $('#qcount').textContent=n;};
-$('#a-open').onclick=async()=>{if(!SEL.size)return alert('先选条目');
+$('#a-open').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
   for(const id of SEL)await post('/api/open/'+id);};
-$('#a-del').onclick=async()=>{if(!SEL.size)return alert('先选条目');
-  if(!confirm('【删除】共 '+SEL.size+' 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？'))return;
-  if(!confirm('再次确认：永久删除这 '+SEL.size+' 个？'))return;
+$('#a-del').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
+  if(!confirm(T('【删除】共 '+SEL.size+' 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？')))return;
+  if(!confirm(T('再次确认：永久删除这 '+SEL.size+' 个？')))return;
   for(const id of SEL)await post('/api/delete/'+id);
   SEL.clear();selinfo();list();};
 document.addEventListener('dblclick',e=>{
@@ -1494,14 +1498,14 @@ $('#md2-close').onclick=()=>$('#modal2').classList.remove('on');
 $('#cfg-save').onclick=async()=>{await fetch('/api/config?root='+encodeURIComponent($('#cfg-root').value)
   +'&model='+encodeURIComponent($('#cfg-model').value),{method:'POST'});
   const n=await(await fetch('/api/net?port='+($('#cfg-port').value||0)+'&lan='+($('#cfg-lan').checked?1:0),{method:'POST'})).json();
-  if(n.msg)console.log(n.msg); if(n.urls&&n.urls.length)console.log('访问地址: '+n.urls.join('  '));
+  if(n.msg)console.log(n.msg); if(n.urls&&n.urls.length)console.log(T('访问地址: ')+n.urls.join('  '));
   cfg();};
 (async()=>{try{const n=await(await fetch('/api/net')).json();
   $('#cfg-port').value=n.port||8800; $('#cfg-lan').checked=!!n.lan;
-  if(n.lan)console.log('局域网已开启: '+(n.urls||[]).join('  '));}catch(e){}})();
+  if(n.lan)console.log(T('局域网已开启: ')+(n.urls||[]).join('  '));}catch(e){}})();
 $('#b-pipeline').onclick=()=>post('/api/pipeline?limit='+$('#limit').value+'&group='+$('#semg').value+'&ai_group='+$('#aig').value);
-$('#b-rebuild').onclick=()=>{ if(!confirm('【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？'))return;
-  if(!confirm('请再次确认：真的要【建库】吗？'))return; post('/api/scan?mode=rebuild'); };
+$('#b-rebuild').onclick=()=>{ if(!confirm(T('【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？')))return;
+  if(!confirm(T('请再次确认：真的要【建库】吗？')))return; post('/api/scan?mode=rebuild'); };
 $('#b-incr').onclick=()=>post('/api/scan?mode=incr');
 $('#b-sem').onclick=()=>post('/api/sem?limit='+$('#limit').value+'&group='+$('#semg').value+($('#force').checked?'&force=1':''));
 $('#b-fetch').onclick=()=>post('/api/fetch?mode='+$('#mode').value+'&limit='+$('#limit').value+'&ai_group='+$('#aig').value);
@@ -1511,61 +1515,69 @@ $('#md3-close').onclick=()=>$('#modal3').classList.remove('on');
 $('#ck-file').onchange=e=>{const f=e.target.files[0];if(!f)return;const rd=new FileReader();
   rd.onload=()=>{$('#ck-text').value=rd.result;};rd.readAsText(f);};
 $('#ck-save').onclick=async()=>{const r=await fetch('/api/cookie',{method:'POST',body:$('#ck-text').value});
-  const j=await r.json();alert(j.set?('已保存 ('+j.len+' 字符)'):'已清空');$('#modal3').classList.remove('on');};
-$('#ck-clear').onclick=async()=>{await fetch('/api/cookie?clear=1',{method:'POST'});alert('已清空');$('#modal3').classList.remove('on');};
-const I18N={'总数':'Total','质量有':'OK','质量缺':'Partial','质量有误':'Bad','质量无':'None',
-'质量删除':'Deleted','来源 code':'Src:code','来源 Uncen':'Src:Uncen','来源 AI':'Src:AI',
-'语义未跑':'Sem:none','档案':'Archive','建库':'Rebuild','增量扫描':'Scan','语义识别':'Classify',
-'抓取':'Fetch','跑队列':'Run queue','清空队列':'Clear queue','停止':'Stop','上限(0=全部)':'Limit (0=all)',
-'模式':'Mode','语义组(0=全部)':'Sem group (0=all)','AI组(0=全部)':'AI group (0=all)','队列':'Queue',
-'筛选':'Filter','质量全部':'Quality: all','来源全部':'Source: all','语义全部':'Semantic: all',
-'搜索名字/标题/番号':'Search name/title/code','刷新':'Refresh','保存设置':'Save','说明':'Docs',
-'站点':'Sites','媒体库':'Library','模型':'Model','端口':'Port','局域网':'LAN','缩略图':'Thumb',
-'质量':'Quality','来源':'Source','番号':'Code','语义':'Semantic','标题/元信息':'Title / metadata',
-'选择':'Select','操作':'Actions','重跑·网站':'Re-run · sites','重跑·AI':'Re-run · AI',
-'重跑·全流程':'Re-run · full','重跑队列':'Queue re-run','打开目录':'Open folder','删除':'Delete',
-'删除封面图':'Delete cover','刷新缩略图':'Refresh thumbs','AI 补全':'AI tag fill','AI 看片':'AI watch',
-'全选本页':'Select page','取消选择':'Clear','上一页':'Prev','下一页':'Next','加载中':'Loading',
-'作者':'Author','标签':'Tags','简介':'Plot','标题':'Title','番号':'Code','全流程':'Full pipeline'};
-// 正则规则：处理带前缀 / 带数字 / 带数据的文本
-const I18NR=[
- [/^①\s*全流程$/, '① Full pipeline'],
- [/^共\s*(\d+)\s*条$/, 'Total $1'],
- [/^已选\s*(\d+)\s*条$/, 'Selected $1'],
- [/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, 'Page $1 / $2'],
- [/^质量[\s:：]*有$/, 'OK'], [/^质量[\s:：]*缺$/, 'Partial'],
- [/^质量[\s:：]*有误$/, 'Bad'], [/^质量[\s:：]*无$/, 'None'],
- [/^质量[\s:：]*删除$/, 'Deleted'],
- [/^来源[\s:：]*(code|Uncen|AI)$/, 'Src:$1'],
- [/^作者[:：]\s*(.*)$/, 'Author: $1'],
- [/^标签[:：]\s*(.*)$/, 'Tags: $1'],
- [/^简介[:：]\s*(.*)$/, 'Plot: $1'],
- [/^标题[:：]\s*(.*)$/, 'Title: $1'],
- [/^番号[:：]\s*(.*)$/, 'Code: $1'],
-];
+  const j=await r.json();alert(j.set?T('已保存 (%d 字符)').replace('%d',j.len):T('已清空'));$('#modal3').classList.remove('on');};
+$('#ck-clear').onclick=async()=>{await fetch('/api/cookie?clear=1',{method:'POST'});alert(T('已清空'));$('#modal3').classList.remove('on');};
+const UI_LANGS=['zh','en','ja','es','zh-Hant'];
+const LANG_LABEL={'zh':'中文','en':'English','ja':'日本語','es':'Español','zh-Hant':'繁體中文'};
+const DICT={"en": {"关闭": "Close", "删除": "Delete", "档案": "Archive", "保存": "Save", "说明": "Docs", "站点": "Sites", "媒体库": "Library", "模型": "Model", "端口": "Port", "局域网": "LAN", "保存设置": "Save", "① 全流程": "① Full pipeline", "建库": "Rebuild", "增量扫描": "Scan", "语义识别": "Classify", "抓取": "Fetch", "跑队列": "Run queue", "清空队列": "Clear queue", "停止": "Stop", "上限(0=全部)": "Limit (0=all)", "模式": "Mode", "语义组(0=全部)": "Sem group (0=all)", "AI组(0=全部)": "AI group (0=all)", "队列": "Queue", "筛选": "Filter", "质量:全部": "Quality: all", "来源:全部": "Source: all", "语义:全部": "Semantic: all", "(未跑)": "(none)", "刷新": "Refresh", "已选": "Selected", "条": "items", "重跑·网站": "Re-run · sites", "重跑·AI": "Re-run · AI", "AI 补全": "AI tag fill", "AI 看片": "AI watch", "重跑·全流程": "Re-run · full", "重跑队列": "Queue re-run", "打开目录": "Open folder", "刷新缩略图": "Refresh thumbs", "删除封面图": "Delete cover", "全选本页": "Select page", "取消选择": "Clear", "缩略图": "Thumb", "质量": "Quality", "来源": "Source", "番号": "Code", "语义": "Semantic", "标题 / 元信息": "Title / metadata", "选择": "Select", "← 上一页": "← Prev", "下一页 →": "Next →", "⟳ 刷新列表": "⟳ Refresh list", "清空": "Clear", "站点设置": "Sites", "检测连通性": "Check connectivity", "搜索 名字/标题/番号": "Search name / title / code", "总数": "Total", "质量·有": "Q·OK", "质量·缺": "Q·Partial", "质量·有误": "Q·Check", "质量·无": "Q·None", "质量·删除": "Q·Deleted", "来源·code": "Src·code", "来源·Uncen": "Src·Uncen", "来源·AI": "Src·AI", "语义未跑": "Sem:none", "简介": "Plot", "标签": "Tags", "作者": "Author", "年份": "Year", "制作": "Studio", "双击修改": "Double-click to edit", "本地打开大图": "Open full image", "(待接入)": "(pending)", "检测中…（逐个真实请求）": "Checking… (real request each)", "检测完成": "Check done", "至少勾一个站点": "Select at least one site", "先选条目": "Select items first", "已有任务在跑": "A job is already running", "已清空": "Cleared", "当前：已设置": "Current: set", "当前：未设置": "Current: not set", "已保存": "Saved", "保存成功": "Saved", "文件": "File", "逗号分隔": "comma separated", "确认": "Confirm", "是": "Yes", "否": "No", "有": "OK", "缺": "Partial", "有误": "Check", "无": "None", "启用": "On", "类型": "Type", "入口": "Entry", "状态": "Status", "时间": "Time", "原因": "Reason", "名字": "Name", "模型缺失": "model missing", "未选中条目": "Nothing selected", "【删除】共 {n} 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？": "[Delete] {n} folders (with videos) → Recycle Bin\n\n⚠ On a NAS network path this is a PERMANENT delete, unrecoverable.\n\nContinue?", "再次确认：永久删除这 {n} 个？": "Confirm again: permanently delete these {n}?", "【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？": "[Rebuild] wipes and rebuilds all entries!\nStatus/semantic/metadata of every row will be reset; old records move to \"Archive\".\n\nContinue?", "请再次确认：真的要【建库】吗？": "Confirm again: really rebuild?", "将对【全部/有简介但没标签】的条目按简介补标签，继续？": "Will add tags from plot for [all / has plot but no tags]. Continue?", "将对【全部/无/有误】的条目抽帧看视频（较慢），继续？": "Will extract frames and watch videos for [all / none / bad] (slow). Continue?", "删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？": "Delete cover images (poster.jpg etc.) + thumbnail cache of selected items. Continue?", "已保存 (%d 字符)": "Saved (%d chars)", "已保存：": "Saved: ", "已删除封面/缩略图 %s 个文件": "Deleted %s cover/thumb files", "已重建 %s 张缩略图": "Rebuilt %s thumbnails", "切换失败（重启后生效）：": "Switch failed (takes effect after restart): ", "已切换到": "Switched to ", "访问地址: ": "URL: ", "局域网已开启: ": "LAN enabled: ", "通过": "OK", "不通过": "FAIL"}, "ja": {"关闭": "閉じる", "删除": "削除", "档案": "アーカイブ", "保存": "保存", "说明": "説明", "站点": "サイト", "媒体库": "ライブラリ", "模型": "モデル", "端口": "ポート", "局域网": "LAN", "保存设置": "設定を保存", "① 全流程": "① 全処理", "建库": "再構築", "增量扫描": "差分スキャン", "语义识别": "分類", "抓取": "取得", "跑队列": "キュー実行", "清空队列": "キューを空に", "停止": "停止", "上限(0=全部)": "上限 (0=すべて)", "模式": "モード", "语义组(0=全部)": "分類組 (0=すべて)", "AI组(0=全部)": "AI組 (0=すべて)", "队列": "キュー", "筛选": "絞り込み", "质量:全部": "品質: すべて", "来源:全部": "取得元: すべて", "语义:全部": "分類: すべて", "(未跑)": "(未実行)", "刷新": "更新", "已选": "選択中", "条": "件", "重跑·网站": "再取得 · サイト", "重跑·AI": "再取得 · AI", "AI 补全": "AI タグ補完", "AI 看片": "AI 映像解析", "重跑·全流程": "再実行 · 全処理", "重跑队列": "キューに再実行", "打开目录": "フォルダを開く", "刷新缩略图": "サムネ更新", "删除封面图": "カバー削除", "全选本页": "このページを全選択", "取消选择": "選択解除", "缩略图": "サムネ", "质量": "品質", "来源": "取得元", "番号": "品番", "语义": "分類", "标题 / 元信息": "タイトル / メタ情報", "选择": "選択", "← 上一页": "← 前へ", "下一页 →": "次へ →", "⟳ 刷新列表": "⟳ 再読込", "清空": "クリア", "站点设置": "サイト設定", "检测连通性": "接続確認", "搜索 名字/标题/番号": "名前 / タイトル / 品番を検索", "总数": "総数", "质量·有": "品質·完全", "质量·缺": "品質·不足", "质量·有误": "品質·要確認", "质量·无": "品質·なし", "质量·删除": "品質·削除済", "来源·code": "取得元·code", "来源·Uncen": "取得元·Uncen", "来源·AI": "取得元·AI", "语义未跑": "分類未実行", "简介": "あらすじ", "标签": "タグ", "作者": "出演", "年份": "年", "制作": "メーカー", "双击修改": "ダブルクリックで編集", "本地打开大图": "原寸画像を開く", "(待接入)": "(未対応)", "检测中…（逐个真实请求）": "確認中…（1件ずつ実リクエスト）", "检测完成": "確認完了", "至少勾一个站点": "サイトを1つ以上選択してください", "先选条目": "先に項目を選択してください", "已有任务在跑": "既に実行中のタスクがあります", "已清空": "クリアしました", "当前：已设置": "現在: 設定済み", "当前：未设置": "現在: 未設定", "已保存": "保存しました", "保存成功": "保存しました", "文件": "ファイル", "逗号分隔": "カンマ区切り", "确认": "確認", "是": "はい", "否": "いいえ", "有": "完全", "缺": "不足", "有误": "要確認", "无": "なし", "启用": "有効", "类型": "種別", "入口": "入口", "状态": "状態", "时间": "日時", "原因": "理由", "名字": "名前", "模型缺失": "モデル未検出", "未选中条目": "未選択", "【删除】共 {n} 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？": "【削除】{n} 件のフォルダ（動画含む）→ Windows ゴミ箱\n\n⚠ NAS ネットワークパスでは【完全削除】となり復元できません。\n\n続行しますか？", "再次确认：永久删除这 {n} 个？": "再確認：この {n} 件を完全削除しますか？", "【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？": "【再構築】は全アーカイブを消去して作り直します！\n全行の状態/分類/メタ情報はリセットされ、旧記録は「アーカイブ」へ移動します。\n\n続行しますか？", "请再次确认：真的要【建库】吗？": "再確認：本当に【再構築】しますか？", "将对【全部/有简介但没标签】的条目按简介补标签，继续？": "【全件 / あらすじ有りタグ無し】の項目にあらすじからタグを補完します。続行しますか？", "将对【全部/无/有误】的条目抽帧看视频（较慢），继续？": "【全件 / なし / 要確認】の項目をフレーム抽出して解析します（低速）。続行しますか？", "删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？": "選択項目のカバー画像（poster.jpg 等）とサムネイルキャッシュを削除します。続行しますか？", "已保存 (%d 字符)": "保存しました (%d 文字)", "已保存：": "保存しました: ", "已删除封面/缩略图 %s 个文件": "カバー/サムネ %s 件を削除しました", "已重建 %s 张缩略图": "サムネ %s 件を再生成しました", "切换失败（重启后生效）：": "切替失敗（再起動後に反映）: ", "已切换到": "切替完了: ", "访问地址: ": "URL: ", "局域网已开启: ": "LAN 有効: ", "通过": "OK", "不通过": "NG"}, "es": {"关闭": "Cerrar", "删除": "Eliminar", "档案": "Archivo", "保存": "Guardar", "说明": "Ayuda", "站点": "Sitios", "媒体库": "Biblioteca", "模型": "Modelo", "端口": "Puerto", "局域网": "LAN", "保存设置": "Guardar", "① 全流程": "① Flujo completo", "建库": "Reconstruir", "增量扫描": "Escanear", "语义识别": "Clasificar", "抓取": "Obtener", "跑队列": "Ejecutar cola", "清空队列": "Vaciar cola", "停止": "Detener", "上限(0=全部)": "Límite (0=todo)", "模式": "Modo", "语义组(0=全部)": "Grupo sem. (0=todo)", "AI组(0=全部)": "Grupo IA (0=todo)", "队列": "Cola", "筛选": "Filtro", "质量:全部": "Calidad: todo", "来源:全部": "Fuente: todo", "语义:全部": "Semántica: todo", "(未跑)": "(sin ejecutar)", "刷新": "Actualizar", "已选": "Seleccionados", "条": "ítems", "重跑·网站": "Re-ejecutar · sitios", "重跑·AI": "Re-ejecutar · IA", "AI 补全": "Relleno IA", "AI 看片": "Ver con IA", "重跑·全流程": "Re-ejecutar · completo", "重跑队列": "Re-ejecutar en cola", "打开目录": "Abrir carpeta", "刷新缩略图": "Actualizar miniaturas", "删除封面图": "Borrar portada", "全选本页": "Seleccionar página", "取消选择": "Quitar selección", "缩略图": "Miniatura", "质量": "Calidad", "来源": "Fuente", "番号": "Código", "语义": "Semántica", "标题 / 元信息": "Título / metadatos", "选择": "Seleccionar", "← 上一页": "← Anterior", "下一页 →": "Siguiente →", "⟳ 刷新列表": "⟳ Actualizar lista", "清空": "Vaciar", "站点设置": "Ajustes de sitios", "检测连通性": "Comprobar conexión", "搜索 名字/标题/番号": "Buscar nombre / título / código", "总数": "Total", "质量·有": "Cal·OK", "质量·缺": "Cal·Parcial", "质量·有误": "Cal·Revisar", "质量·无": "Cal·Ninguno", "质量·删除": "Cal·Borrado", "来源·code": "Fuente·code", "来源·Uncen": "Fuente·Uncen", "来源·AI": "Fuente·IA", "语义未跑": "Sem:sin ejecutar", "简介": "Sinopsis", "标签": "Etiquetas", "作者": "Autor", "年份": "Año", "制作": "Estudio", "双击修改": "Doble clic para editar", "本地打开大图": "Abrir imagen completa", "(待接入)": "(pendiente)", "检测中…（逐个真实请求）": "Comprobando… (una petición real cada uno)", "检测完成": "Comprobación lista", "至少勾一个站点": "Marca al menos un sitio", "先选条目": "Selecciona elementos primero", "已有任务在跑": "Ya hay una tarea en ejecución", "已清空": "Vaciado", "当前：已设置": "Actual: definido", "当前：未设置": "Actual: sin definir", "已保存": "Guardado", "保存成功": "Guardado", "文件": "Archivo", "逗号分隔": "separado por comas", "确认": "Confirmar", "是": "Sí", "否": "No", "有": "OK", "缺": "Parcial", "有误": "Revisar", "无": "Ninguno", "启用": "Activo", "类型": "Tipo", "入口": "Entrada", "状态": "Estado", "时间": "Hora", "原因": "Motivo", "名字": "Nombre", "模型缺失": "modelo ausente", "未选中条目": "Nada seleccionado", "【删除】共 {n} 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？": "[Eliminar] {n} carpetas (con vídeos) → Papelera de Windows\n\n⚠ En una ruta de red NAS esto es un borrado PERMANENTE, irrecuperable.\n\n¿Continuar?", "再次确认：永久删除这 {n} 个？": "Confirma de nuevo: ¿borrar permanentemente estos {n}?", "【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？": "¡[Reconstruir] borra y rehace todos los registros!\nSe reinician estado/semántica/metadatos de todas las filas; los antiguos pasan a \"Archivo\".\n\n¿Continuar?", "请再次确认：真的要【建库】吗？": "Confirma otra vez: ¿realmente reconstruir?", "将对【全部/有简介但没标签】的条目按简介补标签，继续？": "Se añadirán etiquetas desde la sinopsis para [todo / con sinopsis sin etiquetas]. ¿Continuar?", "将对【全部/无/有误】的条目抽帧看视频（较慢），继续？": "Se extraerán fotogramas y se analizarán vídeos para [todo / ninguno / revisar] (lento). ¿Continuar?", "删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？": "Se borrarán las portadas (poster.jpg etc.) y la caché de miniaturas de lo seleccionado. ¿Continuar?", "已保存 (%d 字符)": "Guardado (%d caracteres)", "已保存：": "Guardado: ", "已删除封面/缩略图 %s 个文件": "Eliminados %s archivos de portada/miniatura", "已重建 %s 张缩略图": "Regeneradas %s miniaturas", "切换失败（重启后生效）：": "Fallo al cambiar (tras reiniciar): ", "已切换到": "Cambiado a ", "访问地址: ": "URL: ", "局域网已开启: ": "LAN activada: ", "通过": "OK", "不通过": "FALLO"}, "zh-Hant": {"(待接入)": "(待接入)", "(未跑)": "(未跑)", "AI 看片": "AI 看片", "AI 补全": "AI 補全", "AI组(0=全部)": "AI組(0=全部)", "← 上一页": "← 上一頁", "① 全流程": "① 全流程", "⟳ 刷新列表": "⟳ 刷新列表", "上限(0=全部)": "上限(0=全部)", "下一页 →": "下一頁 →", "作者": "作者", "保存": "保存", "保存成功": "保存成功", "保存设置": "保存設置", "停止": "停止", "先选条目": "先選條目", "全选本页": "全選本頁", "关闭": "關閉", "删除": "刪除", "删除封面图": "刪除封面圖", "制作": "製作", "刷新": "刷新", "刷新缩略图": "刷新縮略圖", "双击修改": "雙擊修改", "取消选择": "取消選擇", "否": "否", "增量扫描": "增量掃描", "媒体库": "媒體庫", "局域网": "局域網", "已保存": "已保存", "已有任务在跑": "已有任務在跑", "已清空": "已清空", "已选": "已選", "年份": "年份", "建库": "建庫", "当前：已设置": "當前：已設置", "当前：未设置": "當前：未設置", "总数": "總數", "打开目录": "打開目錄", "抓取": "抓取", "搜索 名字/标题/番号": "搜索 名字/標題/番號", "文件": "文件", "无": "無", "是": "是", "有": "有", "有误": "有誤", "本地打开大图": "本地打開大圖", "条": "條", "来源": "來源", "来源:全部": "來源:全部", "来源·AI": "來源·AI", "来源·Uncen": "來源·Uncen", "来源·code": "來源·code", "标签": "標籤", "标题 / 元信息": "標題 / 元信息", "档案": "檔案", "检测中…（逐个真实请求）": "檢測中…（逐個真實請求）", "检测完成": "檢測完成", "检测连通性": "檢測連通性", "模型": "模型", "模式": "模式", "清空": "清空", "清空队列": "清空隊列", "番号": "番號", "确认": "確認", "站点": "站點", "站点设置": "站點設置", "端口": "端口", "筛选": "篩選", "简介": "簡介", "缩略图": "縮略圖", "缺": "缺", "至少勾一个站点": "至少勾一個站點", "语义": "語義", "语义:全部": "語義:全部", "语义未跑": "語義未跑", "语义组(0=全部)": "語義組(0=全部)", "语义识别": "語義識別", "说明": "說明", "质量": "質量", "质量:全部": "質量:全部", "质量·删除": "質量·刪除", "质量·无": "質量·無", "质量·有": "質量·有", "质量·有误": "質量·有誤", "质量·缺": "質量·缺", "跑队列": "跑隊列", "选择": "選擇", "逗号分隔": "逗號分隔", "重跑·AI": "重跑·AI", "重跑·全流程": "重跑·全流程", "重跑·网站": "重跑·網站", "重跑队列": "重跑隊列", "队列": "隊列", "启用": "啓用", "类型": "類型", "入口": "入口", "状态": "狀態", "时间": "時間", "原因": "原因", "名字": "名字", "模型缺失": "模型缺失", "未选中条目": "未選中條目", "【删除】共 {n} 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？": "【刪除】共 {n} 個目錄（含視頻）→ Windows 回收站\n\n⚠ NAS 網絡路徑，實際是【永久刪除】，不可恢復。\n\n繼續？", "再次确认：永久删除这 {n} 个？": "再次確認：永久刪除這 {n} 個？", "【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？": "【建庫】會清空並重建全部檔案！\n當前所有行的狀態/語義/元信息都會被重置，舊記錄先進入「檔案」。\n\n確定繼續？", "请再次确认：真的要【建库】吗？": "請再次確認：真的要【建庫】嗎？", "将对【全部/有简介但没标签】的条目按简介补标签，继续？": "將對【全部/有簡介但沒標籤】的條目按簡介補標籤，繼續？", "将对【全部/无/有误】的条目抽帧看视频（较慢），继续？": "將對【全部/無/有誤】的條目抽幀看視頻（較慢），繼續？", "删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？": "刪除選中條目的封面圖（poster.jpg 等）+ 縮略圖緩存，繼續？", "已保存 (%d 字符)": "已保存 (%d 字符)", "已保存：": "已保存：", "已删除封面/缩略图 %s 个文件": "已刪除封面/縮略圖 %s 個文件", "已重建 %s 张缩略图": "已重建 %s 張縮略圖", "切换失败（重启后生效）：": "切換失敗（重啓後生效）：", "已切换到": "已切換到", "访问地址: ": "訪問地址: ", "局域网已开启: ": "局域網已開啓: ", "通过": "通過", "不通过": "不通過"}};
+// 动态文案：整串模式的按语言替换（就这几条，写死在表里）
+const PATS={
+ 'en':[[/^共\s*(\d+)\s*条$/, 'Total $1'], [/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, 'Page $1 / $2'], [/^通过\s*/, 'OK '], [/^不通过\s*/, 'FAIL ']],
+ 'ja':[[/^共\s*(\d+)\s*条$/, '全 $1 件'], [/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, '$1 / $2 ページ'], [/^通过\s*/, 'OK '], [/^不通过\s*/, 'NG ']],
+ 'es':[[/^共\s*(\d+)\s*条$/, 'Total $1'], [/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, 'Página $1 / $2'], [/^通过\s*/, 'OK '], [/^不通过\s*/, 'FALLO ']],
+ 'zh-Hant':[[/^共\s*(\d+)\s*条$/, '共 $1 筆'], [/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, '第 $1 / $2 頁'], [/^通过\s*/, '通過 '], [/^不通过\s*/, '不通過 ']]
+};
+// 一行里含多个标签（作者: x ｜ 年份: y）→ 子串替换
+const SUBS={
+ 'en':{'简介:':'Plot: ','标签:':'Tags: ','作者:':'Author: ','年份:':'Year: ','制作:':'Studio: ',' ｜ ':' | '},
+ 'ja':{'简介:':'あらすじ: ','标签:':'タグ: ','作者:':'出演: ','年份:':'年: ','制作:':'メーカー: ',' ｜ ':' | '},
+ 'es':{'简介:':'Sinopsis: ','标签:':'Etiquetas: ','作者:':'Autor: ','年份:':'Año: ','制作:':'Estudio: ',' ｜ ':' | '},
+ 'zh-Hant':{'简介:':'簡介:','标签:':'標籤:','作者:':'作者:','年份:':'年份:','制作:':'製作:',' ｜ ':' | '}
+};
 let LANG='zh';
+function T(s){ if(LANG==='zh'||!s)return s; const d=DICT[LANG]||{}; return (s in d)?d[s]:s; }
+// 带 {n} 占位符的句子
+function TN(s,n){ const t=T(s); return t.replace('{n}',n); }
+function F(s){
+  if(LANG==='zh'||!s)return s;
+  const d=DICT[LANG]||{};
+  if(s in d)return d[s];
+  const ps=PATS[LANG]||[];
+  for(let i=0;i<ps.length;i++){ if(ps[i][0].test(s))return s.replace(ps[i][0],ps[i][1]); }
+  const sb=SUBS[LANG]; let out=s,hit=false;
+  for(const k in sb){ if(out.indexOf(k)>=0){ out=out.split(k).join(sb[k]); hit=true; } }
+  return hit?out:s;
+}
 function applyLang(){
-  if(LANG!=='en')return;
-  document.querySelectorAll('button,span,div,td,th,option,label,a,li,p,b,strong,small').forEach(function(el){
-    if(el.children.length)return;                 // 只动叶子节点，别拆父结构
+  if(LANG==='zh')return;
+  const M='button,span,div,td,th,option,label,a,li,p,b,strong,small';
+  document.querySelectorAll(M).forEach(function(el){
+    if(el.children.length)return;                 // 只动叶子节点
+    if(el.id==='b-lang'||el.tagName==='OPTION'&&el.parentNode&&el.parentNode.id==='b-lang')return;
     const s=(el.textContent||'').trim();
-    if(!s||s.length>46)return;
-    let t=I18N[s];
-    if(!t){for(let k=0;k<I18NR.length;k++){const re=I18NR[k][0];if(re.test(s)){t=s.replace(re,I18NR[k][1]);break;}}}
-    if(t&&t!==s)el.textContent=el.textContent.replace(s,t);
+    if(!s||s.length>140)return;
+    const t=F(s);
+    if(t!==s)el.textContent=el.textContent.replace(s,t);
   });
   document.querySelectorAll('input[placeholder]').forEach(function(el){
-    const s=(el.placeholder||'').trim(); if(I18N[s])el.placeholder=I18N[s];});
-  const lb=document.getElementById('b-lang'); if(lb&&lb.textContent!=='中文')lb.textContent='中文';
+    const s=(el.placeholder||'').trim(); if(s){const t=F(s); if(t!==s)el.placeholder=t;}});
+  document.documentElement.lang=(LANG==='zh-Hant')?'zh-Hant':LANG;
 }
-// 统计卡 / 表格 / 日志是异步渲染的：渲染完再套一次
 let _i18t=null;
 try{new MutationObserver(function(){
-  if(LANG!=='en')return; clearTimeout(_i18t);
+  if(LANG==='zh')return; clearTimeout(_i18t);
   _i18t=setTimeout(applyLang,150);
 }).observe(document.body,{childList:true,subtree:true});}catch(e){}
-(async()=>{try{const r=await(await fetch('/api/lang')).json();LANG=r.lang||'zh';applyLang();}catch(e){}})();
-$('#b-lang').onclick=async()=>{const n=(LANG==='en')?'zh':'en';await fetch('/api/lang?lang='+n,{method:'POST'});location.reload();};
+let OUT_LANG='zh';
+async function setUILang(v){await fetch('/api/lang?lang='+encodeURIComponent(v),{method:'POST'});location.reload();}
+(async()=>{try{const r=await(await fetch('/api/lang')).json();
+  LANG=r.lang||'zh'; OUT_LANG=r.out_lang||LANG;
+  const b=document.getElementById('b-lang'); if(b)b.value=LANG;
+  const o=document.getElementById('cfg-outlang'); if(o)o.value=r.out_lang||'';
+  applyLang();}catch(e){}})();
+const _bl=document.getElementById('b-lang'); if(_bl)_bl.onchange=()=>setUILang(_bl.value);
+const _co=document.getElementById('cfg-outlang');
+if(_co)_co.onchange=async()=>{await fetch('/api/lang?out_lang='+encodeURIComponent(_co.value),{method:'POST'});};
 $('#b-sites').onclick=async()=>{await stLoad();$('#st-info').textContent='';$('#modal4').classList.add('on');};
 $('#md4-close').onclick=()=>$('#modal4').classList.remove('on');
 async function stLoad(){
@@ -1585,7 +1597,7 @@ $('#st-check').onclick=async()=>{
   $('#st-info').textContent='检测完成';};
 $('#st-save').onclick=async()=>{
   const on=[...document.querySelectorAll('.ston')].filter(c=>c.checked).map(c=>c.dataset.k).join(',');
-  if(!on)return alert('至少勾一个站点');
+  if(!on)return alert(T('至少勾一个站点'));
   const d=await(await fetch('/api/sites?on='+encodeURIComponent(on),{method:'POST'})).json();
   $('#st-info').textContent='已保存：'+d.on.join(', ');};
 $('#b-qrun').onclick=()=>post('/api/queue/run');
@@ -1593,11 +1605,11 @@ $('#b-qclear').onclick=async()=>{await post('/api/queue/clear');$('#qcount').tex
 $('#b-stop').onclick=()=>post('/api/stop');
 $('#b-refresh').onclick=()=>list();
 $('#b-reload').onclick=()=>list();   // 只重拉列表，不动整页
-$('#a-thumbs').onclick=async()=>{if(!SEL.size)return alert('先选条目');
+$('#a-thumbs').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
   const r=await post('/api/thumbs/refresh?ids='+[...SEL].join(','));
   THUMBV++;await list();console.log('已重建 %s 张缩略图',r.n);};
-$('#a-coverdel').onclick=async()=>{if(!SEL.size)return alert('先选条目');
-  if(!confirm('将删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？'))return;
+$('#a-coverdel').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
+  if(!confirm(T('将删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？')))return;
   const r=await post('/api/covers/drop?ids='+[...SEL].join(','));
   THUMBV++;await list();console.log('已删除封面/缩略图 %s 个文件',r.n);};
 $('#b-archive').onclick=async()=>{const d=await(await fetch('/api/archive?limit=300')).json();

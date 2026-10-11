@@ -77,7 +77,7 @@
 | 📇 **Code reference** | Common code-prefix table auto-generated from your own DB: [`番号参考表.md`](番号参考表.md) (Chinese) |
 | 💾 **Fully persisted** | Queue, log and settings all survive restarts (SQLite WAL) |
 
-> Note: the app's own UI is currently **Chinese only**. This repo documents everything in both languages.
+> Note: the app UI ships in **5 languages** — 中文 / English / 日本語 / Español / 繁體中文 — switchable from the top bar. The **metadata output language** (the language of titles, plots and tags written into `.nfo`) is a **separate** setting, so you can run an English UI while writing Japanese titles.
 
 ---
 
