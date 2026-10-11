@@ -1,3 +1,4 @@
+import os
 # -*- coding: utf-8 -*-
 """
 mlib.py -- media library core: snapshot / diff / scrape(website|ai) / nfo write.
@@ -159,6 +160,15 @@ LANG_TAGS = {
     'es': '5-8 etiquetas en español',
     'zh-Hant': '5-8 個繁體中文標籤',
 }
+
+
+JAVDB_DEFAULT = 'https://javdb.com'
+
+
+def javdb_domain():
+    """javdb 入口域名：环境变量 MS_JAVDB > config.javdb_domain > 默认。"""
+    v = os.environ.get('MS_JAVDB') or cfg_get('javdb_domain') or JAVDB_DEFAULT
+    return str(v).strip().rstrip('/')
 
 
 def out_lang():
@@ -454,7 +464,7 @@ def fetch_javdb(code, cookie=None):
     h['Cookie'] = cookie
     s = JS.new_session()
     try:
-        r = s.get('https://javdb.com/search?q=%s&f=all' % code, proxies=JS.PROXIES, timeout=40, headers=h)
+        r = s.get('%s/search?q=%s&f=all' % (javdb_domain(), code), proxies=JS.PROXIES, timeout=40, headers=h)
         # 站点改版后：外层 <a title="片名"> 不再带番号，番号移到内层元素里。
         # 外层 title + 内层文本 一起收进来匹配，避免漏掉。
         items = []
@@ -490,7 +500,7 @@ def fetch_javdb(code, cookie=None):
             sys.stderr.write('  javdb: no confident match for %s (hits=%d)\n' % (code, len(items)))
             return None
         time.sleep(1)
-        r2 = s.get('https://javdb.com' + pick[0], proxies=JS.PROXIES, timeout=40, headers=h)
+        r2 = s.get('%s' % javdb_domain() + pick[0], proxies=JS.PROXIES, timeout=40, headers=h)
         d = parse_javdb_detail(r2.text)
         if not d.get('code'):
             sys.stderr.write('  javdb: detail page was not a movie page (login/challenge) for %s\n' % code)
@@ -532,21 +542,86 @@ def set_sites(keys):
     cfg_set('sites', ','.join([k for k in (keys or []) if k]))
 
 
+# 浅查里算「真失败」的原因；cloudflare?/spa-shell 只作提示，以深度自检为准
+FAIL_REASONS = ('geo-block', 'origin-down', 'not-found', 'no-response', 'unknown')
+
+
+def _classify(html, status):
+    """把一次响应归类成可读原因（给界面显示用）。"""
+    t = html or ''
+    if 'prohibited in the country' in t or 'Due to copyright restrictions' in t:
+        return 'geo-block'          # 代理落地地区被封锁
+    if 'Just a moment' in t or 'cf-challenge' in t or 'cf-turnstile' in t:
+        return 'cloudflare?'
+    if status == 0:
+        return 'no-response'
+    if status == 404:
+        return 'not-found'
+    if status >= 500:
+        return 'origin-down'        # 源站挂（如 522）
+    if status >= 400:
+        return 'http-%d' % status
+    if len(t) < 2000:
+        return 'spa-shell'        # 200 但正文极小 = 被拦/需 JS
+    return 'ok'
+
+
+def site_url(key):
+    """站点入口；javdb 允许用配置覆盖域名（换镜像/换区）。"""
+    if key == 'javdb':
+        return javdb_domain()
+    return dict((s[0], s[3]) for s in SITES).get(key, '')
+
+
 def site_check(key, timeout=14):
-    """真实请求入口 URL —— 用抓取器同一个会话（含重试 + 代理）。"""
-    urls = dict((s[0], s[3]) for s in SITES)
-    url = urls.get(key)
+    """真实请求入口 URL，返回 ok/status/reason/ms。"""
+    url = site_url(key)
     if not url:
         return {'ok': False, 'err': 'unknown'}
     t = time.time()
     try:
         r = JS.get(url, timeout=timeout)
-        sc = getattr(r, 'status_code', 0)
-        return {'ok': r is not None and sc < 400, 'status': sc,
-                'ms': int((time.time() - t) * 1000)}
     except Exception as e:
-        return {'ok': False, 'err': type(e).__name__, 'ms': int((time.time() - t) * 1000)}
+        return {'ok': False, 'reason': 'timeout', 'err': type(e).__name__,
+                'ms': int((time.time() - t) * 1000)}
+    sc = getattr(r, 'status_code', 0)
+    reason = _classify(getattr(r, 'text', ''), sc)
+    return {'ok': sc < 400 and reason not in FAIL_REASONS, 'status': sc, 'reason': reason,
+            'ms': int((time.time() - t) * 1000)}
 
+
+DEEP_CODE = {'有码': 'SSIS-001', '无码': 'HEYZO-3957', '聚合': 'SSIS-001',
+             '资料': 'SSIS-001', 'FC2': 'FC2-PPV-4405704'}
+
+
+def site_deep(key, timeout=40):
+    """深度自检：用固定试号真跑一次该站抓取，回报命中与字段数。"""
+    typ = dict((s[0], s[2]) for s in SITES).get(key, '')
+    code = DEEP_CODE.get(typ, 'SSIS-001')
+    item = {'code': code, 'sem_code': '', 'name': code, 'path': '', 'title': '', 'plot': ''}
+    t = time.time()
+    try:
+        if key == 'javbus':
+            d = JS.fetch(code)
+            if d:
+                d.setdefault('source', 'javbus')
+        elif key == 'javdb':
+            d = fetch_javdb(code)
+        elif key == 'missav':
+            d = _missav_title(item)
+        elif key == 'fc2':
+            d = fetch_fc2(item)
+        else:
+            fn = globals().get('fetch_%s' % key)
+            d = fn(item) if fn else None
+    except Exception as e:
+        return {'ok': False, 'code': code, 'reason': type(e).__name__,
+                'err': str(e)[:80], 'ms': int((time.time() - t) * 1000)}
+    ms = int((time.time() - t) * 1000)
+    if not d:
+        return {'ok': False, 'code': code, 'reason': 'miss', 'ms': ms}
+    return {'ok': True, 'code': code, 'ms': ms, 'fields': len(d),
+            'title': str(d.get('title') or '')[:60], 'source': d.get('source') or key}
 
 def fc2_num(item):
     """从 code / sem_code / name 里抠出 FC2 商品号（5-8 位）。"""
@@ -1239,20 +1314,11 @@ def scrape_uncensored(item):
 
 
 def missav_search(query, lang='ja'):
-    """MissAV 搜索兜底：把 _ - 拆成空格再搜，返回第一个结果 slug。"""
-    q = re.sub(r'[_\-\s]+', ' ', (query or '')).strip()
-    if not q:
-        return None
-    url = '%s/%s/search/%s' % (MISSAV, lang, requests.utils.quote(q))
-    try:
-        r = JS.get(url, timeout=30)
-    except Exception:
-        return None
-    html = r.text or ''
-    for m in re.finditer(r'href="/%s/([^"/?#]+)"' % lang, html):
-        sl = m.group(1).strip()
-        if sl and sl != 'search' and not sl.startswith('genres') and ' ' not in sl:
-            return sl
+    """MissAV 搜索兜底 —— 2026-10-12 实测已不可用。
+
+    搜索页是纯前端渲染（结果由 XHR 异步加载，HTML 内无影片链接、也无内嵌 JSON），
+    服务端拿不到结果。详情线 `_missav_title`（按 slug 直取）正常，故此处直接短路，
+    不再白白等一次请求；返回 None 等同于"未找到"。"""
     return None
 
 

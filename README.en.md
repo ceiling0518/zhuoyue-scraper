@@ -135,6 +135,17 @@ http://127.0.0.1:8800/
 
 ## Model support
 
+### 2. Site health checks
+
+The **Sites** dialog has two buttons:
+
+- **Check connectivity** — quick request to each site entry: `pass / fail(reason)`. Reasons: `geo-block` (your proxy's exit country is blocked), `cloudflare?` (challenge, hint only), `spa-shell` (small homepage; normal for SPAs, hint only), `origin-down` (e.g. 522), `timeout`.
+- **Deep check** — **performs one real lookup per site** with a fixed test code, reporting `hit <code> · N fields · ms`. This is the authoritative answer.
+
+Measured 2026-10-12: **javbus / MissAV / avsox / 123AV / NJAV / Netflav / JAVTrailers / FC2 official — 8 sites working**.
+`javdb` returns **geo-block**: switch your proxy exit region, or point `MS_JAVDB` at a working mirror.
+`jav321` origin is down (522) and stays disabled.
+
 ### 1. Language model (semantic classification + AI scraping + tag fill)
 
 Classification and AI scraping go through [ollama](https://ollama.com) — **any ollama model works**, as long as it returns stable JSON for the given prompts. Pick it from the dropdown in the top bar.
