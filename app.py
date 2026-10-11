@@ -1073,6 +1073,8 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'sites': sites_info(), 'on': mlib.sites_enabled()})
             if p == '/api/net':
                 return self._json(net_state())
+            if p == '/api/lang':
+                return self._json({'lang': mlib.out_lang()})
             if p == '/api/stats':
                 return self._json(stats())
             if p == '/api/items':
@@ -1183,6 +1185,10 @@ class H(BaseHTTPRequestHandler):
                 _st = net_state()
                 return self._json({'ok': _ok, 'msg': _msg, 'port': _st['port'],
                                    'lan': _st['lan'], 'urls': _st['urls']})
+            elif p == '/api/lang':
+                _lg = (q.get('lang') or 'zh').strip().lower()
+                mlib.cfg_set('lang', 'en' if _lg.startswith('en') else 'zh')
+                return self._json({'ok': True, 'lang': mlib.out_lang()})
             elif p == '/api/sites/check':
                 res = {}
                 for (k, n, t, u, h) in mlib.SITES:
@@ -1255,6 +1261,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
   <button id="b-cookie">javdb Cookie</button>
   <button id="b-sites">站点</button>
+  <button id="b-lang">EN</button>
   <span class="muted">媒体库</span><input id="cfg-root" style="width:330px">
   <span class="muted">模型</span><select id="cfg-model"></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
@@ -1506,6 +1513,61 @@ $('#ck-file').onchange=e=>{const f=e.target.files[0];if(!f)return;const rd=new F
 $('#ck-save').onclick=async()=>{const r=await fetch('/api/cookie',{method:'POST',body:$('#ck-text').value});
   const j=await r.json();alert(j.set?('已保存 ('+j.len+' 字符)'):'已清空');$('#modal3').classList.remove('on');};
 $('#ck-clear').onclick=async()=>{await fetch('/api/cookie?clear=1',{method:'POST'});alert('已清空');$('#modal3').classList.remove('on');};
+const I18N={'总数':'Total','质量有':'OK','质量缺':'Partial','质量有误':'Bad','质量无':'None',
+'质量删除':'Deleted','来源 code':'Src:code','来源 Uncen':'Src:Uncen','来源 AI':'Src:AI',
+'语义未跑':'Sem:none','档案':'Archive','建库':'Rebuild','增量扫描':'Scan','语义识别':'Classify',
+'抓取':'Fetch','跑队列':'Run queue','清空队列':'Clear queue','停止':'Stop','上限(0=全部)':'Limit (0=all)',
+'模式':'Mode','语义组(0=全部)':'Sem group (0=all)','AI组(0=全部)':'AI group (0=all)','队列':'Queue',
+'筛选':'Filter','质量全部':'Quality: all','来源全部':'Source: all','语义全部':'Semantic: all',
+'搜索名字/标题/番号':'Search name/title/code','刷新':'Refresh','保存设置':'Save','说明':'Docs',
+'站点':'Sites','媒体库':'Library','模型':'Model','端口':'Port','局域网':'LAN','缩略图':'Thumb',
+'质量':'Quality','来源':'Source','番号':'Code','语义':'Semantic','标题/元信息':'Title / metadata',
+'选择':'Select','操作':'Actions','重跑·网站':'Re-run · sites','重跑·AI':'Re-run · AI',
+'重跑·全流程':'Re-run · full','重跑队列':'Queue re-run','打开目录':'Open folder','删除':'Delete',
+'删除封面图':'Delete cover','刷新缩略图':'Refresh thumbs','AI 补全':'AI tag fill','AI 看片':'AI watch',
+'全选本页':'Select page','取消选择':'Clear','上一页':'Prev','下一页':'Next','加载中':'Loading',
+'作者':'Author','标签':'Tags','简介':'Plot','标题':'Title','番号':'Code','全流程':'Full pipeline'};
+// 正则规则：处理带前缀 / 带数字 / 带数据的文本
+const I18NR=[
+ [/^①\s*全流程$/, '① Full pipeline'],
+ [/^共\s*(\d+)\s*条$/, 'Total $1'],
+ [/^已选\s*(\d+)\s*条$/, 'Selected $1'],
+ [/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, 'Page $1 / $2'],
+ [/^质量[\s:：]*有$/, 'OK'], [/^质量[\s:：]*缺$/, 'Partial'],
+ [/^质量[\s:：]*有误$/, 'Bad'], [/^质量[\s:：]*无$/, 'None'],
+ [/^质量[\s:：]*删除$/, 'Deleted'],
+ [/^来源[\s:：]*(code|Uncen|AI)$/, 'Src:$1'],
+ [/^作者[:：]\s*(.*)$/, 'Author: $1'],
+ [/^标签[:：]\s*(.*)$/, 'Tags: $1'],
+ [/^简介[:：]\s*(.*)$/, 'Plot: $1'],
+ [/^标题[:：]\s*(.*)$/, 'Title: $1'],
+ [/^番号[:：]\s*(.*)$/, 'Code: $1'],
+];
+let LANG='zh';
+function applyLang(){
+  if(LANG!=='en')return;
+  document.querySelectorAll('button,span,div,td,th,option,label,a,li,p,b,strong,small').forEach(function(el){
+    if(el.children.length)return;                 // 只动叶子节点，别拆父结构
+    const s=(el.textContent||'').trim();
+    if(!s||s.length>46)return;
+    let t=I18N[s];
+    if(!t){for(let k=0;k<I18NR.length;k++){const re=I18NR[k][0];if(re.test(s)){t=s.replace(re,I18NR[k][1]);break;}}}
+    if(t&&t!==s)el.textContent=el.textContent.replace(s,t);
+  });
+  document.querySelectorAll('input[placeholder]').forEach(function(el){
+    const s=(el.placeholder||'').trim(); if(I18N[s])el.placeholder=I18N[s];});
+  const lb=document.getElementById('b-lang'); if(lb)lb.textContent='中文';
+}
+// 统计卡 / 表格 / 日志是异步渲染的：渲染完再套一次
+let _i18t=null;
+try{new MutationObserver(function(){
+  if(LANG!=='en')return; clearTimeout(_i18t);
+  _i18t=setTimeout(applyLang,150);
+}).observe(document.body,{childList:true,subtree:true});}catch(e){}
+if(b)b.textContent='中文';
+}
+(async()=>{try{const r=await(await fetch('/api/lang')).json();LANG=r.lang||'zh';applyLang();}catch(e){}})();
+$('#b-lang').onclick=async()=>{const n=(LANG==='en')?'zh':'en';await fetch('/api/lang?lang='+n,{method:'POST'});location.reload();};
 $('#b-sites').onclick=async()=>{await stLoad();$('#st-info').textContent='';$('#modal4').classList.add('on');};
 $('#md4-close').onclick=()=>$('#modal4').classList.remove('on');
 async function stLoad(){

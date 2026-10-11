@@ -109,6 +109,36 @@ def scan_root():
     return cfg_get('root', ROOT_DEFAULT)
 
 
+# ---------------------------------------------------------------- 输出语言
+# 界面语言（config.lang）决定模型输出语言 —— 切了界面，prompt 也得跟着切，
+# 否则英文界面下模型照样吐中文标题/标签。
+LANG_RULE = {
+    'zh': ('语言规则：一律输出**简体中文**；若原文是**日文则保留日文原文**（不要翻译）；'
+           '**繁体中文转成简体**；其它语言**翻译成简体中文**。'),
+    'en': ('Language rule: write EVERYTHING in **English** — title, plot and tags. '
+           'If the source text is Japanese, **translate it into English** '
+           '(do not keep the Japanese original).'),
+}
+LANG_TAGS = {
+    'zh': '5-8 个中文标签',
+    'en': '5-8 English tags',
+}
+
+
+def out_lang():
+    """模型输出语言，跟随界面语言（config.lang）。"""
+    v = (cfg_get('lang') or 'zh').strip().lower()
+    return 'en' if v.startswith('en') else 'zh'
+
+
+def lang_rule():
+    return LANG_RULE.get(out_lang(), LANG_RULE['zh'])
+
+
+def lang_tags():
+    return LANG_TAGS.get(out_lang(), LANG_TAGS['zh'])
+
+
 def ai_model():
     return cfg_get('model', AI_MODEL)
 
@@ -443,13 +473,13 @@ def fetch_javdb(code, cookie=None):
 SITES = [
     ('javbus',      'JavBus',      '有码', 'https://www.javbus.com',          1),
     ('javdb',       'JavDB',       '有码', 'https://javdb.com',               1),
-    ('jav321',      'JAV321',      '有码', 'https://www.jav321.com',          0),
+    ('jav321',      'JAV321',      '有码', 'https://www.jav321.com',          0),   # 源站 522（CF 源站超时），站点不可用，暂不接入
     ('missav',      'MissAV',      '无码', 'https://missav123.com',           1),
-    ('avsox',       'avsox 系',    '无码', 'https://avsox.com',               0),
+    ('avsox',       'avsox 系',    '无码', 'https://avsox.click',             1),
     ('123av',       '123AV',       '无码', 'https://123av.com',               1),
-    ('njav',        'NJAV',        '无码', 'https://njav.tv',                 0),
-    ('netflav',     'Netflav',     '聚合', 'https://netflav.com',             0),
-    ('javtrailers', 'JAVTrailers', '资料', 'https://javtrailers.com',         0),
+    ('njav',        'NJAV',        '无码', 'https://njav.tv',                 1),
+    ('netflav',     'Netflav',     '聚合', 'https://netflav.com',             1),
+    ('javtrailers', 'JAVTrailers', '资料', 'https://javtrailers.com',         1),
     ('fc2',         'FC2 官方',    'FC2',  'https://adult.contents.fc2.com',  0),
 ]
 DEFAULT_SITES = 'javbus,javdb,missav,fc2'
@@ -625,6 +655,313 @@ def fetch_123av(item):
             'runtime': rt, 'cover': cover, 'samples': [], 'url': u}
 
 
+# ---------------------------------------------------- 剩余站点专属解析器
+# 2026-10-12 实测（均走本地代理 JAV_PROXY）：
+#   netflav     —— Next.js SPA，搜索结果的静态 HTML 里没有内容；前端调 /api98/video/advanceSearchVideo
+#   javtrailers —— Nuxt，但搜索页是 SSR，卡片里直接有 /video/<slug> + 标题 + 封面 + 时长 + 日期
+#   avsox       —— avsox.com 已成占位跳转页，真正站是 avsox.click（javu 家族），前端 POST /javu/data/api/*
+#   njav        —— njav.tv 整体迁到 123av.com（页面只剩“We have moved to 123av.com”），故走 123AV 详情解析
+#   jav321      —— 源站 522（Cloudflare 源站超时），站点自身不可用，暂不接入
+NETFLAV = 'https://netflav.com'
+NETFLAV_API = NETFLAV + '/api98'
+JT = 'https://javtrailers.com'
+AVSOX = 'https://avsox.click'
+AVSOX_API = AVSOX + '/javu/data/api/'
+
+
+def _flat(s):
+    """番号归一化比较用：只留 A-Z0-9。"""
+    return re.sub(r'[^0-9A-Za-z]', '', (s or '')).upper()
+
+
+def _hms_to_min(s):
+    """'2:27:00' -> '147'（分钟）。"""
+    m = re.findall(r'\d+', s or '')
+    if len(m) >= 3:
+        return str(int(m[0]) * 60 + int(m[1]))
+    if len(m) == 2:
+        return str(int(m[0]))
+    return ''
+
+
+def _nf_parse(s):
+    """netflav 详情的 'k|v|k|v' 串；空值会被省略，tags / previewImages 的值本身含 '|'。
+
+    空格在值里被写成 '+'，故除 URL 外的值做 unquote_plus。
+    """
+    from urllib.parse import unquote_plus
+    keys = ('_id', 'actors', 'code', 'description', 'duration', 'preview_hp',
+            'previewImages', 'previewVideo', 'producer', 'premiumUrl', 'tags')
+    toks = (s or '').split('|')
+    d, i = {}, 0
+    while i < len(toks):
+        k = toks[i]
+        if k in ('tags', 'previewImages'):
+            vals, j = [], i + 1
+            while j < len(toks) and toks[j] not in keys:
+                vals.append(toks[j]); j += 1
+            d[k] = [unquote_plus(v) for v in vals] if k == 'tags' else vals
+            i = j
+        elif k in keys:
+            nxt = toks[i + 1] if i + 1 < len(toks) else None
+            if nxt is not None and nxt in keys:
+                d[k] = ''            # 空值=被省略，下一个 token 已是新 key
+                i += 1
+            else:
+                v = nxt or ''
+                if not v.startswith('http'):
+                    v = unquote_plus(v)
+                d[k] = v
+                i += 2
+        else:
+            i += 1
+    return d
+
+
+def fetch_netflav(item):
+    """Netflav（聚合）：调它自己的 JSON API（前端 fetch 用的那个）。"""
+    if 'netflav' not in sites_enabled():
+        return None
+    code = (item.get('code') or item.get('sem_code') or '').strip()
+    if not code:
+        return None
+    try:
+        r = JS.get('%s/video/advanceSearchVideo?type=title&page=1&keyword=%s'
+                   % (NETFLAV_API, requests.utils.quote(code)), timeout=30)
+    except Exception:
+        return None
+    if r is None or r.status_code != 200:
+        return None
+    try:
+        docs = ((r.json().get('result') or {}).get('docs')) or []
+    except Exception:
+        return None
+    flat = _flat(code)
+    hit = None
+    for doc in docs:
+        if _flat(doc.get('code') or doc.get('uCode')) == flat:
+            hit = doc
+            break
+    if hit is None:
+        return None                      # 不确认就不返回，避免挂错片
+    title = (hit.get('title') or hit.get('title_zh') or hit.get('title_en') or '').strip()
+    title = re.sub(r'^\s*' + re.escape(code) + r'\s*[-—:：]?\s*', '', title, flags=re.I).strip() or title
+    actors = []
+    for a in (hit.get('actors') or []):
+        a = re.sub(r'^(jp|zh|en):', '', str(a)).strip()
+        if a and a not in actors:
+            actors.append(a)
+    d = {'source': 'netflav', 'code': (hit.get('code') or code).upper(),
+         'title': title, 'plot': '', 'studio': '', 'genres': [], 'actors': actors[:8],
+         'runtime': '', 'date': (hit.get('sourceDate') or '')[:10],
+         'cover': hit.get('preview') or '', 'samples': [],
+         'url': '%s/video/%s' % (NETFLAV, hit.get('videoId') or '')}
+    vid = hit.get('videoId')
+    if vid:
+        try:
+            r2 = JS.get('%s/video/v3/retrieveVideo/%s' % (NETFLAV_API, vid), timeout=30)
+            if r2 is not None and r2.status_code == 200:
+                dd = _nf_parse(r2.json().get('result') or '')
+                if dd.get('description'):
+                    d['title'] = dd['description'].strip()
+                if dd.get('producer'):
+                    d['studio'] = dd['producer']
+                if dd.get('duration'):
+                    d['runtime'] = dd['duration']
+                gs = []
+                for x in (dd.get('tags') or []):
+                    if ':' in x or not x or x in ('有修正', '有碼', '有码', '無修正', '无码', 'Censored'):
+                        continue
+                    if x not in gs:
+                        gs.append(x)
+                d['genres'] = gs[:12]
+                if dd.get('preview_hp'):
+                    d['cover'] = dd['preview_hp']
+                if dd.get('previewImages'):
+                    d['samples'] = dd['previewImages'][:6]
+        except Exception as e:
+            sys.stderr.write('  netflav detail err %s\n' % str(e)[:80])
+    # 去掉标题开头的番号（详情标题也带）
+    d['title'] = (re.sub(r'^\s*' + re.escape(code) + r'\s*[-—:：]?\s*', '', d['title'],
+                         flags=re.I).strip() or d['title'])
+    return d if d.get('title') else None
+
+
+def fetch_javtrailers(item):
+    """JavTrailers（资料）：搜索页 SSR，卡片即含番号/标题/封面/时长/日期。"""
+    if 'javtrailers' not in sites_enabled():
+        return None
+    code = (item.get('code') or item.get('sem_code') or '').strip()
+    if not code:
+        return None
+    try:
+        r = JS.get('%s/search/%s' % (JT, requests.utils.quote(code)), timeout=30)
+    except Exception:
+        return None
+    if r is None or r.status_code != 200:
+        return None
+    flat = _flat(code)
+    for m in re.finditer(r'<a href="(/video/([a-z0-9]+))" class="video-link"(.*?)</a>',
+                         r.text, re.S):
+        href, body = m.group(1), m.group(3)
+        mt = re.search(r'class="[^"]*vid-title[^"]*">(.*?)</p>', body, re.S)
+        if not mt:
+            continue
+        full = (JS._clean(mt.group(1)).replace('&#39;', "'").replace('&quot;', '"')
+                .replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>'))
+        mc = re.match(r'^\s*([A-Za-z0-9\-_]+)\s+(.+)$', full)
+        if not mc or _flat(mc.group(1)) != flat:
+            continue
+        mi = re.search(r'data-src="([^"]+)"', body)
+        dur = re.search(r'duration-badge"[^>]*>([^<]+)<', body)
+        date = re.search(r'text-muted"[^>]*>([^<]+)<', body)
+        return {'source': 'javtrailers', 'code': mc.group(1).upper(),
+                'title': mc.group(2).strip(), 'plot': '', 'studio': '',
+                'genres': [], 'actors': [],
+                'runtime': _hms_to_min(dur.group(1) if dur else ''),
+                'date': (date.group(1).strip() if date else ''),
+                'cover': (mi.group(1) if mi else ''), 'samples': [], 'url': JT + href}
+    return None
+
+
+def _avsox_post(method, body):
+    """POST avsox（javu）内部 JSON 接口；返回 data 或 None。"""
+    h = dict(JS.HDRS)
+    h['Content-Type'] = 'application/json'
+    h['X-Requested-With'] = 'XMLHttpRequest'
+    try:
+        r = JS.new_session().post(AVSOX_API + method, data=json.dumps(body),
+                                  proxies=JS.PROXIES, timeout=30, headers=h)
+    except Exception:
+        return None
+    if r is None or r.status_code != 200:
+        return None
+    try:
+        j = r.json()
+    except Exception:
+        return None
+    return j.get('data') if j.get('code') == 200 else None
+
+
+def fetch_avsox(item):
+    """avsox（无码，现域名 avsox.click）：getMovies 按番号搜，getMovie 取详情。"""
+    if 'avsox' not in sites_enabled():
+        return None
+    code = (item.get('code') or item.get('sem_code') or '').strip()
+    if not code:
+        return None
+    rows = _avsox_post('getMovies', {'query': code}) or []
+    flat = _flat(code)
+    hit = None
+    for row in rows:
+        if _flat(row.get('movieFanHao')) == flat:
+            hit = row
+            break
+    if hit is None:
+        return None
+    mid = hit.get('movieId')
+    det = _avsox_post('getMovie', {'movieId': mid}) if mid else None
+    src = det or hit
+
+    def pick(*keys):
+        for k in keys:
+            if src.get(k):
+                return src[k]
+        return ''
+
+    # JAV 的原始标题是日文，优先保留（界面中文也保留日文原文）
+    order = (('title_en', 'title', 'title_ja') if out_lang() == 'en'
+             else ('title_ja', 'title', 'title_cn', 'title_tw', 'title_en'))
+
+    st = src.get('studio') or {}
+    genres = [g.get('genreName') for g in (src.get('genre') or [])
+              if g.get('genreName')] or [x.get('genreName') for x in (src.get('genre') or [])]
+    genres = [g for g in genres if g]
+    actors = [s.get('starName') for s in (src.get('star') or []) if s.get('starName')]
+    d = {'source': 'avsox', 'code': (src.get('movieFanHao') or code).upper(),
+         'title': pick(*order),
+         'plot': pick('description_cn', 'description_ja', 'description_en', 'description_tw'),
+         'studio': (st.get('studioName') or st.get('studioName_cn')
+                    or st.get('studioName_ja') or st.get('studioName_en') or ''),
+         'genres': genres[:12], 'actors': actors[:8],
+         'runtime': ('%s分鐘' % src['length']) if src.get('length') else '',
+         'date': src.get('releaseDate') or '',
+         'cover': src.get('posterLarge') or src.get('posterSmall') or '',
+         'samples': (src.get('sampleLarge') or src.get('sampleSmall') or [])[:6],
+         'url': '%s/cn/movies/%s' % (AVSOX, mid or '')}
+    return d if d.get('title') else None
+
+
+def _123av_parse(b, slug, source='123av', url=''):
+    """从 123av 详情页 HTML 抠字段（njav 已迁到 123av.com，共用这份解析）。"""
+    m = re.search(r'og:title"[^>]*content="([^"]+)"', b) or \
+        re.search(r'<title[^>]*>(.*?)</title>', b, re.S | re.I)
+    title = JS._clean(m.group(1)) if m else ''
+    title = re.sub(r'\s*[-—|]\s*123AV.*$', '', title).strip()
+    if len(title) < 2:
+        return None
+    m = re.search(r'(https://icdn\.123av\.me/img2/s\d+/[0-9a-f]+/%s/cover\.jpg[^"\'\s]*)'
+                  % re.escape(slug), b)
+    cover = m.group(1) if m else ''
+    txt = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', b))
+    rt = ''
+    m = re.search(r'(?:時長|时长|時間)\s*([0-9]{1,2}):([0-9]{2}):([0-9]{2})', txt)
+    if m:
+        rt = '%d分鐘' % (int(m.group(1)) * 60 + int(m.group(2)))
+    actors = []
+    m = re.search(r'(?:演員|演员)\s*(.{0,60}?)\s*(?:制作商|製作商)', txt)
+    if m:
+        actors = [x.strip() for x in re.split(r'[,、]', m.group(1)) if 1 < len(x.strip()) < 20]
+    studio = ''
+    m = re.search(r'(?:制作商|製作商)\s*(.{0,40}?)\s*(?:系列|類別|类别)', txt)
+    if m:
+        studio = m.group(1).strip()
+    genres = []
+    for g in re.findall(r'href="/cn/genres/[^"]*"[^>]*>\s*([^<]{1,24}?)\s*<', b):
+        g = JS._clean(g)
+        if g and g not in genres:
+            genres.append(g)
+    return {'source': source, 'code': slug.upper(), 'title': title, 'plot': '',
+            'studio': studio, 'genres': genres[:12], 'actors': actors[:6],
+            'runtime': rt, 'cover': cover, 'samples': [], 'url': url}
+
+
+def fetch_123av(item):
+    """123AV（无码）：详情页 HTML 里就有封面/时长/演员/制作商/类型。"""
+    if '123av' not in sites_enabled():
+        return None
+    raw = (item.get('code') or item.get('sem_code') or '').strip()
+    if not raw:
+        return None
+    slug = raw.lower()
+    u = 'https://123av.com/cn/v/%s' % slug
+    try:
+        r = JS.get(u, timeout=30)
+    except Exception:
+        return None
+    if r is None or r.status_code != 200:
+        return None
+    return _123av_parse(r.text or '', slug, '123av', u)
+
+
+def fetch_njav(item):
+    """NJAV（无码）：njav.tv 已整体迁到 123av.com，走同一套 123AV 详情解析。"""
+    if 'njav' not in sites_enabled():
+        return None
+    raw = (item.get('code') or item.get('sem_code') or '').strip()
+    if not raw:
+        return None
+    slug = raw.lower()
+    u = 'https://123av.com/cn/v/%s' % slug
+    try:
+        r = JS.get(u, timeout=30)
+    except Exception:
+        return None
+    if r is None or r.status_code != 200:
+        return None
+    return _123av_parse(r.text or '', slug, 'njav', u)
+
+
 def scrape_website(item):
     """按【站点设置】里勾选的顺序尝试；javbus / javdb 有专属解析。"""
     code = item['code']
@@ -643,6 +980,14 @@ def scrape_website(item):
     if 'javdb' in on:
         d = fetch_javdb(code)
         if d and d.get('code'):
+            return d
+    if 'netflav' in on:                    # 聚合站：有码/无码都可能收录
+        d = fetch_netflav(item)
+        if d and d.get('title'):
+            return d
+    if 'javtrailers' in on:                # 资料站：片名/封面/时长
+        d = fetch_javtrailers(item)
+        if d and d.get('title'):
             return d
     return None
 
@@ -771,10 +1116,8 @@ def uncensored_slugs(name, code=None):
     return [x for x in dict.fromkeys(out) if x]
 
 
-def scrape_uncensored(item):
-    """Fetch a title for an uncensored code from MissAV (ja, then zh)."""
-    if 'missav' not in sites_enabled():
-        return None
+def _missav_title(item):
+    """MissAV 单站尝试（ja 再 zh），失败返回 None。"""
     # 不再要求 is_uncensored：系列名不在识别表时也照试（MissAV 对 slug 很宽容）
     for slug in uncensored_slugs(item['name'], item.get('code')):
         for lang in ('ja', 'zh'):
@@ -831,6 +1174,24 @@ def scrape_uncensored(item):
             if len(title) >= 4:
                 return {'source': 'missav', 'title': title, 'url': url,
                         'plot': '', 'tags': [], 'actors': []}
+    return None
+
+
+def scrape_uncensored(item):
+    """无码线：MissAV 优先，其次 avsox，最后 njav（njav.tv 已迁到 123av.com）。"""
+    on = sites_enabled()
+    if 'missav' in on:
+        d = _missav_title(item)
+        if d:
+            return d
+    if 'avsox' in on:
+        d = fetch_avsox(item)
+        if d and d.get('title'):
+            return d
+    if 'njav' in on:
+        d = fetch_njav(item)
+        if d and d.get('title'):
+            return d
     return None
 
 
@@ -898,10 +1259,10 @@ AI_PROMPT = """你是影视资料整理助手。下面是一个成人影片的�
 
 {{"title":"干净的中文标题（保留关键卖点，去掉广告/网址/夸张符号，40字内）",
  "plot":"2-3句中文简介，客观描述内容特征",
- "tags":["5-8个中文标签，如 素人/自拍/FC2/制服/户外/无码/探花 等"],
+ "tags":["{TAGS}（如 素人/自拍/FC2/制服/户外 等）"],
  "actors":[]}}
 
-语言规则：一律输出**简体中文**；若原文是**日文则保留日文原文**（不要翻译）；**繁体中文转成简体**；其它语言**翻译成简体中文**。
+{LANG}
 
 文件夹名: {name}
 文件名: {vfile}
@@ -961,8 +1322,8 @@ VIDEO_PROMPT = """下面是一部影片的若干截图（按时间顺序）。�
  "plot":"3-5句中文简介。要写出画面里**真实可见**的动人细节：人物神态与动作、衣着与身材、
          光线/色调与氛围、场景与陈设、镜头角度与节奏；读起来有画面感、有代入感。
          但**只写你从截图里真能看出来的**，不要编造看不到的情节、人名或对白",
- "tags":["6-10个中文标签"]}
-语言规则：一律输出简体中文。
+ "tags":["{TAGS}"]}
+{LANG}
 """
 
 
@@ -981,7 +1342,7 @@ def ai_video_scan(item, model=None, n=6):
                           json={'model': model, 'stream': False,
                                 'keep_alive': AI_KEEP_ALIVE, 'think': False,
                                 'options': {'temperature': 0.75, 'num_predict': 900},
-                                'messages': [{'role': 'user', 'content': VIDEO_PROMPT,
+                                'messages': [{'role': 'user', 'content': VIDEO_PROMPT.replace('{LANG}', lang_rule()).replace('{TAGS}', lang_tags()),
                                               'images': imgs}]})
         if r.status_code != 200:
             return None
@@ -1043,9 +1404,9 @@ AI_BATCH_PROMPT = """你是影片资料助手。下面是 {N} 个影片文件夹
 只输出一个 JSON 数组，长度必须正好 {N}，顺序与输入一致，不要任何其它文字：
 [{"title":"干净的中文标题（40字内，去掉广告/网址/夸张符号）",
   "plot":"2-3句中文简介，客观描述内容特征",
-  "tags":["5-8个中文标签"]}]
+  "tags":["{TAGS}"]}]
 
-语言规则：一律输出简体中文；原文是日文则保留日文原文（不要翻译）；繁体转简体；其它语言翻成简体中文。
+{LANG}
 
 {ITEMS}
 """
@@ -1103,7 +1464,8 @@ def semantic_batch(items, model=None):
     if not items:
         return []
     prompt = (SEM_BATCH_PROMPT.replace('{N}', str(len(items)))
-              .replace('{ITEMS}', _num_lines(items, with_video=True)))
+              .replace('{ITEMS}', _num_lines(items, with_video=True))
+              .replace('{LANG}', lang_rule()).replace('{TAGS}', lang_tags()))
     try:
         arr = extract_json_array(_chat(prompt, model, 1500))
     except Exception as e:
@@ -1129,7 +1491,8 @@ def ai_batch(items, model=None):
     if not items:
         return []
     prompt = (AI_BATCH_PROMPT.replace('{N}', str(len(items)))
-              .replace('{ITEMS}', _num_lines(items, with_video=True)))
+              .replace('{ITEMS}', _num_lines(items, with_video=True))
+              .replace('{LANG}', lang_rule()).replace('{TAGS}', lang_tags()))
     try:
         arr = extract_json_array(_chat(prompt, model, 4000, 0.3))
     except Exception as e:
@@ -1142,7 +1505,7 @@ def ai_batch(items, model=None):
 
 AI_TAGS_PROMPT = (
     '你是影片元数据整理助手。下面给出若干条影片的【番号、标题、简介】。\n'
-    '请**只根据简介内容**，为每一条给出 5-10 个中文标签（题材/场景/人物特征）。\n'
+    '请**只根据简介内容**，为每一条给出 {TAGS}（题材/场景/人物特征）。\n'
     '【不要看文件名】，不要编造简介里没有的内容，不要改标题。\n'
     '严格只输出一个 JSON 数组，长度必须是 {N}，每项形如 {{"tags":["标签1","标签2"]}}，'
     '不要任何解释。\n\n{ITEMS}'
@@ -1165,7 +1528,8 @@ def ai_tags_batch(items, model=None):
     if not items:
         return []
     prompt = (AI_TAGS_PROMPT.replace('{N}', str(len(items)))
-              .replace('{ITEMS}', _fill_lines(items)))
+              .replace('{ITEMS}', _fill_lines(items))
+              .replace('{LANG}', lang_rule()).replace('{TAGS}', lang_tags()))
     try:
         arr = extract_json_array(_chat(prompt, model, 2500, 0.3))
     except Exception as e:
@@ -1203,7 +1567,7 @@ def scrape_ai(item, model=None):
     model = model or ai_model()
     name = item['name']
     vfile = biggest_video(item['path']) or ''
-    prompt = AI_PROMPT.format(name=name, vfile=vfile)
+    prompt = AI_PROMPT.format(name=name, vfile=vfile, LANG=lang_rule(), TAGS=lang_tags())
     try:
         # think=False is REQUIRED: qwen38-27b-uncen is a thinking model, and an
         # un-suppressed reasoning block eats the whole num_predict budget -> the
