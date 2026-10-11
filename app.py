@@ -1556,7 +1556,7 @@ function applyLang(){
   });
   document.querySelectorAll('input[placeholder]').forEach(function(el){
     const s=(el.placeholder||'').trim(); if(I18N[s])el.placeholder=I18N[s];});
-  const lb=document.getElementById('b-lang'); if(lb)lb.textContent='中文';
+  const lb=document.getElementById('b-lang'); if(lb&&lb.textContent!=='中文')lb.textContent='中文';
 }
 // 统计卡 / 表格 / 日志是异步渲染的：渲染完再套一次
 let _i18t=null;
@@ -1564,8 +1564,6 @@ try{new MutationObserver(function(){
   if(LANG!=='en')return; clearTimeout(_i18t);
   _i18t=setTimeout(applyLang,150);
 }).observe(document.body,{childList:true,subtree:true});}catch(e){}
-if(b)b.textContent='中文';
-}
 (async()=>{try{const r=await(await fetch('/api/lang')).json();LANG=r.lang||'zh';applyLang();}catch(e){}})();
 $('#b-lang').onclick=async()=>{const n=(LANG==='en')?'zh':'en';await fetch('/api/lang?lang='+n,{method:'POST'});location.reload();};
 $('#b-sites').onclick=async()=>{await stLoad();$('#st-info').textContent='';$('#modal4').classList.add('on');};
