@@ -20,4 +20,5 @@ venv/
 
 # ---- 作者本地工作笔记（个人信息，绝不入库）----
 memory/
+trash/
 _commitmsg.txt
