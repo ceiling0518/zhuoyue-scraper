@@ -1,0 +1,27 @@
+services:
+  zhuoyue-scraper:
+    image: ghcr.io/ceiling0518/zhuoyue-scraper:latest
+    # 也可以改用 Docker Hub：
+    # image: ceiling0518/zhuoyue-scraper:latest
+    container_name: zhuoyue-scraper
+    ports:
+      - "8811:8800"                 # 左侧换成宿主上没被占用的端口
+    environment:
+      MS_ROOT: /media                # 媒体库（容器内路径）
+      MS_DB: /data                   # 数据库 / 缓存 / 缩略图
+      # 容器怎么访问宿主上的 Ollama：
+      #   Docker Desktop / Linux 用 host.docker.internal（下面 extra_hosts 已配）
+      #   若 Ollama 在另一台机器，直接写 http://192.168.x.x:11434
+      MS_OLLAMA: http://host.docker.internal:11434
+      # 以哪个身份写文件（建议填你 NAS 上媒体目录的属主 uid:gid；0 = root）
+      PUID: "1000"
+      PGID: "1000"
+      # 可选：javdb 换镜像 / 固定界面语言
+      # MS_JAVDB: https://javdb.com
+      # MS_LANG: zh
+    volumes:
+      - /volume1/movies:/media       # ← 改成你的媒体库路径（要可写：会写 .nfo 与封面）
+      - ./data:/data                 # 数据持久化
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

@@ -81,6 +81,73 @@
 
 ---
 
+## 🐳 Docker (recommended for NAS / no-local-install)
+
+No Python, no ffmpeg, no config — one command:
+
+```bash
+docker run -d --name zhuoyue-scraper \
+  -p 8811:8800 \
+  -e MS_ROOT=/media \
+  -e MS_DB=/data \
+  -e MS_OLLAMA=http://host.docker.internal:11434 \
+  -e PUID=1000 -e PGID=1000 \
+  -v /your/media:/media \
+  -v ./zhuoyue-data:/data \
+  --add-host host.docker.internal:host-gateway \
+  --restart unless-stopped \
+  ghcr.io/ceiling0518/zhuoyue-scraper:latest
+```
+
+Then open `http://<host-ip>:8811`. Or use the bundled `docker-compose.yml` (recommended):
+ edit the media path, then `docker compose up -d`.
+
+Available for **linux/amd64 and linux/arm64** (Synology/QNAP ARM models included).
+
+### Environment variables
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MS_ROOT` | `/media` | Media library root (path inside the container) |
+| `MS_DB` | `/data` | DB / cache / thumbnails (**must be persisted**) |
+| `MS_OLLAMA` | `http://host.docker.internal:11434` | Ollama endpoint (can point to another machine) |
+| `MS_HOST` / `MS_PORT` | `0.0.0.0` / `8800` | Listen address and port inside the container |
+| `PUID` / `PGID` | `0` | Which uid writes files; set this to your media owner or the .nfo files end up root-owned |
+| `MS_JAVDB` | empty | javdb mirror domain (when your region is blocked) |
+
+### ❗ Works without Ollama
+
+The **main pipeline never needs Ollama**: scan → code detection → multi-site scraping →
+`.nfo` + covers/thumbnails → queue & logs.
+
+| Capability | no Ollama | with Ollama |
+|---|---|---|
+| Scan / code detection / rebuild | ✅ | ✅ |
+| Site scraping (JavBus/MissAV/avsox/123AV/NJAV/Netflav/JAVTrailers/FC2) | ✅ | ✅ |
+| `.nfo` / covers / thumbnails / series merge | ✅ | ✅ |
+| Semantic classification (coded/uncensored/none) | ❌ | ✅ |
+| AI watching (frame extraction for unnamed files) | ❌ | ✅ |
+| AI tag fill | ❌ | ✅ |
+| AI fallback when all sites miss | ❌ | ✅ |
+
+> That is why an **ARM NAS (which usually has no Ollama) is still worth installing**:
+> the pure-scraping pipeline is already complete metadata for Jellyfin/Emby.
+
+### Behaviour differences inside a container (auto-degraded)
+
+- **Open folder** / **open full image** are **hidden automatically** (no desktop on the server)
+- **Delete** = **permanent** (no recycle bin on Linux/containers); the red warning stays
+- Port / LAN hot-switch still works, but in a container you normally just use `-p`
+
+### Build it yourself
+
+```bash
+docker build -t zhuoyue-scraper:latest .
+docker build --build-arg PIP_INDEX_URL=https://your.pip.mirror/simple -t zhuoyue-scraper:latest .
+```
+
+---
+
 ## Requirements
 
 | Component | Notes |

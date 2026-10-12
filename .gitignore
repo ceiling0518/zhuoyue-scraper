@@ -22,3 +22,7 @@ venv/
 memory/
 trash/
 _commitmsg.txt
+
+# ---- Docker 构建 / 测试临时产物 ----
+_dtest/
+build.log

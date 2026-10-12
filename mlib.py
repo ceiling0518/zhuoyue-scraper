@@ -34,21 +34,25 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-DB_PATH = os.path.join(HERE, 'mlib.db')
-CACHE_DIR = os.path.join(HERE, 'cache')
-NFO_DIR = os.path.join(HERE, 'nfo_out')
-COOKIE_FILE = os.path.join(HERE, 'javdb_cookie.txt')
-OLLAMA = 'http://127.0.0.1:11434'
+IS_WIN = (os.name == 'nt')        # 平台判定：容器/Linux 下自动降级
+# 运行数据目录：MS_DB（容器里挂 /data）；不设则跟随脚本目录（本地行为不变）
+DB_DIR = os.environ.get('MS_DB') or HERE
+DB_PATH = os.path.join(DB_DIR, 'mlib.db')
+CACHE_DIR = os.path.join(DB_DIR, 'cache')
+NFO_DIR = os.path.join(DB_DIR, 'nfo_out')
+COOKIE_FILE = os.path.join(DB_DIR, 'javdb_cookie.txt')
+# Ollama：容器里指向宿主 host.docker.internal
+OLLAMA = (os.environ.get('MS_OLLAMA') or 'http://127.0.0.1:11434').rstrip('/')
 FFMPEG = os.environ.get('FFMPEG', 'ffmpeg')
 FFPROBE = os.environ.get('FFPROBE', 'ffprobe')
 AI_MODEL = 'qwen38-27b-uncen'
 # User chose 30m: keep the uncensored 27B resident between items so we don't pay
 # ~40s reload per call. Uses `unload_ai()` to release the card at the end of a run.
 AI_KEEP_ALIVE = '30m'
-ROOT_DEFAULT = r'\\CeilingNAS\usbshare1\movie'
+ROOT_DEFAULT = os.environ.get('MS_ROOT') or r'\\CeilingNAS\usbshare1\movie'
 VIDEO_EXT = COVER.VIDEO_EXT
 
-for d in (CACHE_DIR, NFO_DIR):
+for d in (DB_DIR, CACHE_DIR, NFO_DIR):
     os.makedirs(d, exist_ok=True)
 
 

@@ -1,0 +1,28 @@
+# ---- 运行数据（不进镜像）----
+mlib.db
+mlib.db-wal
+mlib.db-shm
+cache/
+thumbs/
+nfo_out/
+models/
+trash/
+memory/
+javdb_cookie.txt
+*.log
+*.bak
+*.bak2
+
+# ---- 作者临时文件 ----
+_*
+app.out.log
+app.err.log
+
+# ---- 仓库附件（镜像里用不到）----
+docs/
+.git/
+.gitignore
+README*
+番号参考表.md
+有误处理提示词.md
+docker-compose.yml

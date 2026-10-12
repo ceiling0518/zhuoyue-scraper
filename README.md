@@ -79,6 +79,78 @@
 
 ---
 
+## 🐳 Docker 部署（推荐：NAS / 不想装环境）
+
+一条命令起来，**不用装 Python、不用配 ffmpeg**：
+
+```bash
+docker run -d --name zhuoyue-scraper \
+  -p 8811:8800 \
+  -e MS_ROOT=/media \
+  -e MS_DB=/data \
+  -e MS_OLLAMA=http://host.docker.internal:11434 \
+  -e PUID=1000 -e PGID=1000 \
+  -v /你的媒体库:/media \
+  -v ./zhuoyue-data:/data \
+  --add-host host.docker.internal:host-gateway \
+  --restart unless-stopped \
+  ghcr.io/ceiling0518/zhuoyue-scraper:latest
+```
+
+打开 `http://<主机IP>:8811`。
+
+或用 **compose**（推荐）：把 `docker-compose.yml` 里的媒体库路径改成你的，然后：
+
+```bash
+docker compose up -d
+```
+
+支持 **linux/amd64 与 linux/arm64**（群晖/威联通 ARM 机型可直接跑）。
+
+### 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `MS_ROOT` | `/media` | 媒体库根目录（容器内路径） |
+| `MS_DB` | `/data` | 数据库/缓存/缩略图目录（**必须持久化**） |
+| `MS_OLLAMA` | `http://host.docker.internal:11434` | Ollama 地址（可指向局域网另一台机器） |
+| `MS_HOST` / `MS_PORT` | `0.0.0.0` / `8800` | 监听地址与端口（容器内） |
+| `PUID` / `PGID` | `0` | 以哪个身份写文件；**建议填媒体目录的属主**，否则写出的 .nfo 会属 root |
+| `MS_JAVDB` | 空 | javdb 镜像域名（被地区封锁时用） |
+
+### ❗ 没有 Ollama 也能用
+
+**主链完全不依赖 Ollama**：扫描目录 → 识别番号 → 多站点刮削 → 写 `.nfo` + 封面缩略图 → 队列与日志。
+
+| 功能 | 无 Ollama | 有 Ollama |
+|---|---|---|
+| 扫描 / 识别番号 / 建库 | ✅ | ✅ |
+| 网站刮削（JavBus/MissAV/avsox/123AV/NJAV/Netflav/JAVTrailers/FC2） | ✅ | ✅ |
+| 写 `.nfo` / 封面 / 缩略图 / 剧集合并 | ✅ | ✅ |
+| 语义分类（有码/无码/无） | ❌ | ✅ |
+| AI 看片（文件名无信息时抽帧识片） | ❌ | ✅ |
+| AI 标签补全 | ❌ | ✅ |
+| 网站都查不到时的 AI 兜底 | ❌ | ✅ |
+
+> 所以 **ARM NAS 用户（一般没有 Ollama）同样值得装** —— 拿到的是“纯刮削”这条主链，
+> 对 Jellyfin/Emby 来说这已经是完整可用的元数据。
+
+### 容器里的行为差异（自动降级）
+
+- 「**打开目录**」「**本机打开大图**」在容器内**自动隐藏**（服务端没有桌面）
+- 「**删除**」= **永久删除**（容器/Linux 无回收站），界面保留红色警告
+- 端口/局域网热切换照常用，但容器内通常直接用 `-p` 映射
+
+### 自己构建
+
+```bash
+docker build -t zhuoyue-scraper:latest .
+# 国内加速：
+docker build --build-arg PIP_INDEX_URL=https://你的pip镜像/simple -t zhuoyue-scraper:latest .
+```
+
+---
+
 ## 环境要求
 
 | 组件 | 说明 |

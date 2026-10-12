@@ -9,7 +9,7 @@ No OpenClaw / Control UI dependency.  Start with run.cmd, then open the printed 
 来源 source  : code(javbus/javdb) / Uncen(missav) / AI(模型)
 """
 import threading
-import io, json, os, subprocess, sys, threading, time, traceback
+import io, json, os, shutil, subprocess, sys, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -561,7 +561,7 @@ def _ollama():
 def stats():
     dbc = mlib.db()
     out = {'total': dbc.execute('SELECT COUNT(*) c FROM items WHERE present=1').fetchone()['c'],
-           'by_quality': {}, 'by_source': {}, 'sem': {}, 'ollama': _ollama(),
+           'by_quality': {}, 'by_source': {}, 'sem': {}, 'ollama': _ollama(), 'os': ('win' if mlib.IS_WIN else 'linux'),
            'archive': dbc.execute('SELECT COUNT(*) c FROM archive').fetchone()['c'],
            'root': mlib.scan_root(), 'model': mlib.ai_model(), 'db': mlib.DB_PATH,
            'cookie': bool(mlib.javdb_cookie()),
@@ -657,6 +657,8 @@ def open_image(iid):
     p = big_image(iid)
     if not p:
         return False
+    if not mlib.IS_WIN:
+        return False            # 容器/Linux 无本机看图器
     try:
         os.startfile(p)
         return True
@@ -952,6 +954,8 @@ def open_item(iid):
     if not r:
         return False
     d = os.path.normpath(r['path'])
+    if not mlib.IS_WIN:
+        return False            # 容器/Linux 无资源管理器
     try:
         subprocess.Popen(['explorer.exe', d])
     except Exception:
@@ -988,6 +992,16 @@ def delete_item(iid):
         # 目录已经不在了（外部删除/改名）：仍然把记录归档，别让用户卡着删不掉
         _archive_row(dbc, iid, 'deleted(missing-folder)')
         return True, '目录已不存在 —— 已从库里移除'
+    if not mlib.IS_WIN:
+        # 容器/Linux：没有回收站，直接永久删除（界面上已有红色警告）
+        try:
+            shutil.rmtree(p)
+        except Exception as e:
+            return False, 'rm err %s' % str(e)[:120]
+        if os.path.isdir(p):
+            return False, '删除后目录仍存在'
+        _archive_row(dbc, iid, 'deleted(permanent/linux)')
+        return True, '已永久删除（容器内无回收站）'
     ps = ("Add-Type -AssemblyName Microsoft.VisualBasic; $ErrorActionPreference='Stop'; "
           "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory('%s','OnlyErrorDialogs','SendToRecycleBin')"
           % p.replace("'", "''"))
@@ -1034,7 +1048,7 @@ def doc_page(name):
 
 # ---------------------------------------------------------------- http
 class H(BaseHTTPRequestHandler):
-    server_version = 'ZhuoYue-Scraper/1.11'
+    server_version = 'ZhuoYue-Scraper/1.12'
 
     def _send(self, code, body, ctype='application/json; charset=utf-8'):
         b = body.encode('utf-8') if isinstance(body, str) else body
@@ -1361,8 +1375,11 @@ const $=s=>document.querySelector(s);let off=0,lim=50,THUMBV=0;
 const esc=t=>String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function post(p){const r=await fetch(p,{method:'POST'});const j=await r.json();
   if(j.busy)alert(T('已有任务在跑'));return j;}
+let PLAT='win';
 function tagsOf(s){try{const a=JSON.parse(s||'[]');return (a||[]).join(' / ');}catch(e){return s||'';}}
 async function cfg(){const s=await(await fetch('/api/stats')).json();
+  PLAT=s.os||'win';                     // 容器/Linux：隐藏 Windows 专属按钮
+  const _ao=document.getElementById('a-open'); if(_ao)_ao.style.display=(PLAT==='win'?'':'none');
   if(!$('#cfg-root').value)$('#cfg-root').value=s.root;
   const sel=$('#cfg-model');const ms=(s.ollama&&s.ollama.models)||[];
   if(sel.options.length!==ms.length+1){sel.innerHTML='<option value="'+esc(s.model)+'">'+esc(s.model)+'</option>'
@@ -1408,6 +1425,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     +'</td>'
     +'<td><button class="selbtn" data-id="'+r.id+'">选择</button></td></tr>';}).join('');
   $('#count').textContent='共 '+d.total+' 条';
+  stripWinOnly();
   document.querySelectorAll('.selbtn').forEach(b=>{if(SEL.has(b.dataset.id))selSet(b,true);});
   const pages=Math.max(1,Math.ceil(d.total/lim)),cur=Math.floor(off/lim)+1;
   const pj=$('#pjump');pj.innerHTML='';
@@ -1640,6 +1658,11 @@ $('#f-q').onkeydown=e=>{if(e.key==='Enter'){off=0;list();}};
 const rawList=v=>{if(v==null)return '';let a=v;try{a=JSON.parse(v)}catch(e){}
   if(Array.isArray(a))return a.join(',');return String(v);};
 setInterval(()=>{job();cfg();},2000);
+function stripWinOnly(){                 // 非 Windows：缩略图不再包「本机打开大图」链接
+  if(PLAT==='win')return;
+  document.querySelectorAll('a.imgopen').forEach(function(a){
+    const im=a.querySelector('img'); if(im){a.replaceWith(im);} });
+}
 function fixSticky(){
   const h=document.querySelector('header'),s=document.getElementById('stickytop');
   if(h&&s)s.style.top=h.offsetHeight+'px';}
