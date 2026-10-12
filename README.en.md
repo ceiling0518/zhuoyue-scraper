@@ -13,13 +13,15 @@
 
 ![Main UI (top control bar / stat cards / quality & semantic split / port & LAN settings)](docs/ui-01-main.png)
 
+![Quality / source statistics (real library, 1469 items)](docs/ui-02-stats.png)
+
 ![Job log and filters](docs/ui-03-log.png)
 
 <sub>On the Jellyfin side, enable "save image paths in the NFO file":</sub>
 
 ![Jellyfin NFO settings](docs/jellyfin-nfo.png)
 
-> Table contents in the screenshots are **pixelated** on purpose.
+> All screenshots are **the real UI** (running against a 1,469-item library; nothing masked).
 
 ---
 
