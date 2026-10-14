@@ -15,7 +15,9 @@
   * 重名 / 撞名 -> 拒绝执行，返回冲突清单。
 
 确认门（UI 弹框用）
-  warn = (子目录层数 >= WARN_DEPTH) 或 (任一改后文件名长度 > WARN_NAME_LEN)
+  warn = (子目录层数 >= WARN_DEPTH) 或 (加的前缀长度 > WARN_PREFIX_LEN)
+  前缀 = 加在原名之前的那一段（`P_` / `V_` / `1_你好123_` / `散图_a_`），
+  只看前缀而不看整个文件名，避免简单桶和长原文件名被误报。
 """
 
 import json
@@ -50,8 +52,9 @@ JUNK_EXT = {'.db', '.txt', '.ini', '.url', '.lnk', '.log', '.sfv', '.nfo.bak'}
 TYPE_BUCKETS = {'p', 'v', 't', '图', '图片', '照片', '视图', '视频', '自拍图',
                 'pics', 'vids', 'photos', 'videos', 'img', 'imgs'}
 
-WARN_DEPTH = int(os.environ.get('MS_FLATTEN_WARN_DEPTH', '2'))      # 子目录层数 >= 此值 -> 建议人工
-WARN_NAME_LEN = int(os.environ.get('MS_FLATTEN_WARN_LEN', '10'))    # 改后文件名 > 此长度 -> 建议人工
+WARN_DEPTH = int(os.environ.get('MS_FLATTEN_WARN_DEPTH', '2'))          # 子目录层数 >= 此值 -> 建议人工
+WARN_PREFIX_LEN = int(os.environ.get('MS_FLATTEN_WARN_PREFIX')
+                      or os.environ.get('MS_FLATTEN_WARN_LEN') or '20')   # 加的前缀 > 此长度 -> 建议人工
 
 _SEQ = re.compile(r'^\s*(\d+)\s*[\.、,，\-_:：\s]*(.*)$')
 
@@ -123,10 +126,11 @@ def build_plan(folder):
             out['unknown'].append(rel)
             continue
         pre = _head(top, mode, kind) + ('_'.join(deep) + '_' if deep else '')
-        out['items'].append({'src': rel, 'dst': pre + base, 'kind': kind})
+        out['items'].append({'src': rel, 'dst': pre + base, 'kind': kind, 'pre': pre})
 
     out['count'] = len(out['items'])
     out['max_name_len'] = max([len(os.path.basename(i['dst'])) for i in out['items']] or [0])
+    out['max_pre_len'] = max([len(i.get('pre') or '') for i in out['items']] or [0])
 
     seen = {}
     for i in out['items']:
@@ -148,13 +152,13 @@ def build_plan(folder):
                     out['junk'] += 1
 
     # 4) 确认门
-    names = [os.path.basename(i['dst']) for i in out['items']]
-    long_ones = sorted({n for n in names if len(n) > WARN_NAME_LEN})
+    pres = sorted({(i.get('pre') or '') for i in out['items']}, key=len, reverse=True)
+    long_pre = [p for p in pres if len(p) > WARN_PREFIX_LEN]
     if out['depth'] >= WARN_DEPTH:
         out['reasons'].append('子目录层数 %d >= %d' % (out['depth'], WARN_DEPTH))
-    if long_ones:
-        out['reasons'].append('有 %d 个改后文件名超过 %d 字符（最长 %d：%s）'
-                              % (len(long_ones), WARN_NAME_LEN, max(len(n) for n in long_ones), long_ones[0]))
+    if long_pre:
+        out['reasons'].append('有 %d 个前缀超过 %d 字符（最长 %d：%s）'
+                              % (len(long_pre), WARN_PREFIX_LEN, len(long_pre[0]), long_pre[0][:40]))
     out['warn'] = bool(out['reasons'])
     out['ok'] = (not out['dups']) and (not out['clash'])
     return out

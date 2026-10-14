@@ -564,7 +564,7 @@ def _flatten_plan(ids=None, limit=None):
         out.append(p)
     return {'items': out, 'total': len(out), 'files': sum(x.get('count', 0) for x in out),
             'warn': warn_n, 'bad': [x['id'] for x in out if not x.get('ok')],
-            'warn_depth': flatten.WARN_DEPTH, 'warn_len': flatten.WARN_NAME_LEN}
+            'warn_depth': flatten.WARN_DEPTH, 'warn_prefix': flatten.WARN_PREFIX_LEN}
 
 
 def _job_flatten(ids=None):
@@ -1588,16 +1588,16 @@ let FL_IDS=[];
 function flRow(x){
   const st=(x.ok?'':'<span style="color:var(--bad)">冲突</span> ')+(x.warn?'<span style="color:var(--warn,#e0a458)">需确认</span>':'');
   return '<tr><td>'+x.id+'</td><td>'+esc(String(x.name||'').slice(0,42))+'</td><td>'+(x.mode==='type'?'P/V 桶':'具名')+'</td><td>'+x.count
-    +'</td><td>'+x.depth+'</td><td>'+x.max_name_len+'</td><td>'+st+'</td></tr>';}
+    +'</td><td>'+x.depth+'</td><td>'+x.max_pre_len+'</td><td>'+st+'</td></tr>';}
 $('#a-flatten').onclick=async()=>{
   const ids=[...SEL].join(',');
   const r=await(await fetch('/api/flatten/preview'+(ids?'?ids='+ids:''),{method:'POST'})).json();
   if(!r.total)return alert(T('没有需要整理的嵌套目录（kind=nested 为空）'));
   const warn=(r.items||[]).filter(x=>x.warn), bad=r.bad||[];
   let h='<p>将整理 <b>'+r.total+'</b> 个目录、共改名 <b>'+r.files+'</b> 个文件。子目录会移入 trash（可用【回滚】还原）；随子目录一起移走的是 Thumbs.db / 描述.txt 之类的非媒体文件，未识别类型的文件不会被动、其子目录也不清理。</p>';
-  if(warn.length)h+='<p style="color:var(--bad)"><b>⚠️ 有 '+warn.length+' 个目录建议先手动整理：</b>子目录层数 ≥ '+r.warn_depth+'，或改后文件名超过 '+r.warn_len+' 字符。</p>';
+  if(warn.length)h+='<p style="color:var(--bad)"><b>⚠️ 有 '+warn.length+' 个目录建议先手动整理：</b>子目录层数 ≥ '+r.warn_depth+'，或加的前缀超过 '+r.warn_prefix+' 字符。</p>';
   if(bad.length)h+='<p style="color:var(--bad)">⚠️ '+bad.length+' 个目录有重名/撞名，将整条跳过：id '+bad.join(', ')+'</p>';
-  h+='<table><thead><tr><th>id</th><th>目录</th><th>模式</th><th>改名</th><th>层数</th><th>最长名</th><th>提示</th></tr></thead><tbody>'
+  h+='<table><thead><tr><th>id</th><th>目录</th><th>模式</th><th>改名</th><th>层数</th><th>最长前缀</th><th>提示</th></tr></thead><tbody>'
     +(r.items||[]).map(flRow).join('')+'</tbody></table>';
   const first=(r.items||[]).find(x=>x.ok&&x.items&&x.items.length);
   if(first)h+='<p class="muted">示例（id '+first.id+'）：</p><pre style="white-space:pre-wrap;max-height:190px;overflow:auto">'

@@ -39,15 +39,17 @@ mk('E_named/1.你好123/1.jpg')
 mk('E_named/2，飒飒/1.jpg'); mk('E_named/2，飒飒/1.mp4')
 mk('G_dup/散图/a/1.jpg'); mk('G_dup/散图_a/1.jpg')
 mk('H_junk/P/1.jpg'); mk('H_junk/P/Thumbs.db'); mk('H_junk/P/描述.txt')
+mk('I_longpre/这是一个非常长的子目录名字用于触发前缀警告/1.jpg')          # 前缀>20 -> warn
 
-EXP = {                      # 期望：mode / 改名数 / warn（depth>=2 或 改后名>10 字符）
+EXP = {                      # 期望：mode / 改名数 / warn（depth>=2 或 前缀>20 字符）
     'A_type':    ('type',  5, False),
     'B_deep':    ('named', 2, True),
-    'C_long':    ('type',  1, True),
+    'C_long':    ('type',  1, False),
     'D_unknown': ('type',  2, False),
-    'E_named':   ('named', 3, True),
+    'E_named':   ('named', 3, False),
     'G_dup':     ('named', 2, True),
     'H_junk':    ('type',  1, False),
+    'I_longpre': ('named', 1, True),
 }
 fails, plans = [], {}
 for name, (mode, cnt, warn) in EXP.items():
@@ -55,8 +57,8 @@ for name, (mode, cnt, warn) in EXP.items():
     plans[name] = p
     if (p['mode'], p['count'], p['warn']) != (mode, cnt, warn):
         fails.append('%s 期望=%s 实际=(%s,%s,%s)' % (name, (mode, cnt, warn), p['mode'], p['count'], p['warn']))
-    print('  %-10s mode=%-6s 改名%2d depth=%d 最长名=%2d warn=%-5s ok=%s'
-          % (name, p['mode'], p['count'], p['depth'], p['max_name_len'], p['warn'], p['ok']))
+    print('  %-10s mode=%-6s 改名%2d depth=%d 最长前缀=%2d warn=%-5s ok=%s'
+          % (name, p['mode'], p['count'], p['depth'], p['max_pre_len'], p['warn'], p['ok']))
 
 # 约定里的例子必须一字不差
 got = {i['src']: i['dst'] for i in plans['E_named']['items']}
