@@ -88,6 +88,35 @@ if rc == 0:
     if pw2['bad']:
         fails.append('健康对照被误报')
 
+    print("\n  [e] 端到端：插帧修复 -> 校验 -> 回滚")
+    dur0 = float(RP.probe(src).get('duration') or 0)
+    errs0 = RP.probe_windows(src, n=4, sec=5)
+    r = RP.interp_gap(src, log=lambda s: print("      " + s))
+    print("      interp_gap -> ok=%s %s" % (r.get('ok'), (r.get('error') or '')[:90]))
+    if not r.get('ok'):
+        fails.append('插帧修复失败: %s' % r.get('error'))
+    else:
+        p2 = RP.probe(src)
+        d2 = float(p2.get('duration') or 0)
+        print("      修复后: cls=%s  dur=%.2fs（原 %.2fs）" % (p2['cls'], d2, dur0))
+        if p2['cls'] != 'ok':
+            fails.append('修复后不可播')
+        if dur0 and abs(d2 - dur0) > max(1.0, dur0 * 0.01):
+            fails.append('修复后时长偏差过大 %.2f vs %.2f' % (d2, dur0))
+        errs1 = RP.probe_windows(src, n=4, sec=5)
+        print("      解码错误窗口：修复前 %d -> 修复后 %d"
+              % (len(errs0['bad']), len(errs1['bad'])))
+        if len(errs0['bad']) and len(errs1['bad']) >= len(errs0['bad']):
+            fails.append('修复后解码错误没减少')
+        u = RP.undo_restore(r['path'], r['orig_backup'])
+        g_after = RP.find_gaps(src)
+        print("      回滚 -> ok=%s；回滚后仍能检出洞=%s（%d 处）"
+              % (u.get('ok'), bool(g_after), len(g_after)))
+        if not u.get('ok'):
+            fails.append('回滚失败')
+        if not g_after:
+            fails.append('回滚后应重新检出洞（说明回滚没生效）')
+
 shutil.rmtree(T, ignore_errors=True)
 print("\n  >>> %s" % ("全部通过 ✅" if not fails else "未通过: %s" % fails))
 sys.exit(1 if fails else 0)

@@ -634,6 +634,171 @@ def tolerant_reencode(path, out_dir=None, log=None, tick=None):
             'secs': round(time.time() - t0, 1)}
 
 
+# ----------------------------------------------------------------- ② 执行：小洞插帧（原地替换）
+def _grab_png(src, t, out):
+    """取 t 秒处一帧存成 png。
+
+    注意：损坏流上 ffmpeg 常常返回非 0（实测 rc=69）**但仍然写出可用帧**，
+    所以判据是“png 写出来了且体积合理”，不是 rc。
+    """
+    cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-err_detect', 'ignore_err',
+           '-ss', '%.3f' % max(0.0, t), '-i', src, '-frames:v', '1', '-y', out]
+    _run(cmd, 240)
+    return os.path.isfile(out) and os.path.getsize(out) > 1000
+
+
+def undo_restore(path, backup):
+    """把 .orig 备份还原回原路径（② 与 ③ 共用）。"""
+    try:
+        if not backup or not os.path.isfile(backup):
+            return {'ok': False, 'error': '备份不存在'}
+        shutil.copy2(backup, path)
+        return {'ok': True, 'path': path, 'from': backup}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)[:120]}
+
+
+def interp_gap(path, gaps=None, log=None, tick=None, mi_mode='mci', verify=True, dry=False):
+    """② 小洞插帧：用洞两侧的帧插出过渡帧，重编码为**时间轴不变**的新文件，
+    校验通过后**原地替换**原文件（原文件先改名为 .orig 作为回滚点）。
+
+    代价：minterpolate 实测 ~0.034× 实时（720p），所以 5 秒的洞约 2.5 分钟。
+    """
+    say = log or (lambda *a: None)
+    t_start = time.time()
+    try:
+        gs = gaps if gaps is not None else find_gaps(path)
+    except Exception:
+        gs = []
+    gs = sorted([g for g in gs if g['dur'] <= GAP_SEC], key=lambda g: g['t1'])
+    if not gs:
+        return {'ok': False, 'error': '没有 <= %.0fs 的小洞（大洞应走重编码）' % GAP_SEC}
+    W, H, fps = _ffprobe_wh(path)
+    if not W or not H:
+        return {'ok': False, 'error': '读不到视频参数'}
+    os.makedirs(OUT_DIR, exist_ok=True)
+    base = os.path.splitext(os.path.basename(path))[0]
+    stage = os.path.join(OUT_DIR, base + '.gapfix.mp4')
+    pad = 0.2
+    say('  洞 %d 处：%s' % (len(gs), ', '.join('%.1f-%.1fs(%.1fs)' % (g['t1'], g['t2'], g['dur']) for g in gs)))
+    inputs, segs = ['-i', path], []
+    for i, g in enumerate(gs):
+        # 两侧都多偏移重试：洞附近的数据可能坏很长一段，就近取不到就往外找
+        pick = None
+        for d in (0.2, 0.5, 1.0, 2.0):
+            xt = max(0.0, g['t1'] - d)
+            xf = os.path.join(OUT_DIR, '_gap%d_x.png' % i)
+            if _grab_png(path, xt, xf):
+                pick = [xt, xf]; break
+        after = None
+        for d in (0.2, 0.5, 1.0, 2.0):
+            yt = g['t2'] + d
+            yf = os.path.join(OUT_DIR, '_gap%d_y.png' % i)
+            if _grab_png(path, yt, yf):
+                after = [yt, yf]; break
+        if not pick or not after:
+            return {'ok': False, 'error': '取边界帧失败 @ %.1fs（两侧 ±2s 都取不到，建议走 ③ 重编码）'
+                    % g['t1']}
+        a, xf = pick
+        b, yf = after
+        dur = max(0.2, b - a)
+        if d_used := max(g['t1'] - a, b - g['t2']):
+            say('  洞 %d：边界帧 %.2fs / %.2fs（洞 %.2f-%.2f，向外让 %.1fs）'
+                % (i + 1, a, b, g['t1'], g['t2'], d_used))
+        fr = max(1.0, fps or 25.0)
+        keep = dur + 0.5
+        inputs += ['-loop', '1', '-framerate', '%.4f' % fr, '-t', '%.3f' % keep, '-i', xf,
+                   '-loop', '1', '-framerate', '%.4f' % fr, '-t', '%.3f' % keep, '-i', yf]
+        segs.append((a, b, 1 + i * 2, 2 + i * 2, dur))
+
+    fc, labs, n = [], [], 1
+    prev = 0.0
+    for k, (a, b, xi, yi, dur) in enumerate(segs):
+        if a > prev + 0.01:
+            fc.append('[0:v]trim=%.3f:%.3f,setpts=PTS-STARTPTS[v%d]' % (prev, a, n))
+            labs.append('[v%d]' % n); n += 1
+        fc.append('[%d:v]scale=%d:%d,format=yuv420p,setpts=PTS-STARTPTS,fps=%.4f,'
+                  'trim=duration=%.3f[x%d];'
+                  '[%d:v]scale=%d:%d,format=yuv420p,setpts=PTS-STARTPTS,fps=%.4f,'
+                  'trim=duration=%.3f[y%d];'
+                  "[x%d][y%d]blend=all_expr='A*(1-T/%.3f)+B*(T/%.3f)',format=yuv420p,"
+                  'setpts=PTS-STARTPTS[v%d]'
+                  % (xi, W, H, fr, dur, n, yi, W, H, fr, dur, n,
+                     n, n, dur, dur, n + 1))
+        labs.append('[v%d]' % (n + 1)); n += 2
+        prev = b
+    fc.append('[0:v]trim=start=%.3f,setpts=PTS-STARTPTS[v%d]' % (prev, n))
+    labs.append('[v%d]' % n); n += 1
+    fc.append('%sconcat=n=%d:v=1:a=0[v]' % (''.join(labs), len(labs)))
+    graph = ';'.join(fc)
+    say('  minterpolate(%s) 插帧 -> %s（预计 %.1f 分钟）'
+        % (mi_mode, os.path.basename(stage), sum(s[4] for s in segs) / 0.034 / 60.0))
+    cmd = [FFMPEG, '-hide_banner', '-err_detect', 'ignore_err'] + inputs + \
+          ['-filter_complex', graph, '-map', '[v]', '-map', '0:a?',
+           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-y', stage]
+    if dry:
+        return {'ok': False, 'dry': True, 'cmd': cmd, 'graph': graph, 'gaps': len(gs),
+                'segs': [[round(s[0], 2), round(s[1], 2)] for s in segs]}
+    src_dur = 0.0
+    try:
+        rc, so, se = _run([FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
+                           '-of', 'default=nw=1:nk=1', path], 90)
+        src_dur = float((so or '0').strip() or 0)
+    except Exception:
+        pass
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         universal_newlines=True, bufsize=1, errors='replace')
+    tail = []
+    for line in p.stdout:
+        tail.append(line.rstrip())
+        if len(tail) > 14:
+            tail.pop(0)
+        m = re.search(r'time=(\d+):(\d+):([\d.]+)', line)
+        if m and src_dur and tick:
+            secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+            tick(min(secs / src_dur, 0.995), '插帧 %.0f%%' % (100 * secs / src_dur))
+    p.wait()
+    for i in range(len(segs)):
+        for s in ('_gap%d_x.png' % i, '_gap%d_y.png' % i):
+            try:
+                os.remove(os.path.join(OUT_DIR, s))
+            except Exception:
+                pass
+    if p.returncode != 0 or not os.path.isfile(stage) or os.path.getsize(stage) < 2048:
+        err = ' | '.join([t for t in tail[-4:] if t.strip()])[:320]
+        say('  ffmpeg 末尾输出: ' + err)
+        return {'ok': False, 'error': 'ffmpeg 失败 rc=%s: %s' % (p.returncode, err), 'stage': stage,
+                'cmd': ' '.join(cmd)}
+
+    if verify:
+        pr = probe(stage)
+        if pr['cls'] != 'ok':
+            return {'ok': False, 'error': '产物不可播（%s）' % (pr.get('reason') or pr['cls']), 'stage': stage}
+        d2 = float(pr.get('duration') or 0)
+        if src_dur and d2 and abs(d2 - src_dur) > max(1.0, src_dur * 0.01):
+            return {'ok': False, 'error': '时长不符（%.1f vs %.1f）' % (d2, src_dur), 'stage': stage}
+        w = probe_windows(stage, n=4, sec=6)
+        say('  产物校验：可播=%s 时长=%.1fs 抽窗错误窗口=%d' % (pr['cls'] == 'ok', d2, len(w.get('bad') or [])))
+
+    orig = path + '.orig'
+    k = 1
+    while os.path.exists(orig):
+        orig = '%s.orig%d' % (path, k); k += 1
+    try:
+        os.replace(path, orig)                 # 原文件 -> 回滚点（同卷改名，不占空间）
+        shutil.copy2(stage, path)
+    except Exception as e:
+        return {'ok': False, 'error': '替换失败: %s' % str(e)[:110], 'stage': stage, 'orig': orig}
+    try:
+        os.remove(stage)
+    except Exception:
+        pass
+    say('  已原地替换（回滚点 %s，耗时 %.0fs）' % (os.path.basename(orig), time.time() - t_start))
+    return {'ok': True, 'kind': 'gap', 'path': path, 'orig_backup': orig, 'gaps': len(gs),
+            'undo': {'action': 'restore', 'path': path, 'backup': orig},
+            'secs': round(time.time() - t_start, 1)}
+
+
 # ----------------------------------------------------------------- CLI（手工验证用）
 def _main():
     args = sys.argv[1:]

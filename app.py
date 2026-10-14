@@ -820,8 +820,8 @@ def _repair_plan(ids=None, cap=80, refresh=False):
 def _job_repair(ids=None, mode='index', go=False):
     """按体检结果修复。mode=index 只做索引重建（快/原地/可回滚）；mode=all 也做容错重编码。"""
     _begin('repair', 1)
-    n_idx, n_re, n_skip, n_fail, backs = 0, 0, 0, 0, []
-    lists = {'index': [], 'recode': [], 'fail': [], 'skip': []}
+    n_idx, n_gap, n_re, n_skip, n_fail, backs = 0, 0, 0, 0, 0, []
+    lists = {'index': [], 'gap': [], 'recode': [], 'fail': [], 'skip': []}
     try:
         items = _items_by_ids(ids)
         _tick(0, len(items))
@@ -836,7 +836,7 @@ def _job_repair(ids=None, mode='index', go=False):
                     p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
                 t = p.get('tier')
                 base = os.path.basename(f)[:40]
-                if t == 'index' and go:
+                if t == 'index' and go and mode in ('index', 'safe', 'all'):
                     r = repair.apply_index(f, log=_log)
                     if r.get('ok'):
                         n_idx += 1
@@ -846,6 +846,25 @@ def _job_repair(ids=None, mode='index', go=False):
                     else:
                         n_fail += 1
                         _log('  id=%s %s 索引重建失败：%s' % (it['id'], base, r.get('error')))
+                elif t == 'gap' and go and mode in ('safe', 'all'):
+                    _last2 = [0.0]
+
+                    def _pk2(frac, lab, _id=it['id'], _L=_last2):
+                        if frac - _L[0] >= 0.1:
+                            _L[0] = frac
+                            _log('    id=%s %s' % (_id, lab))
+                    r = repair.interp_gap(f, log=_log, tick=_pk2)
+                    if r.get('ok'):
+                        n_gap += 1
+                        lists['gap'].append('id=%s %s' % (it['id'], base))
+                        backs.append(r.get('orig_backup') or '')
+                        _log('  id=%s %s 小洞过渡填充 OK（%.0fs；回滚点 %s）'
+                             % (it['id'], base, r.get('secs', 0), os.path.basename(r.get('orig_backup') or '')))
+                    else:
+                        n_fail += 1
+                        lists['fail'].append('id=%s %s -> %s'
+                                             % (it['id'], base, (r.get('error') or '')[:60]))
+                        _log('  id=%s %s 过渡填充失败：%s' % (it['id'], base, (r.get('error') or '')[:80]))
                 elif t == 'reencode' and go and mode == 'all':
                     last = [0.0]
 
@@ -872,8 +891,9 @@ def _job_repair(ids=None, mode='index', go=False):
                     plan = ' / '.join(p.get('plan') or [])
                     _log('  id=%s %s [%s] %s' % (it['id'], base, p.get('cls'), (plan or why)[:70]))
             _tick(n)
-        _log('修复结束：索引 %d / 重编码 %d / 跳过 %d / 失败 %d' % (n_idx, n_re, n_skip, n_fail))
-        for _key, _lab in (('index', '已重建索引'), ('recode', '已重编码'),
+        _log('修复结束：索引 %d / 小洞过渡 %d / 重编码 %d / 跳过 %d / 失败 %d'
+             % (n_idx, n_gap, n_re, n_skip, n_fail))
+        for _key, _lab in (('index', '已重建索引'), ('gap', '已填小洞'), ('recode', '已重编码'),
                            ('fail', '失败'), ('skip', '跳过/未处理')):
             _v = lists.get(_key) or []
             if not _v:
@@ -882,8 +902,9 @@ def _job_repair(ids=None, mode='index', go=False):
             for _x in _v[:40]:
                 _log('      ' + _x)
         LAST_OP.clear()
-        LAST_OP.update({'kind': 'repair', 'index': n_idx, 'recode': n_re, 'skip': n_skip,
-                        'fail': n_fail, 'ok': n_idx + n_re, 'backups': [b for b in backs if b],
+        LAST_OP.update({'kind': 'repair', 'index': n_idx, 'gap': n_gap, 'recode': n_re,
+                        'skip': n_skip, 'fail': n_fail, 'ok': n_idx + n_gap + n_re,
+                        'backups': [b for b in backs if b],
                         'lists': {k: v[:200] for k, v in lists.items()}})
         _end('repair 完成')
     except Exception:
@@ -1972,11 +1993,11 @@ $('#a-repair').onclick=async()=>{
     +x.files.map(f=>'<div class="meta">'+esc(String(f.file||'').slice(0,40))+' <b>['+esc(f.cls||'')+']</b> '
       +esc((f.plan&&f.plan.length)?f.plan.join(' / '):(f.reason||''))+'</div>').join('')+'</td></tr>').join('');
   const cnt=t=>(r.items||[]).reduce((a,x)=>a+x.files.filter(f=>f.tier===t).length,0);
-  const idx=cnt('index'),re=cnt('reencode');
-  rpShow(T('修复'), idx+' '+T('可重建索引')+' / '+re+' '+T('需重编码')+' / '+Math.max(0,r.n_files-idx-re)+' '+T('不可修'),
+  const idx=cnt('index')+cnt('gap'),re=cnt('reencode');
+  rpShow(T('修复'), idx+' '+T('可修（索引/小洞）')+' / '+re+' '+T('需重编码')+' / '+Math.max(0,r.n_files-idx-re)+' '+T('不可修'),
     '<p>'+T('小洞阈值')+' '+r.gap_sec+T(' 秒（插帧待接入）')+'</p><table><thead><tr><th>id</th><th>'+T('条目')+'</th><th>'+T('文件与处理')+'</th></tr></thead><tbody>'+rows+'</tbody></table>',
-    [{label:T('只修索引（快·可回滚）'),primary:true,fn:async()=>{await post('/api/repair?ids='+ids+'&mode=index&go=1');$('#modal6').classList.remove('on');list();}},
-     {label:T('含重编码（慢·会替换原文件）'),fn:async()=>{if(!confirm(T('重编码会产出新文件并【自动替换】原文件（原文件保留为 .orig 回滚点）。继续？')))return;await post('/api/repair?ids='+ids+'&mode=all&go=1');$('#modal6').classList.remove('on');list();}},
+    [{label:T('修索引+小洞（原地·可回滚）'),primary:true,fn:async()=>{await post('/api/repair?ids='+ids+'&mode=safe&go=1');$('#modal6').classList.remove('on');list();}},
+     {label:T('全部（含重编码·慢·会替换）'),fn:async()=>{if(!confirm(T('重编码会产出新文件并【自动替换】原文件（原文件保留为 .orig 回滚点）。继续？')))return;await post('/api/repair?ids='+ids+'&mode=all&go=1');$('#modal6').classList.remove('on');list();}},
      closeBtn]);
 };
 async function _afterOp(){
@@ -1990,7 +2011,7 @@ async function _afterOp(){
       '<p>'+T('可修')+' '+(r.fixable+r.heavy)+' · '+T('不可修')+' '+r.dead+'</p>'
       +_sec('index',T('可修·索引重建'))+_sec('gap',T('可修·小洞插帧'))
       +_sec('reencode',T('需重编码'))+_sec('dead',T('不可修'))+_sec('novideo',T('无视频')),
-      (r.fixable?[{label:T('是 — 立即修复可修的'),primary:true,fn:async()=>{await post('/api/repair?ids='+(r.ids||[]).join(',')+'&mode=index&go=1');$('#modal6').classList.remove('on');}},
+      (r.fixable?[{label:T('是 — 立即修复可修的'),primary:true,fn:async()=>{await post('/api/repair?ids='+(r.ids||[]).join(',')+'&mode=safe&go=1');$('#modal6').classList.remove('on');}},
                   {label:T('否 — 稍后再说'),fn:()=>$('#modal6').classList.remove('on')}]
                 :[{label:T('好'),fn:()=>$('#modal6').classList.remove('on')}]));
   }else if(r.kind==='repair'){
