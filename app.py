@@ -2024,7 +2024,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-thumbs">刷新缩略图</button>
     <button id="a-coverdel">删除封面图</button>
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
-    <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button>
+    <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button><span id="hb-legend" style="margin-left:10px;font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 体检+深检（深） · <b style="color:#1565c0">✓</b> 仅体检（浅） · <b style="color:var(--bad)">⚠</b> 有问题 · <b style="color:var(--muted)">↻</b> 需重测</span>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <button id="a-flatten" title="把嵌套子目录平铺成 app 可自动刮削的结构：图片 P_、视频 V_，具名目录 序号_名字_；子目录移入 trash 可回滚">整理嵌套目录</button>
     <button class="danger" id="a-del">删除</button>
@@ -2201,7 +2201,7 @@ $('#fl-undo').onclick=async()=>{
   alert(j.ok?(T('回滚完成')+'：restored '+j.restored+((j.errors&&j.errors.length)?('，异常 '+j.errors.length):'')):(T('回滚失败')+'：'+(j.error||'')));
   await fetch('/api/scan?mode=incr',{method:'POST'});list();};
 let _jbWas=false;
-function hbadge(r){const s=+r.hstate||0;if(!s)return '';const M={4:['var(--muted)','记录已过期（文件有变动，如刚修复）—— 需重测','↻'],2:['var(--bad)','发现问题：体检/深检不合格（点开看详情）','⚠'],3:['#2e7d32','体检 + 深检 均通过','✓✓'],1:['var(--muted)','仅体检通过（未做深检；未知是否有数据洞）','✓']};const m=M[s]||M[1];return ' <span style="color:'+m[0]+'" title="'+T(m[1])+'">'+m[2]+'</span>'}
+function hbadge(r){const s=+r.hstate||0;if(!s)return '';const M={4:['var(--muted)','记录已过期（文件有变动，如刚修复）—— 需重测','↻'],2:['var(--bad)','发现问题：体检/深检不合格（点开看详情）','⚠'],3:['#2e7d32','体检 + 深检 均通过（深）','✓✓'],1:['#1565c0','仅体检通过（浅）：未做数据级深检，未知是否有数据洞','✓']};const m=M[s]||M[1];return ' <span style="color:'+m[0]+';font-weight:600" title="'+T(m[1])+'">'+m[2]+'</span>'}
 function rpShow(title,sum,html,btns){
   $('#rp-title').textContent=title;$('#rp-sum').textContent=sum||'';$('#rp-body').innerHTML=html||'';
   $('#rp-btns').innerHTML='';(btns||[]).forEach(b=>{const el=document.createElement('button');
