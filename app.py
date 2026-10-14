@@ -1004,7 +1004,25 @@ def _job_repair(ids=None, mode='index', go=False):
                         if frac - _L[0] >= 0.1:
                             _L[0] = frac
                             _log('    id=%s %s' % (_id, lab))
-                    r = repair.interp_gap(f, log=_log, tick=_pk2)
+                    # 用深检已记录的洞直接定位：避免为“找洞”把整个文件再扫一遍
+                    _gaps = None
+                    try:
+                        _row = dbc.execute("SELECT holes FROM deepscan WHERE item_id=? AND file=?",
+                                           (it['id'], os.path.basename(f))).fetchone()
+                        if _row is not None:
+                            _hj = json.loads((_row['holes'] or '') or '[]')
+                            _gaps = repair.holes_to_time(f, _hj) if _hj else []
+                            if _gaps:
+                                _log('  id=%s %s 用深检记录定位 %d 处洞（不重新扫描）'
+                                     % (it['id'], base[:34], len(_gaps)))
+                            else:
+                                _log('  id=%s %s 深检记录里无洞（不扫描）' % (it['id'], base[:34]))
+                    except Exception:
+                        _gaps = None
+                    if _gaps is None:
+                        _log('  id=%s %s 无深检记录 -> 现场扫描定位洞（较慢）'
+                             % (it['id'], base[:34]))
+                    r = repair.interp_gap(f, gaps=_gaps, log=_log, tick=_pk2)
                     if r.get('ok'):
                         n_gap += 1
                         lists['gap'].append('id=%s %s' % (it['id'], base))
