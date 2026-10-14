@@ -95,7 +95,7 @@ else:
     print("\n  实际窗口（按关键帧吸附后）：%s" % wins_out)
     print("\n  逐帧哈希对比（产物 vs 修复前；只比对窗口之外的区间）：")
     for t in PTS:
-        if any(a - 1.0 <= t <= b + 1.0 for a, b in wins_out):
+        if any(a - 1.0 <= t <= b + 1.0 for a, b, *_ in wins_out):
             print("     t=%.1fs 落在窗口内（会被重编码），跳过比对" % t)
             continue
         post = framemd5(src, t, 3.0)
