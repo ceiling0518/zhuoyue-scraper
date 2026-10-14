@@ -496,7 +496,13 @@ def _job_vscan(limit, ids=None):
 def _job_pipeline(limit, sgroup=None, agroup=None):
     _begin('pipeline')
     try:
-        _scan_pass('incr'); _sem_pass(limit, False, sgroup); _fetch_pass('auto', limit, agroup)
+        _r = _scan_pass('incr')
+        if isinstance(_r, dict) and _r.get('error'):
+            _log('! 扫描失败：%s' % _r['error'])
+            _log('! 流水线中止：不跑语义/抓取（避免拿旧库白跑或把状态改乱）')
+            _end('pipeline 中止')
+            return
+        _sem_pass(limit, False, sgroup); _fetch_pass('auto', limit, agroup)
         mlib.unload_ai(); _end('pipeline 完成')
     except Exception:
         _log('ERR ' + traceback.format_exc()[:500]); _end('pipeline 失败')
