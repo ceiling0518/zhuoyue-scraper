@@ -159,6 +159,13 @@ def _tick(n, total=None):
             STATE['total'] = total
 
 
+# 让 repair.py 里的长任务也能感知「停止」
+try:
+    repair.STOP_HOOK = _stop_req
+except Exception:
+    pass
+
+
 # ---------------------------------------------------------------- passes
 def _scan_pass(mode):
     r = mlib.scan(mode=mode)
@@ -1072,7 +1079,31 @@ def _job_repair(ids=None, mode='index', go=False):
                         if frac - _last[0] >= 0.1:
                             _last[0] = frac
                             _log('    id=%s %s' % (_id, lab))
-                    r = repair.tolerant_reencode(f, log=_log, tick=_pk)
+                    # 先试「分段修复」：未损坏段 -c copy（零损失），只重编码损坏窗口
+                    _wins = None
+                    try:
+                        _row = dbc.execute("SELECT holes FROM deepscan WHERE item_id=? AND file=?",
+                                           (it['id'], os.path.basename(f))).fetchone()
+                        _hj = json.loads((_row['holes'] if _row else '') or '[]')
+                        if _hj:
+                            _wins = repair.holes_to_time(f, _hj)
+                    except Exception:
+                        _wins = None
+                    r = None
+                    if _wins:
+                        _log('  id=%s %s 分段修复：%d 处损坏窗口（其余原样搬运，零损失）'
+                             % (it['id'], base[:34], len(_wins)))
+                        try:
+                            r = repair.splice_repair(f, _wins, log=_log, tick=_pk)
+                        except Exception as e:
+                            r = {'ok': False, 'error': 'splice 异常: %s: %s'
+                                 % (type(e).__name__, str(e)[:60])}
+                        if not r.get('ok'):
+                            _log('  id=%s %s 分段修复未采用（%s）-> 回退整段重编码'
+                                 % (it['id'], base[:34], (r.get('error') or '')[:70]))
+                            r = None
+                    if r is None:
+                        r = repair.tolerant_reencode(f, log=_log, tick=_pk)
                     if r.get('ok'):
                         n_re += 1
                         lists['recode'].append('id=%s %s' % (it['id'], base))
@@ -1756,6 +1787,15 @@ class H(BaseHTTPRequestHandler):
             return self._json({'error': str(e)[:300]}, 500)
 
     def do_POST(self):
+        # 记录请求来源：浏览器点按钮会带 Referer 和浏览器 UA；脚本（urllib/curl）不带
+        try:
+            _ua = (self.headers.get('User-Agent') or '')[:52]
+            _ref = (self.headers.get('Referer') or '')[:52]
+            _p = (self.path or '')
+            if '/api/health' in _p or '/api/repair' in _p:
+                _log('HTTP POST %s | UA=%s | Referer=%s' % (_p[:86], _ua, _ref))
+        except Exception:
+            pass
         u = urlparse(self.path)
         p, q = u.path, {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
         lim = int(q.get('limit') or 100000)

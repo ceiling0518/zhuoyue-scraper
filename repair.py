@@ -29,6 +29,18 @@ import subprocess
 import sys
 import time
 
+# app 可设置停止钩子：repair.STOP_HOOK = lambda: bool
+STOP_HOOK = None
+
+
+def _stop_req():
+    """是否已请求停止（由 app 通过 STOP_HOOK 注入；默认不停止）。"""
+    try:
+        return bool(STOP_HOOK and STOP_HOOK())
+    except Exception:
+        return False
+
+
 FFMPEG = os.environ.get('FFMPEG', 'ffmpeg')
 FFPROBE = os.environ.get('FFPROBE', 'ffprobe')
 GAP_SEC = float(os.environ.get('MS_REPAIR_GAP_SEC', '5') or 5)
@@ -1062,6 +1074,221 @@ def _copy_progress(src, dst, log=None, every=6.0, block=4 * 1024 * 1024):
     except Exception:
         pass
     return done_bytes
+
+
+def _stss(buf, trak):
+    """同步样本（关键帧）表 -> 1-based 样本号；没有 stss 表示全部是关键帧。"""
+    try:
+        sb = _path_box(buf, trak[1] + trak[3], trak[1] + trak[2],
+                       ['mdia', 'minf', 'stbl'])
+        if not sb:
+            return None
+        so, sl, shl = sb
+        ch = {c[0]: c for c in _boxes(buf, so + shl, so + sl)}
+        if 'stss' not in ch:
+            return None
+        _, o, l, hl = ch['stss']
+        n = struct.unpack('>I', buf[o + hl + 4:o + hl + 8])[0]
+        a = o + hl + 8
+        return list(struct.unpack('>%dI' % n, buf[a:a + n * 4]))
+    except Exception:
+        return None
+
+
+def kf_times(path):
+    """视频轨关键帧时间点（秒）。返回 [] 表示无需/无法吸附。"""
+    try:
+        sz = os.path.getsize(path)
+        with open(path, 'rb') as fp:
+            tops = {t: (o, l) for t, o, l, hl in _boxes(fp, 0, sz, limit=64)}
+            mo, ml = tops['moov']
+            fp.seek(mo)
+            buf = fp.read(ml)
+    except Exception:
+        return []
+    traks = [b for b in _boxes(_MemFile(buf), 8, len(buf)) if b[0] == 'trak']
+    if not traks:
+        return []
+    st = _stss(buf, traks[0])
+    if not st:
+        return []                       # 没有 stss（全关键帧）或读不到 -> 不吸附
+    scale = _mdhd_timescale(buf, traks[0]) or 1000
+    ts = []
+    t = 0
+    for cnt, delta in _stts(buf, traks[0]):
+        for _ in range(cnt):
+            ts.append(t)
+            t += delta
+    out = []
+    for si in st:
+        if 1 <= si <= len(ts):
+            out.append(ts[si - 1] / float(scale))
+    return out
+
+
+def slice_repair_placeholder():
+    pass
+
+
+def _ts_seg(path, start, end, out, mode='copy', log=None):
+    """切一段到 MPEG-TS。mode='copy' 原样搬运（不重编码）；'tol' 容错重编码。"""
+    cmd = [FFMPEG, '-hide_banner', '-nostdin', '-loglevel', 'error',
+           '-ss', '%.3f' % max(0.0, start), '-to', '%.3f' % end, '-i', path]
+    if mode == 'copy':
+        cmd += ['-c', 'copy', '-avoid_negative_ts', 'make_zero']
+    else:
+        cmd += ['-err_detect', 'ignore_err', '-fps_mode', 'cfr',
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                '-threads', str(_threads()), '-c:a', 'aac']
+    cmd += ['-f', 'mpegts', '-y', out]
+    rc, so, se = _run(cmd, 7200)
+    ok = (rc == 0 and os.path.isfile(out) and os.path.getsize(out) > 4096)
+    if not ok and log:
+        log('    切段失败 [%.1f-%.1f] %s: %s' % (start, end, mode, (se or '')[-160:]))
+    return ok
+
+
+def _probe_at(path, t, sec=2.0):
+    """在 t 处解码 sec 秒，返回 (是否有错, 错误数)。用于校验拼接点。"""
+    try:
+        rc, so, se = _run([FFMPEG, '-hide_banner', '-v', 'error', '-nostdin',
+                           '-ss', '%.2f' % max(0.0, t), '-i', path, '-t', '%.1f' % sec,
+                           '-f', 'null', '-'], 300)
+        txt = (se or '')
+        bad = sum(1 for l in txt.splitlines() if l.strip() and 'error' not in l.lower()[:0] and
+                  any(k in l.lower() for k in ('error', 'invalid', 'corrupt', 'missing')))
+        return (rc != 0 or bad > 0), bad
+    except Exception:
+        return True, -1
+
+
+def splice_repair(path, windows, log=None, tick=None, dry=False):
+    """分段修复：未损坏段 -c copy（**零损失**），只重编码损坏窗口，再拼接。
+
+    windows: [{'t1','t2', ...}] 需重编码(容错)的时间区间（一般来自深检的洞）
+    返回 {'ok','stage','secs','windows','kept_ratio'} 或 {'ok':False,'error'}
+    """
+    import tempfile
+    say = log or (lambda *a: None)
+    pr = probe(path)
+    dur = float(pr.get('duration') or 0)
+    if dur <= 0:
+        return {'ok': False, 'error': '拿不到时长，放弃分段方案'}
+    # 合并/扩边窗口（前后各留 0.3s，避免正好卡在损坏边界）
+    ws = []
+    for x in (windows or []):
+        try:
+            a, b = float(x.get('t1') or 0), float(x.get('t2') or 0)
+        except Exception:
+            continue
+        if b <= a:
+            continue
+        ws.append((max(0.0, a - 0.3), min(dur, b + 0.3)))
+    ws.sort()
+    merged = []
+    for a, b in ws:
+        if merged and a <= merged[-1][1] + 0.05:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    if not merged:
+        return {'ok': False, 'error': '没有需要重编码的窗口'}
+    # 关键帧吸附：copy 段必须从关键帧起、到关键帧止，否则会从损坏中途开始拷
+    kfs = kf_times(path)
+    if kfs:
+        snapped = []
+        for a, b in merged:
+            k1 = max([k for k in kfs if k <= a + 1e-3] or [a])
+            later = [k for k in kfs if k >= b - 1e-3]
+            k2 = min(later) if later else b
+            if k2 <= k1:
+                later = [k for k in kfs if k > k1 + 1e-3]
+                k2 = min(later) if later else b
+            snapped.append((max(0.0, k1), min(dur, k2)))
+        merged = snapped
+        say('  按关键帧吸附：%s' % (['%.1f-%.1f' % x for x in merged],))
+    # 段列表：copy / tol 交替
+    segs, cur = [], 0.0
+    for a, b in merged:
+        if a - cur > 0.15:
+            segs.append((cur, a, 'copy'))
+        segs.append((a, b, 'tol'))
+        cur = b
+    if dur - cur > 0.15:
+        segs.append((cur, dur, 'copy'))
+    total_tol = sum(b - a for a, b, m in segs if m == 'tol')
+    kept = max(0.0, dur - total_tol)
+    say('  分段修复：%d 段（原样搬运 %d 段 / 重编码 %d 段）；'
+        '零损失覆盖 %.1f%%（重编码仅 %.1fs）'
+        % (len(segs), sum(1 for x in segs if x[2] == 'copy'),
+           sum(1 for x in segs if x[2] == 'tol'), 100.0 * kept / max(1e-6, dur), total_tol))
+    if dry:
+        return {'ok': True, 'dry': True, 'segs': segs}
+    tmp = tempfile.mkdtemp(prefix='splice_', dir=os.path.dirname(path) if os.path.isdir(os.path.dirname(path)) else None)
+    stage = os.path.join(os.path.dirname(path) or '.', os.path.splitext(os.path.basename(path))[0] + '.splice.mp4')
+    t0 = time.time()
+    try:
+        names = []
+        for i, (a, b, m) in enumerate(segs):
+            out = os.path.join(tmp, 'seg%03d.ts' % i)
+            if not _ts_seg(path, a, b, out, m, log=say):
+                return {'ok': False, 'error': '切段失败（第 %d 段 %.1f-%.1f %s）' % (i + 1, a, b, m)}
+            names.append(out)
+            if tick:
+                tick(0.7 * (i + 1) / max(1, len(segs)), '切段 %d/%d' % (i + 1, len(segs)))
+        lst = os.path.join(tmp, 'list.txt')
+        with io.open(lst, 'w', encoding='utf-8', newline='\n') as f:
+            for n in names:
+                f.write("file '%s'\n" % n.replace('\\', '/'))
+        say('  拼接中…（%d 段）' % len(names))
+        rc, so, se = _run([FFMPEG, '-hide_banner', '-v', 'error', '-nostdin', '-f', 'concat',
+                           '-safe', '0', '-i', lst, '-c', 'copy', '-bsf:a', 'aac_adtstoasc',
+                           '-movflags', '+faststart', '-y', stage], 7200)
+        if rc != 0 or not os.path.isfile(stage) or os.path.getsize(stage) < 10240:
+            return {'ok': False, 'error': '拼接失败: %s' % (se or '')[-160:]}
+        if tick:
+            tick(0.9, '校验')
+        p2 = probe(stage)
+        d2 = float(p2.get('duration') or 0)
+        if p2['cls'] != 'ok':
+            return {'ok': False, 'error': '产物不可播（%s）' % (p2.get('reason') or p2['cls'])}
+        if d2 < dur - total_tol - 5.0 or d2 > dur + 5.0:
+            return {'ok': False, 'error': '产物时长异常（%.1fs vs 源 %.1fs，损坏段共 %.1fs）'
+                    % (d2, dur, total_tol)}
+        bads = 0
+        for a, b in merged[:6]:
+            for t in (max(0.0, a - 1.0), min(max(0.0, d2 - 2.5), b + 1.0)):
+                bad, nb = _probe_at(stage, t, 2.0)
+                if bad:
+                    bads += 1
+        if bads:
+            return {'ok': False, 'error': '拼接点抽窗仍有 %d 处报错' % bads}
+        if _stop_req():
+            return {'ok': False, 'error': '已请求停止（未替换）', 'stage': stage}
+        orig = path + '.orig'
+        k = 1
+        while os.path.exists(orig):
+            orig = '%s.orig%d' % (path, k)
+            k += 1
+        try:
+            os.replace(path, orig)
+            _copy_progress(stage, path, log=log)
+        except Exception as e:
+            return {'ok': False, 'error': '替换失败: %s' % str(e)[:120], 'orig': orig, 'stage': stage}
+        try:
+            os.remove(stage)
+        except Exception:
+            pass
+        return {'ok': True, 'kind': 'splice', 'path': path, 'orig_backup': orig,
+                'windows': merged, 'kept_ratio': kept / max(1e-6, dur),
+                'undo': {'action': 'restore', 'path': path, 'backup': orig},
+                'secs': round(time.time() - t0, 1)}
+    finally:
+        try:
+            import shutil as _sh
+            _sh.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def undo_restore(path, backup):
