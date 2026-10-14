@@ -1056,7 +1056,21 @@ def _job_repair(ids=None, mode='index', go=False):
                     if _gaps is None:
                         _log('  id=%s %s 无深检记录 -> 现场扫描定位洞（较慢）'
                              % (it['id'], base[:34]))
-                    r = repair.interp_gap(f, gaps=_gaps, log=_log, tick=_pk2)
+                    if _gaps and len(_gaps) > 12:
+                        # 洞太多：逐洞插帧不但慢（minterpolate≈0.034x 实时），
+                        # 而且会把 67+ 个洞塞进一条 filter_complex，命令行超长直接崩。
+                        _log('  id=%s %s 小洞 %d 处（合计 %.1fs）—— 洞太多，改走分段修复'
+                             % (it['id'], base[:34], len(_gaps), sum(g['dur'] for g in _gaps)))
+                        try:
+                            r = repair.splice_repair(f, _gaps, log=_log, tick=_pk2)
+                        except Exception as e:
+                            r = {'ok': False, 'error': 'splice 异常: %s: %s'
+                                 % (type(e).__name__, str(e)[:60])}
+                        if not r.get('ok'):
+                            _log('  id=%s %s 分段修复未采用（%s）'
+                                 % (it['id'], base[:34], (r.get('error') or '')[:80]))
+                    else:
+                        r = repair.interp_gap(f, gaps=_gaps, log=_log, tick=_pk2)
                     if r.get('ok'):
                         n_gap += 1
                         lists['gap'].append('id=%s %s' % (it['id'], base))

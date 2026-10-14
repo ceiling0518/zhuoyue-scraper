@@ -1315,6 +1315,14 @@ def interp_gap(path, gaps=None, log=None, tick=None, mi_mode='mci', verify=True,
     except Exception:
         gs = []
     gs = sorted([g for g in gs if g['dur'] <= GAP_SEC], key=lambda g: g['t1'])
+    # 洞太多就别走逐洞插帧：minterpolate≈0.034x 实时（67 个洞要 30+ 分钟），
+    # 而且会把所有洞塞进一条 filter_complex 导致命令行超长、ffmpeg 起不来。
+    # 这里在**抠边界帧之前**就快速失败，避免白跑十几分钟才报错。
+    if len(gs) > 12:
+        return {'ok': False, 'gaps': len(gs),
+                'error': '小洞 %d 处过多（合计 %.1fs）：逐洞插帧约需 %.0f 分钟且命令会超长，'
+                         '请改用分段修复' % (len(gs), sum(g['dur'] for g in gs),
+                                          sum(g['dur'] for g in gs) / 0.034 / 60.0)}
     if not gs:
         return {'ok': False, 'error': '没有 <= %.0fs 的小洞（大洞应走重编码）' % GAP_SEC}
     W, H, fps = _ffprobe_wh(path)
@@ -1394,6 +1402,10 @@ def interp_gap(path, gaps=None, log=None, tick=None, mi_mode='mci', verify=True,
         src_dur = float((so or '0').strip() or 0)
     except Exception:
         pass
+    if sum(len(str(x)) + 1 for x in cmd) > 28000:
+        return {'ok': False, 'stage': stage, 'gaps': len(gs),
+                'error': '洞太多（%d 个，合计 %.1fs）导致 ffmpeg 命令超过 Windows 命令行上限；'
+                         '请改用分段修复（splice_repair）' % (len(gs), sum(g['dur'] for g in gs))}
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=False)
     tail = []
     for line in _lines(p):
