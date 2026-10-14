@@ -18,6 +18,7 @@ sys.path.insert(0, HERE)
 import mlib                                   # noqa: E402
 
 import flatten                                  # 整理嵌套目录（平铺 + P_/V_ 命名 + 可回滚）
+import repair                                   # 损坏视频体检 + 三级修复（索引重建/插帧/容错重编码）
 
 
 for _s in (sys.stdout, sys.stderr):
@@ -38,6 +39,8 @@ STATE = {'running': False, 'name': '', 'done': 0, 'total': 0,
 QUEUE = []                                    # [(item_id, mode)]  -- persisted in `queue`
 _LOGDB = None
 _LOGBUF = []
+
+LAST_OP = {}                                   # 最近一次体检/修复的汇总（供完成弹窗）
 
 
 def _logdb():
@@ -629,6 +632,183 @@ def _job_flatten(ids=None):
     except Exception:
         _log('ERR ' + traceback.format_exc()[:500])
         _end('flatten 失败')
+
+
+HEALTH_SQL = ("CREATE TABLE IF NOT EXISTS health("
+              "item_id INTEGER, file TEXT, cls TEXT, reason TEXT, tier TEXT, "
+              "size INTEGER, checked_at TEXT, PRIMARY KEY(item_id,file))")
+
+
+def _video_files(dirpath):
+    out = []
+    try:
+        for f in sorted(os.listdir(dirpath)):
+            if os.path.splitext(f)[1].lower() in repair.VIDEO_EXT:
+                out.append(os.path.join(dirpath, f))
+    except Exception:
+        pass
+    return out
+
+
+def _items_by_ids(ids=None):
+    dbc = mlib.db()
+    if ids:
+        q = ('SELECT id,name,path,kind,quality FROM items WHERE present=1 AND id IN (%s) ORDER BY id'
+             % ','.join('?' * len(ids)))
+        return [dict(r) for r in dbc.execute(q, ids)]
+    return [dict(r) for r in dbc.execute(
+        'SELECT id,name,path,kind,quality FROM items WHERE present=1 ORDER BY id')]
+
+
+def _job_health(ids=None):
+    """只读体检：逐个视频探测能否打开/容器是否被截；结果写 health 表。不写媒体文件。"""
+    _begin('health', 1)
+    dbc = mlib.db()
+    try:
+        dbc.execute(HEALTH_SQL)
+        dbc.commit()
+        items = _items_by_ids(ids)
+        bad, files, fixable, heavy, dead, nbad = {}, 0, [], [], [], 0
+        _tick(0, len(items))
+        for n, it in enumerate(items, 1):
+            if _stop_req():
+                _log('! 已请求停止')
+                break
+            vids = _video_files(it['path'])
+            if not vids:
+                dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?)',
+                            (it['id'], '', 'novideo', '目录里没有视频', 'none', 0, mlib.now()))
+                continue
+            for f in vids:
+                files += 1
+                try:
+                    p = repair.plan_repair(f)
+                except Exception as e:
+                    p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
+                cls = p.get('cls')
+                dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?)',
+                            (it['id'], os.path.basename(f), cls, (p.get('reason') or '')[:170],
+                             p.get('tier') or '', int(p.get('size') or 0), mlib.now()))
+                if cls != 'ok':
+                    bad.setdefault(cls, []).append(it['id'])
+                    nbad += 1
+                    _log('  id=%s %s [%s] %s' % (it['id'], os.path.basename(f)[:42], cls,
+                                                 (p.get('reason') or '')[:64]))
+                if p.get('tier') == 'index':
+                    fixable.append(it['id'])
+                elif p.get('tier') == 'reencode':
+                    heavy.append(it['id'])
+                elif cls not in ('ok',):
+                    dead.append(it['id'])
+            _tick(n)
+            if n % 20 == 0:
+                dbc.commit()
+        dbc.commit()
+        _log('体检完成：%d 条 / %d 个视频；可修索引 %d / 需重编码 %d / 不可修 %d'
+             % (len(items), files, len(set(fixable)), len(set(heavy)), len(set(dead))))
+        for k, v in sorted(bad.items(), key=lambda x: -len(x[1])):
+            _log('  %-11s %d 条' % (k, len(v)))
+        LAST_OP.clear()
+        LAST_OP.update({'kind': 'health', 'files': files, 'bad': nbad,
+                        'fixable': len(set(fixable)), 'heavy': len(set(heavy)),
+                        'dead': len(set(dead)), 'ids': sorted(set(fixable))})
+        _end('health 完成')
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:500])
+        _end('health 失败')
+
+
+def _repair_plan(ids=None, cap=80):
+    """只读：给 UI 预览（每个条目下有哪些坏文件、该走哪级）。"""
+    out = []
+    for it in _items_by_ids(ids)[:cap]:
+        recs = []
+        for f in _video_files(it['path']):
+            try:
+                p = repair.plan_repair(f)
+            except Exception as e:
+                p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
+            if p.get('cls') != 'ok':
+                recs.append({'file': os.path.basename(f), 'cls': p.get('cls'),
+                             'reason': (p.get('reason') or '')[:110], 'tier': p.get('tier') or 'none',
+                             'plan': p.get('plan') or [], 'size': int(p.get('size') or 0)})
+        if recs:
+            out.append({'id': it['id'], 'name': it['name'], 'files': recs})
+    return {'items': out, 'n_items': len(out), 'n_files': sum(len(x['files']) for x in out),
+            'gap_sec': repair.GAP_SEC}
+
+
+def _job_repair(ids=None, mode='index', go=False):
+    """按体检结果修复。mode=index 只做索引重建（快/原地/可回滚）；mode=all 也做容错重编码。"""
+    _begin('repair', 1)
+    n_idx, n_re, n_skip, n_fail, backs = 0, 0, 0, 0, []
+    try:
+        items = _items_by_ids(ids)
+        _tick(0, len(items))
+        for n, it in enumerate(items, 1):
+            if _stop_req():
+                _log('! 已请求停止')
+                break
+            for f in _video_files(it['path']):
+                try:
+                    p = repair.plan_repair(f)
+                except Exception as e:
+                    p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
+                t = p.get('tier')
+                base = os.path.basename(f)[:40]
+                if t == 'index' and go:
+                    r = repair.apply_index(f, log=_log)
+                    if r.get('ok'):
+                        n_idx += 1
+                        _log('  id=%s %s 索引重建 OK（+%d 字节；回滚=truncate 到 %d）'
+                             % (it['id'], base, r['new_size'] - r['orig_size'], r['orig_size']))
+                    else:
+                        n_fail += 1
+                        _log('  id=%s %s 索引重建失败：%s' % (it['id'], base, r.get('error')))
+                elif t == 'reencode' and go and mode == 'all':
+                    last = [0.0]
+
+                    def _pk(frac, lab, _id=it['id'], _last=last):
+                        if frac - _last[0] >= 0.1:
+                            _last[0] = frac
+                            _log('    id=%s %s' % (_id, lab))
+                    r = repair.tolerant_reencode(f, log=_log, tick=_pk)
+                    if r.get('ok'):
+                        n_re += 1
+                        backs.append(r.get('orig_backup') or '')
+                        _log('  id=%s %s 重编码完成（%.0fs；回滚点 %s）'
+                             % (it['id'], base, r.get('secs', 0), r.get('orig_backup')))
+                    else:
+                        n_fail += 1
+                        _log('  id=%s %s 重编码失败：%s' % (it['id'], base, r.get('error')))
+                else:
+                    n_skip += 1
+                    why = (p.get('reason') or '')
+                    plan = ' / '.join(p.get('plan') or [])
+                    _log('  id=%s %s [%s] %s' % (it['id'], base, p.get('cls'), (plan or why)[:70]))
+            _tick(n)
+        _log('修复结束：索引 %d / 重编码 %d / 跳过 %d / 失败 %d' % (n_idx, n_re, n_skip, n_fail))
+        LAST_OP.clear()
+        LAST_OP.update({'kind': 'repair', 'index': n_idx, 'recode': n_re, 'skip': n_skip,
+                        'fail': n_fail, 'ok': n_idx + n_re, 'backups': [b for b in backs if b]})
+        _end('repair 完成')
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:500])
+        _end('repair 失败')
+
+
+def _purge_backups(paths):
+    """删除本次修复产生的回滚备份（只删它自己刚建的那几个 .orig）。"""
+    n, err = 0, []
+    for p in paths or []:
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+                n += 1
+                _log('  已删除回滚备份 %s' % os.path.basename(p)[:60])
+        except Exception as e:
+            err.append(str(e)[:60])
+    return {'ok': True, 'removed': n, 'errors': err}
 
 
 def start_job(fn, *a):
@@ -1248,6 +1428,22 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/pipeline':
                 ok = start_job(_job_pipeline, lim, int(q.get('group') or 0),
                                int(q.get('ai_group') or 0))
+            elif p == '/api/health':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_health, ids)
+            elif p == '/api/repair/plan':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                return self._json(_repair_plan(ids))
+            elif p == '/api/repair/last':
+                return self._json(dict(LAST_OP))
+            elif p == '/api/repair/purge':
+                return self._json(_purge_backups(LAST_OP.get('backups') or []))
+            elif p == '/api/repair':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                if not ids:
+                    return self._json({'ok': False, 'error': 'ids 为空'}, 400)
+                ok = start_job(_job_repair, ids, q.get('mode') or 'index',
+                               (q.get('go') or '') in ('1', 'true', 'yes'))
             elif p == '/api/runset':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 if not ids:
@@ -1471,6 +1667,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-open">打开目录</button>
     <button id="a-thumbs">刷新缩略图</button>
     <button id="a-coverdel">删除封面图</button>
+    <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
+    <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <button id="a-flatten" title="把嵌套子目录平铺成 app 可自动刮削的结构：图片 P_、视频 V_，具名目录 序号_名字_；子目录移入 trash 可回滚">整理嵌套目录</button>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
@@ -1486,6 +1684,11 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><span id="page" class="muted"></span><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
+<div class="modal" id="modal6"><div class="box">
+  <div class="bar"><b id="rp-title">修复</b><span class="muted" id="rp-sum"></span><button class="right" id="md6-close">关闭</button></div>
+  <div id="rp-body"></div>
+  <div class="bar" id="rp-btns"></div>
+</div></div>
 <div class="modal" id="modal5"><div class="box">
   <div class="bar"><b>整理嵌套目录</b><span class="muted" id="fl-sum"></span><button class="right" id="md5-close">关闭</button></div>
   <div id="fl-body"></div>
@@ -1532,6 +1735,8 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
     .map(([k,v])=>'<div class="card"><b>'+v+'</b><span>'+k+'</span></div>').join('');
   $('#qcount').textContent=s.queue||0;}
 async function job(){const j=await(await fetch('/api/job')).json();
+  if(!j.running&&_jbWas){_jbWas=false;if(/^(health|repair)/.test(j.name||''))_afterOp();}
+  if(j.running)_jbWas=true;
   $('#log').textContent=(j.log||[]).join('\n');
   const L=$('#log');L.scrollTop=L.scrollHeight;   // 永远默认停在最后一行
   const p=j.total?Math.round(j.done*100/j.total):0;
@@ -1638,6 +1843,54 @@ $('#fl-undo').onclick=async()=>{
   const j=await(await fetch('/api/flatten/undo?last=1',{method:'POST'})).json();
   alert(j.ok?(T('回滚完成')+'：restored '+j.restored+((j.errors&&j.errors.length)?('，异常 '+j.errors.length):'')):(T('回滚失败')+'：'+(j.error||'')));
   await fetch('/api/scan?mode=incr',{method:'POST'});list();};
+let _jbWas=false;
+function rpShow(title,sum,html,btns){
+  $('#rp-title').textContent=title;$('#rp-sum').textContent=sum||'';$('#rp-body').innerHTML=html||'';
+  $('#rp-btns').innerHTML='';(btns||[]).forEach(b=>{const el=document.createElement('button');
+    if(b.primary)el.className='primary';el.textContent=b.label;el.onclick=b.fn;$('#rp-btns').appendChild(el);});
+  $('#modal6').classList.add('on');}
+$('#md6-close').onclick=()=>$('#modal6').classList.remove('on');
+$('#a-health').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做只读体检（逐文件探测，较慢；不写任何文件），继续？')))return;
+  await post('/api/health'+(ids?'?ids='+ids:''));};
+$('#a-repair').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size)return alert(T('先选条目'));
+  const r=await(await fetch('/api/repair/plan'+(ids?'?ids='+ids:''),{method:'POST'})).json();
+  const closeBtn={label:T('关闭'),fn:()=>$('#modal6').classList.remove('on')};
+  if(!r.n_files){rpShow(T('修复'),'', '<p>'+T('选中的条目没有发现需要修复的文件。')+'</p>',[closeBtn]);return;}
+  const rows=(r.items||[]).map(x=>'<tr><td>'+x.id+'</td><td>'+esc(String(x.name||'').slice(0,30))+'</td><td>'
+    +x.files.map(f=>'<div class="meta">'+esc(String(f.file||'').slice(0,40))+' <b>['+esc(f.cls||'')+']</b> '
+      +esc((f.plan&&f.plan.length)?f.plan.join(' / '):(f.reason||''))+'</div>').join('')+'</td></tr>').join('');
+  const cnt=t=>(r.items||[]).reduce((a,x)=>a+x.files.filter(f=>f.tier===t).length,0);
+  const idx=cnt('index'),re=cnt('reencode');
+  rpShow(T('修复'), idx+' '+T('可重建索引')+' / '+re+' '+T('需重编码')+' / '+Math.max(0,r.n_files-idx-re)+' '+T('不可修'),
+    '<p>'+T('小洞阈值')+' '+r.gap_sec+T(' 秒（插帧待接入）')+'</p><table><thead><tr><th>id</th><th>'+T('条目')+'</th><th>'+T('文件与处理')+'</th></tr></thead><tbody>'+rows+'</tbody></table>',
+    [{label:T('只修索引（快·可回滚）'),primary:true,fn:async()=>{await post('/api/repair?ids='+ids+'&mode=index&go=1');$('#modal6').classList.remove('on');list();}},
+     {label:T('含重编码（慢·会替换原文件）'),fn:async()=>{if(!confirm(T('重编码会产出新文件并【自动替换】原文件（原文件保留为 .orig 回滚点）。继续？')))return;await post('/api/repair?ids='+ids+'&mode=all&go=1');$('#modal6').classList.remove('on');list();}},
+     closeBtn]);
+};
+async function _afterOp(){
+  let r={};try{r=await(await fetch('/api/repair/last',{method:'POST'})).json();}catch(e){}
+  if(!r||!r.kind)return;
+  if(r.kind==='health'){
+    rpShow(T('体检完成'), T('异常')+' '+r.bad+' / '+T('文件')+' '+r.files,
+      '<p>'+T('可重建索引')+' '+r.fixable+' · '+T('需重编码')+' '+r.heavy+' · '+T('不可修')+' '+r.dead+'</p>',
+      (r.fixable?[{label:T('是 — 立即修复可修的'),primary:true,fn:async()=>{await post('/api/repair?ids='+(r.ids||[]).join(',')+'&mode=index&go=1');$('#modal6').classList.remove('on');}},
+                  {label:T('否 — 稍后再说'),fn:()=>$('#modal6').classList.remove('on')}]
+                :[{label:T('好'),fn:()=>$('#modal6').classList.remove('on')}]));
+  }else if(r.kind==='repair'){
+    const hasB=(r.backups||[]).length;
+    rpShow(T('修复完成'), T('成功')+' '+r.ok+' / '+T('失败')+' '+r.fail,
+      '<p>'+T('索引重建')+' '+r.index+' · '+T('重编码')+' '+r.recode+' · '+T('跳过')+' '+r.skip+'</p>'
+      +(hasB?('<p class="muted">'+T('回滚备份')+' '+hasB+' '+T('个（重编码前原文件）')+'</p>'):
+             '<p class="muted">'+T('无回滚备份（索引重建是纯追加，回滚=truncate 回原长度）')+'</p>'),
+      (hasB?[{label:T('是 — 删除回滚备份'),fn:async()=>{if(!confirm(T('删除 '+hasB+' 个 .orig 备份？（不可恢复）')))return;const r2=await post('/api/repair/purge');alert(T('已删除')+' '+r2.removed);$('#modal6').classList.remove('on');}},
+             {label:T('否 — 保留备份'),primary:true,fn:()=>$('#modal6').classList.remove('on')}]
+           :[{label:T('好'),fn:()=>$('#modal6').classList.remove('on')}]));
+  }
+}
 document.addEventListener('dblclick',e=>{
   const td=e.target.closest?e.target.closest('td.ed'):null;
   if(!td)return;
