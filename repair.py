@@ -1217,9 +1217,23 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
             snapped.append((max(0.0, k1), min(dur, k2), None))
         merged = snapped
         say('  按关键帧吸附：%s' % (['%.1f-%.1f' % (a, b) for a, b, _c in merged],))
+        # 吸附到关键帧后窗口会重叠/倒退 -> 必须重新合并，否则段数膨胀 + 时间轴回退
+        m2 = []
+        for a, b, _c in merged:
+            if m2 and a <= m2[-1][1] + 0.05:
+                m2[-1] = (m2[-1][0], max(m2[-1][1], b), None)
+            else:
+                m2.append((a, b, None))
+        if len(m2) != len(merged):
+            say('  合并重叠窗口：%d 个 -> %d 个' % (len(merged), len(m2)))
+        merged = m2
     # 段列表：copy / tol 交替
     segs, cur = [], 0.0
     for a, b, clip in merged:
+        if b <= cur + 1e-3:
+            continue
+        if a < cur:
+            a = cur          # 防御：窗口回退（吸附后重叠已在上面合并，这里再兜一层）
         if a - cur > 0.05:
             segs.append((cur, a, 'copy', None))
         segs.append((a, b, 'clip' if clip else 'tol', clip))
