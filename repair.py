@@ -69,11 +69,24 @@ def _deep_workers():
     return max(1, min(8, DEEP_WORKERS)) if DEEP_WORKERS else 1
 
 
+def _lines(p):
+    """逐行产出子进程输出（按 UTF-8 解、坏字节替换）。
+
+    ffmpeg 的错误信息里会带非 GBK 字符（日文文件名等），用系统默认编码解会
+    UnicodeDecodeError 直接崩掉整个修复任务。
+    """
+    try:
+        for raw in iter(p.stdout.readline, b''):
+            yield raw.decode('utf-8', 'replace') if isinstance(raw, bytes) else raw
+    except Exception:
+        return
+
+
 def _run(cmd, timeout=300):
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
-        return r.returncode, (r.stdout or b'').decode('utf-8', 'replace'), \
-            (r.stderr or b'').decode('utf-8', 'replace')
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout,
+                           encoding='utf-8', errors='replace')
+        return r.returncode, (r.stdout or ''), (r.stderr or '')
     except Exception as e:
         return -1, '', type(e).__name__ + ': ' + str(e)[:120]
 
@@ -916,11 +929,10 @@ def tolerant_reencode(path, out_dir=None, log=None, tick=None):
         % (stage, _threads(), _fthreads(), _cores(),
            ('%d 分钟' % round(dur / 5.1 / 60)) if dur else '未知'))
     cmd = reencode_cmd(path, stage)
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         universal_newlines=True, bufsize=1)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=False)
     done = False
     t0 = time.time()
-    for line in p.stdout:
+    for line in _lines(p):
         m = re.search(r'time=(\d+):(\d+):([\d.]+)', line)
         if m and dur and tick:
             secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
@@ -1155,10 +1167,9 @@ def interp_gap(path, gaps=None, log=None, tick=None, mi_mode='mci', verify=True,
         src_dur = float((so or '0').strip() or 0)
     except Exception:
         pass
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         universal_newlines=True, bufsize=1, errors='replace')
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=False)
     tail = []
-    for line in p.stdout:
+    for line in _lines(p):
         tail.append(line.rstrip())
         if len(tail) > 14:
             tail.pop(0)
