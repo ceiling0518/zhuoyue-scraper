@@ -73,8 +73,10 @@
 | 🧹 **Delete cover** | Removes cover files + thumbnail cache in one go, back to "no cover" |
 | 📺 **Series** | Multiple videos in one folder are detected as a series and get **one merged `tvshow.nfo`** (no per-episode split) |
 | 🚧 **Nested-folder check** | A subfolder that still contains videos (or ≥2 subfolders) is marked `有误` (bad) immediately — **no scraping**, hand it to a human |
+| 🧹 **Flatten nested folders** | `kind=nested` folders never reach the auto pipeline — flatten them in one click: `P_` for images, `V_` for videos, `序号_名字_` for named dirs; **preview + confirm dialog + one-click undo**, unknown file types are left untouched |
 | 🔌 **Port / LAN** | Change the **listening port** and toggle **LAN access** right in the UI — **hot-swapped live**, no restart |
 | ✏️ **Quality/Source/Semantic** | **Double-click any cell to edit**; select rows for **bulk actions at the top** |
+| 🔃 **Sorting** | Sort by **ID (default) / added / last edited** × **asc / desc**, remembered together with filters; hover the ID cell to see added & last-edited times |
 | 🚨 **Manual review** | Both site lanes missed, or nested folders → `有误`: skipped by the auto pipeline, handled by human + LLM (see [`有误处理提示词.md`](有误处理提示词.md), Chinese) |
 | 📇 **Code reference** | Common code-prefix table auto-generated from your own DB: [`番号参考表.md`](番号参考表.md) (Chinese) |
 | 💾 **Fully persisted** | Queue, log and settings all survive restarts (SQLite WAL) |
