@@ -1176,6 +1176,7 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
         return {'ok': False, 'error': '拿不到时长，放弃分段方案'}
     # 合并/扩边窗口（前后各留 0.3s，避免正好卡在损坏边界）
     ws = []
+    has_clip = False
     for x in (windows or []):
         try:
             a, b = float(x.get('t1') or 0), float(x.get('t2') or 0)
@@ -1183,40 +1184,49 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
             continue
         if b <= a:
             continue
-        ws.append((max(0.0, a - 0.3), min(dur, b + 0.3)))
-    ws.sort()
-    merged = []
-    for a, b in ws:
-        if merged and a <= merged[-1][1] + 0.05:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        clip = x.get('clip') or None
+        if clip:
+            has_clip = True
+            ws.append((max(0.0, a), min(dur, b), clip))      # 过渡段已带让边，不再扩
         else:
-            merged.append((a, b))
+            ws.append((max(0.0, a - 0.3), min(dur, b + 0.3), None))
+    ws.sort(key=lambda z: z[0])
+    if has_clip:
+        merged = ws                                          # 过渡段是现成的，逐段使用
+    else:
+        merged = []
+        for a, b, _c in ws:
+            if merged and a <= merged[-1][1] + 0.05:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b), None)
+            else:
+                merged.append((a, b, None))
     if not merged:
         return {'ok': False, 'error': '没有需要重编码的窗口'}
     # 关键帧吸附：copy 段必须从关键帧起、到关键帧止，否则会从损坏中途开始拷
-    kfs = kf_times(path)
+    # （有过渡段时不吸附：过渡段是独立的完整片段，边界不需要落在关键帧上）
+    kfs = [] if has_clip else kf_times(path)
     if kfs:
         snapped = []
-        for a, b in merged:
+        for a, b, _c in merged:
             k1 = max([k for k in kfs if k <= a + 1e-3] or [a])
             later = [k for k in kfs if k >= b - 1e-3]
             k2 = min(later) if later else b
             if k2 <= k1:
                 later = [k for k in kfs if k > k1 + 1e-3]
                 k2 = min(later) if later else b
-            snapped.append((max(0.0, k1), min(dur, k2)))
+            snapped.append((max(0.0, k1), min(dur, k2), None))
         merged = snapped
-        say('  按关键帧吸附：%s' % (['%.1f-%.1f' % x for x in merged],))
+        say('  按关键帧吸附：%s' % (['%.1f-%.1f' % (a, b) for a, b, _c in merged],))
     # 段列表：copy / tol 交替
     segs, cur = [], 0.0
-    for a, b in merged:
-        if a - cur > 0.15:
-            segs.append((cur, a, 'copy'))
-        segs.append((a, b, 'tol'))
+    for a, b, clip in merged:
+        if a - cur > 0.05:
+            segs.append((cur, a, 'copy', None))
+        segs.append((a, b, 'clip' if clip else 'tol', clip))
         cur = b
-    if dur - cur > 0.15:
-        segs.append((cur, dur, 'copy'))
-    total_tol = sum(b - a for a, b, m in segs if m == 'tol')
+    if dur - cur > 0.05:
+        segs.append((cur, dur, 'copy', None))
+    total_tol = sum(b - a for a, b, m, _c in segs if m == 'tol')
     kept = max(0.0, dur - total_tol)
     say('  分段修复：%d 段（原样搬运 %d 段 / 重编码 %d 段）；'
         '零损失覆盖 %.1f%%（重编码仅 %.1fs）'
@@ -1229,10 +1239,23 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
     t0 = time.time()
     try:
         names = []
-        for i, (a, b, m) in enumerate(segs):
+        for i, (a, b, m, clip) in enumerate(segs):
+            if m == 'clip':
+                names.append(clip)                       # 过渡段现成，直接进拼接
+                if tick:
+                    tick(0.7 * (i + 1) / max(1, len(segs)), '过渡段 %d/%d' % (i + 1, len(segs)))
+                continue
             out = os.path.join(tmp, 'seg%03d.ts' % i)
             if not _ts_seg(path, a, b, out, m, log=say):
-                return {'ok': False, 'error': '切段失败（第 %d 段 %.1f-%.1f %s）' % (i + 1, a, b, m)}
+                if m == 'copy':
+                    # 字节->时间映射有误差：紧邻窗口的这一小段可能仍有坏数据。
+                    # 自愈：就地改成容错重编码这一段（只影响这一小段，时间轴仍保持）。
+                    say('    搬运失败（%.1f-%.1fs 附近仍有损坏）-> 这一段改容错重编码' % (a, b))
+                    if not _ts_seg(path, a, b, out, 'tol', log=say):
+                        return {'ok': False,
+                                'error': '切段失败（第 %d 段 %.1f-%.1f，copy/tol 都不行）' % (i + 1, a, b)}
+                else:
+                    return {'ok': False, 'error': '切段失败（第 %d 段 %.1f-%.1f %s）' % (i + 1, a, b, m)}
             names.append(out)
             if tick:
                 tick(0.7 * (i + 1) / max(1, len(segs)), '切段 %d/%d' % (i + 1, len(segs)))
@@ -1256,7 +1279,7 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
             return {'ok': False, 'error': '产物时长异常（%.1fs vs 源 %.1fs，损坏段共 %.1fs）'
                     % (d2, dur, total_tol)}
         bads = 0
-        for a, b in merged[:6]:
+        for a, b, _c in merged[:6]:
             for t in (max(0.0, a - 1.0), min(max(0.0, d2 - 2.5), b + 1.0)):
                 bad, nb = _probe_at(stage, t, 2.0)
                 if bad:
@@ -1283,6 +1306,119 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
                 'windows': merged, 'kept_ratio': kept / max(1e-6, dur),
                 'undo': {'action': 'restore', 'path': path, 'backup': orig},
                 'secs': round(time.time() - t0, 1)}
+    finally:
+        try:
+            import shutil as _sh
+            _sh.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _aac_params(path):
+    """源音频参数（静音轨用，保证 concat -c copy 不因参数不一致失败）。"""
+    try:
+        rc, so, se = _run([FFPROBE, '-v', 'error', '-select_streams', 'a:0',
+                           '-show_entries', 'stream=sample_rate,channels', '-of', 'csv=p=0', path], 120)
+        parts = [x for x in (so or '').strip().split(',') if x.strip()]
+        rate = int(parts[0]) if parts and parts[0].isdigit() else 48000
+        ch = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 2
+        return rate, ('mono' if ch == 1 else 'stereo')
+    except Exception:
+        return 48000, 'stereo'
+
+
+def _interp_clip(path, g, stem, W, H, fps, arate, acl, log=None):
+    """单个洞的过渡段：边界两帧 blend 线性过渡 + 等长静音轨，编码成 TS。
+
+    返回 (a, b) 表示该过渡段覆盖的时间区间；失败返回 None。
+    """
+    a = b = None
+    xf, yf = stem + '.x.png', stem + '.y.png'
+    for d in (0.2, 0.5, 1.0, 2.0):
+        xt = max(0.0, g['t1'] - d)
+        if _grab_png(path, xt, xf):
+            a = xt
+            break
+    if a is None:
+        return None
+    for d in (0.2, 0.5, 1.0, 2.0):
+        yt = g['t2'] + d
+        if _grab_png(path, yt, yf):
+            b = yt
+            break
+    if b is None:
+        return None
+    dur = max(0.2, b - a)
+    fr = max(1.0, fps or 25.0)
+    vf = ("[0:v]scale=%d:%d,format=yuv420p,setpts=PTS-STARTPTS,fps=%.4f,trim=duration=%.3f[x];"
+          "[1:v]scale=%d:%d,format=yuv420p,setpts=PTS-STARTPTS,fps=%.4f,trim=duration=%.3f[y];"
+          "[x][y]blend=all_expr='A*(1-T/%.3f)+B*(T/%.3f)',format=yuv420p,setpts=PTS-STARTPTS[v]"
+          % (W, H, fr, dur, W, H, fr, dur, dur, dur))
+    rc, so, se = _run([FFMPEG, '-hide_banner', '-v', 'error', '-nostdin',
+                       '-loop', '1', '-framerate', '%.4f' % fr, '-t', '%.3f' % dur, '-i', xf,
+                       '-loop', '1', '-framerate', '%.4f' % fr, '-t', '%.3f' % dur, '-i', yf,
+                       '-f', 'lavfi', '-t', '%.3f' % dur, '-i', 'anullsrc=r=%d:cl=%s' % (arate, acl),
+                       '-filter_complex', vf, '-map', '[v]', '-map', '2:a',
+                       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                       '-threads', str(_threads()),
+                       '-c:a', 'aac', '-ar', str(arate),
+                       '-ac', '1' if acl == 'mono' else '2', '-shortest',
+                       '-f', 'mpegts', '-y', stem + '.ts'], 1800)
+    for x in (xf, yf):
+        try:
+            os.remove(x)
+        except Exception:
+            pass
+    if rc != 0 or not os.path.isfile(stem + '.ts') or os.path.getsize(stem + '.ts') < 2048:
+        if log:
+            log('    过渡段失败 @ %.1fs: %s' % (g['t1'], (se or '')[-120:]))
+        return None
+    return (a, b)
+
+
+def interp_splice_repair(path, gaps, log=None, tick=None):
+    """分批插帧 + 分段拼接：每个洞各自生成过渡段（命令短），未损坏段 -c copy。
+
+    适合洞很多的文件（例如 67 处小洞）：既避免 filter_complex 超长，
+    又不像整片重编码那样损失未损坏部分。
+    """
+    import tempfile
+    say = log or (lambda *a: None)
+    gs = sorted([g for g in (gaps or []) if g.get('dur', 0) <= GAP_SEC], key=lambda g: g['t1'])
+    if not gs:
+        return {'ok': False, 'error': '没有 <= %.0fs 的小洞' % GAP_SEC}
+    W, H, fps = _ffprobe_wh(path)
+    if not W or not H:
+        return {'ok': False, 'error': '读不到视频参数'}
+    arate, acl = _aac_params(path)
+    say('  分批插帧：%d 处洞，逐个生成过渡段（未损坏段原样搬运）' % len(gs))
+    tmp = tempfile.mkdtemp(prefix='isplice_')
+    wins, bad = [], 0
+    try:
+        for i, g in enumerate(gs):
+            if _stop_req():
+                return {'ok': False, 'error': '已请求停止（未替换）'}
+            got = _interp_clip(path, g, os.path.join(tmp, 'gap%03d' % i), W, H, fps, arate, acl, log=say)
+            if not got:
+                bad += 1
+                continue
+            wins.append({'t1': got[0], 't2': got[1], 'clip': os.path.join(tmp, 'gap%03d.ts' % i)})
+            if tick and (i % 5 == 0 or i == len(gs) - 1):
+                tick(0.6 * (i + 1) / len(gs), '过渡段 %d/%d' % (i + 1, len(gs)))
+        if not wins:
+            return {'ok': False, 'error': '所有洞的过渡段都生成失败'}
+        if bad:
+            say('  ⚠ %d 个洞的过渡段失败（该处将保留原样）' % bad)
+        r = splice_repair(path, wins, log=say, tick=tick)
+        if r.get('ok'):
+            # 产物不应再有 >=64KB 数据洞（洞已被过渡段替换）
+            chk = scan_holes_chunk(path, 0, 1 << 62)
+            hs = chk.get('holes') or []
+            if hs:
+                return {'ok': False, 'error': '产物仍有 %d 处数据洞（最大 %.0fKB）'
+                        % (len(hs), max(h['size'] for h in hs) / 1024.0),
+                        'stage': os.path.dirname(path)}
+        return r
     finally:
         try:
             import shutil as _sh
