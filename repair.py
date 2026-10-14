@@ -126,7 +126,7 @@ def _track_tables(buf, trak, moov_off):
         cb[c] = sum(sizes[si:si + cnt])
         si += cnt
     return dict(nco=nco, off=co, cb=cb, data_abs=moov_off + a, avail=len(buf) - a,
-                present=P, nsamp=ns, consumed=si)
+                present=P, nsamp=ns, consumed=si, spc=spc)
 
 
 # ----------------------------------------------------------------- ① 索引重建
@@ -317,13 +317,179 @@ def probe(path):
     return r
 
 
-def plan_repair(path, log=None):
-    """汇总一个文件该走哪级 + 代价。只读。"""
+# ----------------------------------------------------------------- ② 小洞：定位 + 映射到时间轴
+NUL_RX = None
+
+
+def find_holes(path, min_hole=None, block=4 * 1024 * 1024):
+    """数据级：在 mdat 里找 >= min_hole（默认 64KB）的连续 0x00 区段。
+
+    这是“下载预分配 / 没写满”留下的真洞。**注意代价**：要把整个 mdat 读一遍
+    （NAS 实测 ~11MB/s，5GB 约 8 分钟），所以只用于按需深检，不当全库例行体检。
+    也注意：索引区里零字节是正常的（表里都是小整数），所以只扫 mdat。
+    """
+    import re
+    global NUL_RX
+    min_hole = int(min_hole or HOLE_MIN)
+    out = []
+    try:
+        sz = os.path.getsize(path)
+        with open(path, 'rb') as fp:
+            tops = {t: (o, l) for t, o, l, hl in _boxes(fp, 0, sz, limit=64)}
+            md = tops.get('mdat')
+            if not md:
+                return out
+            m0, m1 = md[0], md[0] + md[1]
+            rx = re.compile(rb'\x00{%d,}' % min_hole)
+            fp.seek(m0)
+            pos, carry = m0, b''
+            while pos < m1:
+                b = fp.read(min(block, m1 - pos))
+                if not b:
+                    break
+                buf = carry + b
+                base = pos - len(carry)
+                for m in rx.finditer(buf):
+                    out.append({'start': base + m.start(), 'end': base + m.end(),
+                                'size': m.end() - m.start()})
+                carry = buf[-min(min_hole - 1, len(buf)):] if min_hole > 1 else b''
+                pos += len(b)
+    except Exception:
+        pass
+    return out
+
+
+def _mdhd_timescale(buf, trak):
+    md = _path_box(buf, trak[1] + trak[3], trak[1] + trak[2], ['mdia', 'mdhd'])
+    if not md:
+        return 0
+    o, l, hl = md
+    try:
+        ver = buf[o + hl]
+        if ver == 1:
+            return struct.unpack('>I', buf[o + hl + 20:o + hl + 24])[0]
+        return struct.unpack('>I', buf[o + hl + 12:o + hl + 16])[0]
+    except Exception:
+        return 0
+
+
+def _stts(buf, trak):
+    sb = _path_box(buf, trak[1] + trak[3], trak[1] + trak[2], ['mdia', 'minf', 'stbl'])
+    if not sb:
+        return []
+    ch = {c[0]: c for c in _boxes(buf, sb[0] + sb[2], sb[0] + sb[1])}
+    if 'stts' not in ch:
+        return []
+    _, o, l, hl = ch['stts']
+    try:
+        n = struct.unpack('>I', buf[o + hl + 4:o + hl + 8])[0]
+        a = o + hl + 8
+        return [struct.unpack('>II', buf[a + i * 8:a + i * 8 + 8]) for i in range(n)]
+    except Exception:
+        return []
+
+
+def holes_to_time(path, holes):
+    """把字节区间映射到时间轴：用 stco/stsz/stsc + stts 算，不靠解码。"""
+    if not holes:
+        return []
+    try:
+        with open(path, 'rb') as fp:
+            sz = os.path.getsize(path)
+            tops = {t: (o, l) for t, o, l, hl in _boxes(fp, 0, sz, limit=64)}
+            mo = tops['moov'][0]
+            fp.seek(mo)
+            buf = fp.read()
+    except Exception:
+        return []
+    traks = [b for b in _boxes(_MemFile(buf), 8, len(buf)) if b[0] == 'trak']
+    if not traks:
+        return []
+    V = _track_tables(buf, traks[0], mo)
+    if not V or not V.get('off'):
+        return []
+    scale = _mdhd_timescale(buf, traks[0]) or 1000
+    stts = _stts(buf, traks[0])
+    samp_t = []
+    t = 0
+    for cnt, delta in stts:
+        for _ in range(cnt):
+            samp_t.append(t)
+            t += delta
+    offs, spc = V['off'], V['spc']
+    cs, acc = [], 0
+    for c in range(1, len(offs) + 1):
+        cs.append(acc)
+        acc += spc[c] if c < len(spc) else 0
+
+    def _find_chunk(byte):
+        lo, hi = 0, len(offs) - 1
+        best = 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if offs[mid] <= byte:
+                best, lo = mid, mid + 1
+            else:
+                hi = mid - 1
+        return best
+
+    out = []
+    for h in holes:
+        ci = _find_chunk(h['start'])
+        cj = _find_chunk(h['end'])
+        si = cs[ci] if ci < len(cs) else 0
+        sj = cs[cj] if cj < len(cs) else len(samp_t) - 1
+        t1 = (samp_t[min(si, len(samp_t) - 1)] / scale) if samp_t else 0.0
+        t2 = (samp_t[min(sj, len(samp_t) - 1)] / scale) if samp_t else 0.0
+        out.append(dict(h, t1=round(t1, 2), t2=round(t2, 2), dur=round(max(0.0, t2 - t1), 2)))
+    return out
+
+
+def find_gaps(path, min_hole=None):
+    """数据级找洞并映射到时间：返回 [{start,end,size,t1,t2,dur}]。"""
+    return holes_to_time(path, find_holes(path, min_hole))
+
+
+def probe_windows(path, n=6, sec=10, log=None):
+    """低成本数据级体检：抽 n 个窗口做容错解码，数解码器级错误。"""
+    bad = []
+    dur = 0.0
+    try:
+        rc, so, se = _run([FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
+                           '-of', 'default=nw=1:nk=1', path], 90)
+        dur = float((so or '0').strip() or 0)
+    except Exception:
+        dur = 0.0
+    if dur <= 0:
+        return {'dur': 0, 'bad': [], 'windows': 0, 'sec': sec, 'note': '读不到时长'}
+    for k in range(n):
+        t = dur * (k + 0.5) / n
+        rc, so, se = _run([FFMPEG, '-hide_banner', '-v', 'error', '-err_detect', 'ignore_err',
+                           '-ss', '%.2f' % max(0, t - sec / 2), '-t', '%.0f' % sec,
+                           '-i', path, '-f', 'null', '-'], 180)
+        marks = [x for x in (se or '').splitlines()
+                 if ('concealing' in x.lower() or 'error while decoding' in x.lower()
+                     or 'Invalid NAL' in x or 'corrupt' in x.lower())]
+        if marks:
+            bad.append({'t': round(t, 1), 'n': len(marks), 'sample': marks[0][:90]})
+            if log:
+                log('  窗口 %.0fs 有 %d 条解码错误：%s' % (t, len(marks), marks[0][:70]))
+    return {'dur': round(dur, 1), 'bad': bad, 'windows': n, 'sec': sec}
+
+
+def plan_repair(path, deep=False, log=None):
+    """汇总该文件走哪级 + 代价。
+
+    deep=False：只看头部（快，0.7 秒/文件）——**洞在这个层面看不见**。
+    deep=True ：额外做数据级检查（字节扫洞 + 抽窗解码），慢，但能看到"能打开的坏文件"。
+    """
     pr = probe(path)
     out = dict(pr)
     out['tier'] = None
     out['plan'] = []
     out['gap_sec'] = GAP_SEC
+    out['deep'] = bool(deep)
+
     if pr['cls'] == 'dead':
         out['tier'] = 'none'; out['reason'] = pr['reason'] + ' -> 不可修'
         return out
@@ -341,19 +507,83 @@ def plan_repair(path, log=None):
             out['tier'] = 'none'
             out['reason'] = '索引重建条件不满足：' + (p.get('error') or '')
         return out
-    if pr['cls'] == 'ok':
-        out['tier'] = 'ok'; out['reason'] = '无需处理'
+
+    # cls == 'ok' 或 'other' —— 是否有数据洞，只有深检知道
+    if pr['cls'] == 'ok' and not deep:
+        out['tier'] = 'ok'
+        out['reason'] = '头部级通过（是否有数据洞需深检）'
         return out
+
+    gaps = []
+    try:
+        gaps = find_gaps(path)
+    except Exception:
+        gaps = []
+    if gaps:
+        small = [g for g in gaps if g['dur'] <= GAP_SEC]
+        big = [g for g in gaps if g['dur'] > GAP_SEC]
+        out['gaps'] = gaps
+        if big:
+            out['tier'] = 'reencode'
+            out['plan'] = ['③ 大洞 %d 处（> %.0fs，最长 %.1fs）：容错重编码'
+                           % (len(big), GAP_SEC, max(g['dur'] for g in big))]
+        else:
+            out['tier'] = 'gap'
+            out['plan'] = ['② 小洞插帧：%d 处（合计 %.1fs，均 <= %.0fs）'
+                           % (len(small), sum(g['dur'] for g in small), GAP_SEC)]
+        return out
+
+    if pr['cls'] == 'ok':
+        w = None
+        try:
+            w = probe_windows(path, n=4, sec=6, log=None)
+        except Exception:
+            w = None
+        if w and w.get('bad'):
+            out['tier'] = 'reencode'
+            out['plan'] = ['③ 无 >=64KB 数据洞，但抽窗解码有错误（%d 个窗口）：容错重编码'
+                           % len(w['bad'])]
+            out['windows'] = w
+            return out
+        out['tier'] = 'ok'
+        out['reason'] = '深检通过（无 >=64KB 数据洞，抽窗无解码错误）'
+        out['windows'] = w
+        return out
+
     out['tier'] = 'reencode'
-    out['plan'] = ['③ 大洞/码流损坏：容错重编码（独立目录 -> 完成后自动替换）']
+    out['plan'] = ['③ 码流损坏：容错重编码（独立目录 -> 完成后自动替换）']
     return out
 
 
 # ----------------------------------------------------------------- ③ 容错重编码（带进度）
+
+
 def reencode_cmd(path, out):
     return [FFMPEG, '-hide_banner', '-err_detect', 'ignore_err', '-i', path,
             '-fps_mode', 'cfr', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
             '-c:a', 'aac', '-y', out]
+
+
+def _ffprobe_wh(path):
+    """读分辨率与帧率（给插帧用，保证尺寸/帧率一致）。"""
+    w = h = 0
+    fps = 25.0
+    rc, so, se = _run([FFPROBE, '-v', 'error', '-select_streams', 'v:0', '-show_entries',
+                       'stream=width,height,r_frame_rate', '-of', 'default=nw=1', path], 90)
+    for line in (so or '').splitlines():
+        if line.startswith('width='):
+            w = int(line.split('=')[1] or 0)
+        elif line.startswith('height='):
+            h = int(line.split('=')[1] or 0)
+        elif line.startswith('r_frame_rate='):
+            v = line.split('=')[1]
+            if '/' in v:
+                a, b = v.split('/')
+                try:
+                    fps = float(a) / max(1.0, float(b))
+                except Exception:
+                    pass
+    return w, h, (fps or 25.0)
 
 
 def tolerant_reencode(path, out_dir=None, log=None, tick=None):

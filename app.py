@@ -660,17 +660,33 @@ def _items_by_ids(ids=None):
         'SELECT id,name,path,kind,quality FROM items WHERE present=1 ORDER BY id')]
 
 
-def _job_health(ids=None, force=False):
-    """只读体检：逐文件探测并写入 health 表。
+def _ensure_health(dbc):
+    dbc.execute("CREATE TABLE IF NOT EXISTS health(item_id INTEGER, file TEXT, cls TEXT, reason TEXT,"
+                " tier TEXT, size INTEGER, checked_at TEXT, deep INTEGER DEFAULT 0,"
+                " PRIMARY KEY(item_id,file))")
+    try:
+        dbc.execute("ALTER TABLE health ADD COLUMN deep INTEGER DEFAULT 0")   # 旧库补列
+    except Exception:
+        pass
+    dbc.commit()
 
-    已体检过（且文件体积未变）的默认**跳过**；force=1 才重测。
+
+def _job_health(ids=None, force=False, deep=False):
+    """只读体检，结果写入 health 表（下次默认跳过）。
+
+    deep=False：只看头部（快）。
+    deep=True ：数据级深检（字节扫洞 + 抽窗解码），慢 —— 能发现"能打开的坏文件"。
+    已体检过（体积未变）的默认跳过；deep 会把浅检结果视为"未测"从而重测。
     """
-    _begin('health', 1)
+    _begin('deephealth' if deep else 'health', 1)
     dbc = mlib.db()
     try:
+        _ensure_health(dbc)
         items = _items_by_ids(ids)
         bad, files, checked, skipped = {}, 0, 0, 0
         fixable, heavy, dead = set(), set(), set()
+        if deep:
+            _log('深检：逐文件扫 mdat 找洞（NAS ~11MB/s，大文件较慢）')
         _tick(0, len(items))
         for n, it in enumerate(items, 1):
             if _stop_req():
@@ -678,12 +694,12 @@ def _job_health(ids=None, force=False):
                 break
             vids = _video_files(it['path'])
             if not vids:
-                dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?)',
-                            (it['id'], '', 'novideo', '目录里没有视频', 'none', 0, mlib.now()))
+                dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)',
+                            (it['id'], '', 'novideo', '目录里没有视频', 'none', 0, mlib.now(), 1 if deep else 0))
                 continue
             known = {}
             if not force:
-                for r in dbc.execute('SELECT file,cls,tier,size FROM health WHERE item_id=?', (it['id'],)):
+                for r in dbc.execute('SELECT file,cls,tier,size,deep FROM health WHERE item_id=?', (it['id'],)):
                     known[r['file']] = dict(r)
             for f in vids:
                 base = os.path.basename(f)
@@ -693,44 +709,54 @@ def _job_health(ids=None, force=False):
                 except Exception:
                     sz = 0
                 k = known.get(base)
-                if k and k.get('cls') and int(k.get('size') or 0) == sz:
+                usable = (k and k.get('cls') and int(k.get('size') or 0) == sz
+                          and (int(k.get('deep') or 0) >= (1 if deep else 0)))
+                if usable and not force:
                     cls, tier = k['cls'], k.get('tier') or ''
                     skipped += 1
                 else:
                     try:
-                        p = repair.plan_repair(f)
+                        p = repair.plan_repair(f, deep=deep)
                     except Exception as e:
                         p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
                     cls, tier = p.get('cls'), p.get('tier') or ''
-                    dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?)',
-                                (it['id'], base, cls, (p.get('reason') or '')[:170], tier, sz, mlib.now()))
+                    if deep and p.get('gaps') and cls == 'ok':
+                        cls = 'hole'
+                    dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)',
+                                (it['id'], base, cls, (p.get('reason') or ' / '.join(p.get('plan') or []))[:170],
+                                 tier, sz, mlib.now(), 1 if deep else 0))
                     checked += 1
-                    if cls != 'ok':
-                        _log('  id=%s %s [%s] %s' % (it['id'], base[:42], cls, (p.get('reason') or '')[:64]))
-                if cls != 'ok':
+                    if cls not in ('ok',):
+                        _log('  id=%s %s [%s] %s' % (it['id'], base[:42], cls, (p.get('reason') or '')[:58]))
+                if cls not in ('ok',):
                     bad.setdefault(cls, []).append(it['id'])
                 if tier == 'index':
                     fixable.add(it['id'])
+                elif tier == 'gap':
+                    fixable.add(it['id'])
                 elif tier == 'reencode':
                     heavy.add(it['id'])
-                elif cls != 'ok':
+                elif cls not in ('ok',):
                     dead.add(it['id'])
             if n % 20 == 0:
                 dbc.commit()
             _tick(n)
         dbc.commit()
-        _log('体检完成：%d 条 / %d 个视频（新测 %d、跳过已测 %d）；可修索引 %d / 需重编码 %d / 不可修 %d'
-             % (len(items), files, checked, skipped, len(fixable), len(heavy), len(dead)))
+        _log('%s完成：%d 条 / %d 个视频（新测 %d、跳过已测 %d）；可修 %d / 需重编码 %d / 不可修 %d'
+             % ('深检' if deep else '体检', len(items), files, checked, skipped,
+                len(fixable), len(heavy), len(dead)))
         for k2, v2 in sorted(bad.items(), key=lambda x: -len(x[1])):
             _log('  %-11s %d 个文件' % (k2, len(v2)))
         LAST_OP.clear()
-        LAST_OP.update({'kind': 'health', 'files': files, 'bad': sum(len(v) for v in bad.values()),
-                        'checked': checked, 'skipped': skipped, 'fixable': len(fixable),
-                        'heavy': len(heavy), 'dead': len(dead), 'ids': sorted(fixable)})
-        _end('health 完成')
+        LAST_OP.update({'kind': 'health', 'deep': bool(deep), 'files': files,
+                        'bad': sum(len(v) for v in bad.values()), 'checked': checked,
+                        'skipped': skipped, 'fixable': len(fixable), 'heavy': len(heavy),
+                        'dead': len(dead), 'ids': sorted(fixable)})
+        _end(('deephealth' if deep else 'health') + ' 完成')
     except Exception:
         _log('ERR ' + traceback.format_exc()[:500])
         _end('health 失败')
+
 
 
 def _health_of(item_id):
@@ -1471,7 +1497,8 @@ class H(BaseHTTPRequestHandler):
                                int(q.get('ai_group') or 0))
             elif p == '/api/health':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                ok = start_job(_job_health, ids, (q.get('force') or '') in ('1', 'true', 'yes'))
+                ok = start_job(_job_health, ids, (q.get('force') or '') in ('1', 'true', 'yes'),
+                                (q.get('deep') or '') in ('1', 'true', 'yes'))
             elif p == '/api/repair/plan':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 return self._json(_repair_plan(ids, refresh=(q.get('refresh') or '') in ('1', 'true', 'yes')))
@@ -1709,6 +1736,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-thumbs">刷新缩略图</button>
     <button id="a-coverdel">删除封面图</button>
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
+    <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <button id="a-flatten" title="把嵌套子目录平铺成 app 可自动刮削的结构：图片 P_、视频 V_，具名目录 序号_名字_；子目录移入 trash 可回滚">整理嵌套目录</button>
     <button class="danger" id="a-del">删除</button>
@@ -1892,6 +1920,12 @@ function rpShow(title,sum,html,btns){
     if(b.primary)el.className='primary';el.textContent=b.label;el.onclick=b.fn;$('#rp-btns').appendChild(el);});
   $('#modal6').classList.add('on');}
 $('#md6-close').onclick=()=>$('#modal6').classList.remove('on');
+$('#a-deep').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做数据级深检（要扫整个文件，很慢；不写媒体文件），继续？')))return;
+  if(!confirm(T('深检会逐个读取视频文件找数据洞（NAS 上约 11MB/s）。继续？')))return;
+  const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
+  await post('/api/health'+(ids?'?ids='+ids:'')+fq+(fq?'&':'?')+'deep=1');};
 $('#a-health').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做只读体检（逐文件探测，较慢；不写任何文件），继续？')))return;
