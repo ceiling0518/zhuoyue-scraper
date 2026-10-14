@@ -1190,14 +1190,39 @@ def items(params):
     total = dbc.execute('SELECT COUNT(*) c FROM items WHERE ' + ws, args).fetchone()['c']
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
-    rows = dbc.execute('SELECT id,name,code,sem_kind,sem_code,sem_manual,status,site,'
+    rows = dbc.execute('SELECT id,name,code,sem_kind,sem_code,sem_manual,status,site,path,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT CASE WHEN COUNT(*)=0 THEN 0 "
-                       "WHEN SUM(CASE WHEN cls<>'ok' THEN 1 ELSE 0 END)>0 THEN 2 ELSE 1 END "
+                       "WHEN SUM(CASE WHEN cls<>'ok' THEN 1 ELSE 0 END)>0 THEN 2 "
+                       "WHEN MIN(deep)=1 THEN 3 ELSE 1 END "
                        "FROM health h WHERE h.item_id=items.id) AS hstate "
                        'FROM items WHERE ' + ws + ' ORDER BY ' + order_by + ' LIMIT ? OFFSET ?',
                        args + [limit, offset]).fetchall()
-    return {'total': total, 'limit': limit, 'offset': offset, 'rows': [dict(r) for r in rows]}
+    out = [dict(r) for r in rows]
+    # 记录过期检查：文件体积变了（例如刚修过）就不能再算「已检」-> hstate=4
+    for d in out:
+        if not d.get('hstate'):
+            continue
+        try:
+            recs = dbc.execute('SELECT file,size FROM health WHERE item_id=?',
+                               (d['id'],)).fetchall()
+        except Exception:
+            recs = []
+        if not recs:
+            d['hstate'] = 0
+            continue
+        p = d.get('path') or ''
+        stale = 0
+        for r in recs:
+            try:
+                cur = os.path.getsize(os.path.join(p, r['file']))
+            except Exception:
+                cur = -1
+            if int(r['size'] or 0) != cur:
+                stale += 1
+        if stale:
+            d['hstate'] = 4
+    return {'total': total, 'limit': limit, 'offset': offset, 'rows': out}
 
 
 def item_detail(iid):
@@ -2146,7 +2171,7 @@ $('#fl-undo').onclick=async()=>{
   alert(j.ok?(T('回滚完成')+'：restored '+j.restored+((j.errors&&j.errors.length)?('，异常 '+j.errors.length):'')):(T('回滚失败')+'：'+(j.error||'')));
   await fetch('/api/scan?mode=incr',{method:'POST'});list();};
 let _jbWas=false;
-function hbadge(r){const s=+r.hstate||0;if(!s)return '';return s===2?' <span style="color:var(--bad)" title="体检：发现问题">⚠</span>':' <span style="color:#4ade80" title="体检：正常">✓</span>';}
+function hbadge(r){const s=+r.hstate||0;if(!s)return '';const M={4:['var(--muted)','记录已过期（文件有变动，如刚修复）—— 需重测','↻'],2:['var(--bad)','发现问题：体检/深检不合格（点开看详情）','⚠'],3:['#2e7d32','体检 + 深检 均通过','✓✓'],1:['var(--muted)','仅体检通过（未做深检；未知是否有数据洞）','✓']};const m=M[s]||M[1];return ' <span style="color:'+m[0]+'" title="'+T(m[1])+'">'+m[2]+'</span>'}
 function rpShow(title,sum,html,btns){
   $('#rp-title').textContent=title;$('#rp-sum').textContent=sum||'';$('#rp-body').innerHTML=html||'';
   $('#rp-btns').innerHTML='';(btns||[]).forEach(b=>{const el=document.createElement('button');
