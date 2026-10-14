@@ -725,9 +725,15 @@ def _job_health(ids=None, force=False, deep=False):
                     cls, tier = p.get('cls'), p.get('tier') or ''
                     if deep and p.get('gaps') and cls == 'ok':
                         cls = 'hole'
-                    dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)',
-                                (it['id'], base, cls, (p.get('reason') or ' / '.join(p.get('plan') or []))[:170],
-                                 tier, sz, mlib.now(), 1 if deep else 0))
+                    _old = known.get(base) or {}
+                    if (not deep) and int(_old.get('deep') or 0):
+                        skipped += 1
+                        _log('  id=%s %s 保留深检记录（浅检不覆盖）' % (it['id'], base[:40]))
+                    else:
+                        dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)',
+                                    (it['id'], base, cls,
+                                     (p.get('reason') or ' / '.join(p.get('plan') or []))[:170],
+                                     tier, sz, mlib.now(), 1 if deep else 0))
                     checked += 1
                     if cls not in ('ok',):
                         _log('  id=%s %s [%s] %s' % (it['id'], base[:42], cls, (p.get('reason') or '')[:58]))
@@ -829,13 +835,19 @@ def _job_repair(ids=None, mode='index', go=False):
             if _stop_req():
                 _log('! 已请求停止')
                 break
+            _hmap = _health_of(it['id'])          # 体检/深检的记录：优先采信
             for f in _video_files(it['path']):
-                try:
-                    p = repair.plan_repair(f)
-                except Exception as e:
-                    p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
-                t = p.get('tier')
                 base = os.path.basename(f)[:40]
+                _h = _hmap.get(os.path.basename(f)) or {}
+                if _h.get('cls') and _h.get('tier'):
+                    p = {'cls': _h['cls'], 'tier': _h['tier'], 'reason': _h.get('reason') or '',
+                         'plan': [], 'from': 'record'}
+                else:
+                    try:
+                        p = repair.plan_repair(f)
+                    except Exception as e:
+                        p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
+                t = p.get('tier')
                 if t == 'index' and go and mode in ('index', 'safe', 'all'):
                     r = repair.apply_index(f, log=_log)
                     if r.get('ok'):
@@ -903,7 +915,14 @@ def _job_repair(ids=None, mode='index', go=False):
                     lists['skip'].append('id=%s %s [%s]' % (it['id'], base, p.get('cls')))
                     why = (p.get('reason') or '')
                     plan = ' / '.join(p.get('plan') or [])
-                    _log('  id=%s %s [%s] %s' % (it['id'], base, p.get('cls'), (plan or why)[:70]))
+                    hint = ''
+                    if t == 'reencode' and mode != 'all':
+                        hint = '（大洞/码流损坏：需重编码，当前模式不含 —— 请点「全部（含重编码）」）'
+                    elif t in ('gap', 'remux') and mode == 'index':
+                        hint = '（可修：需「修索引+小洞」或「全部」模式）'
+                    elif t in ('none', None, '') or p.get('cls') in ('dead', 'moov-gone'):
+                        hint = '（不可修：需重下或同源参考）'
+                    _log('  id=%s %s [%s] %s%s' % (it['id'], base, p.get('cls'), (plan or why)[:60], hint))
             _tick(n)
         _log('修复结束：索引 %d / 重封装 %d / 小洞过渡 %d / 重编码 %d / 跳过 %d / 失败 %d'
              % (n_idx, n_remux, n_gap, n_re, n_skip, n_fail))
