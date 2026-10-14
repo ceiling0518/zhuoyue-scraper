@@ -2008,7 +2008,7 @@ $('#a-repair').onclick=async()=>{
     +x.files.map(f=>'<div class="meta">'+esc(String(f.file||'').slice(0,40))+' <b>['+esc(f.cls||'')+']</b> '
       +esc((f.plan&&f.plan.length)?f.plan.join(' / '):(f.reason||''))+'</div>').join('')+'</td></tr>').join('');
   const cnt=t=>(r.items||[]).reduce((a,x)=>a+x.files.filter(f=>f.tier===t).length,0);
-  const idx=cnt('index')+cnt('gap'),re=cnt('reencode');
+  const idx=cnt('index')+cnt('gap')+cnt('remux'),re=cnt('reencode');
   rpShow(T('修复'), idx+' '+T('可修（索引/小洞）')+' / '+re+' '+T('需重编码')+' / '+Math.max(0,r.n_files-idx-re)+' '+T('不可修'),
     '<p>'+T('小洞阈值')+' '+r.gap_sec+T(' 秒（插帧待接入）')+'</p><table><thead><tr><th>id</th><th>'+T('条目')+'</th><th>'+T('文件与处理')+'</th></tr></thead><tbody>'+rows+'</tbody></table>',
     [{label:T('修索引+小洞（原地·可回滚）'),primary:true,fn:async()=>{await post('/api/repair?ids='+ids+'&mode=safe&go=1');$('#modal6').classList.remove('on');list();}},
@@ -2033,7 +2033,7 @@ async function _afterOp(){
     const hasB=(r.backups||[]).length;
     rpShow(T('修复完成'), T('成功')+' '+r.ok+' / '+T('失败')+' '+r.fail,
       '<p>'+T('索引重建')+' '+r.index+' · '+T('重编码')+' '+r.recode+' · '+T('跳过')+' '+r.skip+'</p>'
-      +_sec('index',T('已重建索引'))+_sec('recode',T('已重编码'))+_sec('fail',T('失败'))+_sec('skip',T('跳过/未处理'))
+      +_sec('index',T('已重建索引'))+_sec('remux',T('已重封装'))+_sec('recode',T('已重编码'))+_sec('fail',T('失败'))+_sec('skip',T('跳过/未处理'))
       +(hasB?('<p class="muted">'+T('回滚备份')+' '+hasB+' '+T('个（重编码前原文件）')+'</p>'):
              '<p class="muted">'+T('无回滚备份（索引重建是纯追加，回滚=truncate 回原长度）')+'</p>'),
       (hasB?[{label:T('是 — 删除回滚备份'),fn:async()=>{if(!confirm(T('删除 '+hasB+' 个 .orig 备份？（不可恢复）')))return;const r2=await post('/api/repair/purge');alert(T('已删除')+' '+r2.removed);$('#modal6').classList.remove('on');}},
