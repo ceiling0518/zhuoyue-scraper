@@ -17,6 +17,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mlib                                   # noqa: E402
 
+import flatten                                  # 整理嵌套目录（平铺 + P_/V_ 命名 + 可回滚）
+
+
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding='utf-8')
@@ -525,6 +528,87 @@ def _job_queue():
         _tick(n)
     mlib.unload_ai()
     _end('queue %d/%d' % (ok, n))
+
+
+def _flatten_targets(ids=None):
+    """要整理的条目：给了 ids 用 ids；否则全部 kind='nested'。"""
+    c = mlib.db()
+    if ids:
+        q = ('SELECT id,name,path,kind,quality FROM items WHERE present=1 AND id IN (%s)'
+             % ','.join('?' * len(ids)))
+        return [dict(r) for r in c.execute(q, ids)]
+    return [dict(r) for r in c.execute(
+        "SELECT id,name,path,kind,quality FROM items WHERE present=1 "
+        "AND COALESCE(kind,'')='nested' ORDER BY id")]
+
+
+def _flatten_plan(ids=None, limit=None):
+    """产出整理计划（只读，不动任何文件）。"""
+    items = _flatten_targets(ids)
+    if limit:
+        items = items[:limit]
+    out, warn_n = [], 0
+    for it in items:
+        try:
+            p = flatten.build_plan(it['path'])
+        except Exception as e:
+            p = {'ok': False, 'error': type(e).__name__ + ': ' + str(e)[:70], 'items': [], 'subs': [],
+                 'count': 0, 'depth': 0, 'max_name_len': 0, 'warn': False, 'reasons': [], 'dups': [], 'clash': []}
+        p['id'] = it['id']
+        p['name'] = it['name']
+        if not os.path.isdir(it['path']):
+            p['ok'] = False
+            p.setdefault('error', '目录不可访问')
+        if p.get('warn'):
+            warn_n += 1
+        out.append(p)
+    return {'items': out, 'total': len(out), 'files': sum(x.get('count', 0) for x in out),
+            'warn': warn_n, 'bad': [x['id'] for x in out if not x.get('ok')],
+            'warn_depth': flatten.WARN_DEPTH, 'warn_len': flatten.WARN_NAME_LEN}
+
+
+def _job_flatten(ids=None):
+    _begin('flatten', 1)
+    tdir = os.path.join(HERE, 'trash')
+    done, undos = [], []
+    try:
+        items = _flatten_targets(ids)
+        _tick(0, len(items))
+        n = 0
+        for it in items:
+            if _stop_req():
+                _log('! 已请求停止')
+                break
+            n += 1
+            _tick(n)
+            try:
+                p = flatten.build_plan(it['path'])
+            except Exception as e:
+                _log('  id=%s 跳过（%s）' % (it['id'], type(e).__name__))
+                continue
+            if not p.get('ok'):
+                _log('  id=%s 跳过（重名%d / 撞名%d / %s）' % (it['id'], len(p['dups']),
+                                                              len(p['clash']), p.get('error') or ''))
+                continue
+            if p.get('warn'):
+                _log('  id=%s 提醒：%s' % (it['id'], ' / '.join(p['reasons'])))
+            if not p['items'] and not p['subs']:
+                _log('  id=%s 已是平坦结构，跳过' % it['id'])
+                continue
+            r = flatten.apply_plan(it['path'], p['items'], tdir, p['subs'], tag=n, log=_log)
+            undos.append(r['undo_file'])
+            done.append((it['id'], r['renamed'], len(r['moved_dirs'])))
+            _log('  id=%s 改名 %d，清子目录 %d%s%s' % (
+                it['id'], r['renamed'], len(r['moved_dirs']),
+                ('，跳过子目录 %d（含未识别文件）' % len(r['skipped_dirs'])) if r['skipped_dirs'] else '',
+                ('，错误 %d' % len(r['errors'])) if r['errors'] else ''))
+        if undos:
+            mf = flatten.merge_undo(undos, os.path.join(tdir, 'flatten_last_undo.json'))
+            _log('  回滚文件：%s' % mf)
+        _end('flatten %d 个目录 / 共改名 %d' % (len(done), sum(d[1] for d in done)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:500])
+        _end('flatten 失败')
 
 
 def start_job(fn, *a):
@@ -1149,6 +1233,25 @@ class H(BaseHTTPRequestHandler):
             elif p.startswith('/api/queue/'):
                 n = q_add(int(p.rsplit('/', 1)[1]), mode)
                 return self._json({'ok': True, 'queue': n})
+            elif p == '/api/flatten/preview':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                return self._json(_flatten_plan(ids, int(q.get('limit') or 0) or None))
+            elif p == '/api/flatten/run':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_flatten, ids)
+            elif p == '/api/flatten/undo':
+                f = q.get('file') or ''
+                if not f and q.get('last'):
+                    cand = []
+                    for root2, _d, files2 in os.walk(os.path.join(HERE, 'trash')):
+                        for fn2 in files2:
+                            if fn2.endswith('.json') and 'undo' in fn2:
+                                cand.append(os.path.join(root2, fn2))
+                    f = max(cand, key=os.path.getmtime) if cand else ''
+                if not f or not os.path.isfile(f):
+                    return self._json({'ok': False, 'error': '回滚文件不存在'}, 400)
+                r = flatten.do_undo(f, _log)
+                return self._json(dict(r, ok=True, file=f))
             elif p.startswith('/api/run/'):
                 ok = start_job(_job_one, int(p.rsplit('/', 1)[1]), mode, force)
             elif p.startswith('/api/manual/sem/'):
@@ -1338,6 +1441,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-open">打开目录</button>
     <button id="a-thumbs">刷新缩略图</button>
     <button id="a-coverdel">删除封面图</button>
+    <button id="a-flatten" title="把嵌套子目录平铺成 app 可自动刮削的结构：图片 P_、视频 V_，具名目录 序号_名字_；子目录移入 trash 可回滚">整理嵌套目录</button>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
     <button id="a-selall">全选本页</button>
@@ -1352,6 +1456,11 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><span id="page" class="muted"></span><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
+<div class="modal" id="modal5"><div class="box">
+  <div class="bar"><b>整理嵌套目录</b><span class="muted" id="fl-sum"></span><button class="right" id="md5-close">关闭</button></div>
+  <div id="fl-body"></div>
+  <div class="bar"><button class="primary" id="fl-go">继续整理</button><button id="fl-undo">回滚上一次整理</button><button id="fl-cancel">取消</button></div>
+</div></div>
 <div class="modal" id="modal"><div class="box">
   <div class="bar"><b id="md-title">item</b><button class="right" id="md-close">关闭</button></div>
   <div id="md-body"></div></div></div>
@@ -1464,6 +1573,38 @@ $('#a-del').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('再次确认：永久删除这 '+SEL.size+' 个？')))return;
   for(const id of SEL)await post('/api/delete/'+id);
   SEL.clear();selinfo();list();};
+let FL_IDS=[];
+function flRow(x){
+  const st=(x.ok?'':'<span style="color:var(--bad)">冲突</span> ')+(x.warn?'<span style="color:var(--warn,#e0a458)">需确认</span>':'');
+  return '<tr><td>'+x.id+'</td><td>'+esc(String(x.name||'').slice(0,42))+'</td><td>'+(x.mode==='type'?'P/V 桶':'具名')+'</td><td>'+x.count
+    +'</td><td>'+x.depth+'</td><td>'+x.max_name_len+'</td><td>'+st+'</td></tr>';}
+$('#a-flatten').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  const r=await(await fetch('/api/flatten/preview'+(ids?'?ids='+ids:''),{method:'POST'})).json();
+  if(!r.total)return alert(T('没有需要整理的嵌套目录（kind=nested 为空）'));
+  const warn=(r.items||[]).filter(x=>x.warn), bad=r.bad||[];
+  let h='<p>将整理 <b>'+r.total+'</b> 个目录、共改名 <b>'+r.files+'</b> 个文件。子目录会移入 trash（可用【回滚】还原）；随子目录一起移走的是 Thumbs.db / 描述.txt 之类的非媒体文件，未识别类型的文件不会被动、其子目录也不清理。</p>';
+  if(warn.length)h+='<p style="color:var(--bad)"><b>⚠️ 有 '+warn.length+' 个目录建议先手动整理：</b>子目录层数 ≥ '+r.warn_depth+'，或改后文件名超过 '+r.warn_len+' 字符。</p>';
+  if(bad.length)h+='<p style="color:var(--bad)">⚠️ '+bad.length+' 个目录有重名/撞名，将整条跳过：id '+bad.join(', ')+'</p>';
+  h+='<table><thead><tr><th>id</th><th>目录</th><th>模式</th><th>改名</th><th>层数</th><th>最长名</th><th>提示</th></tr></thead><tbody>'
+    +(r.items||[]).map(flRow).join('')+'</tbody></table>';
+  const first=(r.items||[]).find(x=>x.ok&&x.items&&x.items.length);
+  if(first)h+='<p class="muted">示例（id '+first.id+'）：</p><pre style="white-space:pre-wrap;max-height:190px;overflow:auto">'
+    +first.items.slice(0,10).map(i=>esc(i.src)+'  ->  '+esc(i.dst)).join('\n')+'</pre>';
+  $('#fl-body').innerHTML=h;$('#fl-sum').textContent=r.files+' 个文件';
+  FL_IDS=(r.items||[]).filter(x=>x.ok&&((x.count||0)>0||(x.subs||[]).length>0)).map(x=>x.id);
+  $('#modal5').classList.add('on');};
+$('#md5-close').onclick=$('#fl-cancel').onclick=()=>$('#modal5').classList.remove('on');
+$('#fl-go').onclick=async()=>{
+  if(!FL_IDS.length)return alert(T('没有可整理的目录'));
+  if(!confirm(T('开始整理 '+FL_IDS.length+' 个目录？')+'\n\n'+T('子目录会移入 trash，可用【回滚上一次整理】还原。')))return;
+  await post('/api/flatten/run?ids='+FL_IDS.join(','));
+  $('#modal5').classList.remove('on');list();};
+$('#fl-undo').onclick=async()=>{
+  if(!confirm(T('回滚上一次整理？（把子目录搬回、文件名改回）')))return;
+  const j=await(await fetch('/api/flatten/undo?last=1',{method:'POST'})).json();
+  alert(j.ok?(T('回滚完成')+'：restored '+j.restored+((j.errors&&j.errors.length)?('，异常 '+j.errors.length):'')):(T('回滚失败')+'：'+(j.error||'')));
+  await fetch('/api/scan?mode=incr',{method:'POST'});list();};
 document.addEventListener('dblclick',e=>{
   const td=e.target.closest?e.target.closest('td.ed'):null;
   if(!td)return;
@@ -1546,6 +1687,10 @@ const UI_LANGS=['zh','en','ja','es','zh-Hant'];
 const LANG_LABEL={'zh':'中文','en':'English','ja':'日本語','es':'Español','zh-Hant':'繁體中文'};
 const DICT={"en": {"关闭": "Close", "删除": "Delete", "档案": "Archive", "保存": "Save", "说明": "Docs", "站点": "Sites", "媒体库": "Library", "模型": "Model", "端口": "Port", "局域网": "LAN", "保存设置": "Save", "① 全流程": "① Full pipeline", "建库": "Rebuild", "增量扫描": "Scan", "语义识别": "Classify", "抓取": "Fetch", "跑队列": "Run queue", "清空队列": "Clear queue", "停止": "Stop", "上限(0=全部)": "Limit (0=all)", "模式": "Mode", "语义组(0=全部)": "Sem group (0=all)", "AI组(0=全部)": "AI group (0=all)", "队列": "Queue", "筛选": "Filter", "质量:全部": "Quality: all", "来源:全部": "Source: all", "语义:全部": "Semantic: all", "(未跑)": "(none)", "刷新": "Refresh", "已选": "Selected", "条": "items", "重跑·网站": "Re-run · sites", "重跑·AI": "Re-run · AI", "AI 补全": "AI tag fill", "AI 看片": "AI watch", "重跑·全流程": "Re-run · full", "重跑队列": "Queue re-run", "打开目录": "Open folder", "刷新缩略图": "Refresh thumbs", "删除封面图": "Delete cover", "全选本页": "Select page", "取消选择": "Clear", "缩略图": "Thumb", "质量": "Quality", "来源": "Source", "番号": "Code", "语义": "Semantic", "标题 / 元信息": "Title / metadata", "选择": "Select", "← 上一页": "← Prev", "下一页 →": "Next →", "⟳ 刷新列表": "⟳ Refresh list", "清空": "Clear", "站点设置": "Sites", "检测连通性": "Check connectivity", "深度自检": "Deep check", "搜索 名字/标题/番号": "Search name / title / code", "总数": "Total", "质量·有": "Q·OK", "质量·缺": "Q·Partial", "质量·有误": "Q·Check", "质量·无": "Q·None", "质量·删除": "Q·Deleted", "来源·code": "Src·code", "来源·Uncen": "Src·Uncen", "来源·AI": "Src·AI", "语义未跑": "Sem:none", "简介": "Plot", "标签": "Tags", "作者": "Author", "年份": "Year", "制作": "Studio", "双击修改": "Double-click to edit", "本地打开大图": "Open full image", "(待接入)": "(pending)", "检测中…（逐个真实请求）": "Checking… (real request each)", "检测完成": "Check done", "至少勾一个站点": "Select at least one site", "先选条目": "Select items first", "已有任务在跑": "A job is already running", "已清空": "Cleared", "当前：已设置": "Current: set", "当前：未设置": "Current: not set", "已保存": "Saved", "保存成功": "Saved", "文件": "File", "逗号分隔": "comma separated", "确认": "Confirm", "是": "Yes", "否": "No", "有": "OK", "缺": "Partial", "有误": "Check", "无": "None", "启用": "On", "类型": "Type", "入口": "Entry", "状态": "Status", "时间": "Time", "原因": "Reason", "名字": "Name", "模型缺失": "model missing", "未选中条目": "Nothing selected", "【删除】共 {n} 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？": "[Delete] {n} folders (with videos) → Recycle Bin\n\n⚠ On a NAS network path this is a PERMANENT delete, unrecoverable.\n\nContinue?", "再次确认：永久删除这 {n} 个？": "Confirm again: permanently delete these {n}?", "【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？": "[Rebuild] wipes and rebuilds all entries!\nStatus/semantic/metadata of every row will be reset; old records move to \"Archive\".\n\nContinue?", "请再次确认：真的要【建库】吗？": "Confirm again: really rebuild?", "将对【全部/有简介但没标签】的条目按简介补标签，继续？": "Will add tags from plot for [all / has plot but no tags]. Continue?", "将对【全部/无/有误】的条目抽帧看视频（较慢），继续？": "Will extract frames and watch videos for [all / none / bad] (slow). Continue?", "删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？": "Delete cover images (poster.jpg etc.) + thumbnail cache of selected items. Continue?", "已保存 (%d 字符)": "Saved (%d chars)", "已保存：": "Saved: ", "已删除封面/缩略图 %s 个文件": "Deleted %s cover/thumb files", "已重建 %s 张缩略图": "Rebuilt %s thumbnails", "切换失败（重启后生效）：": "Switch failed (takes effect after restart): ", "已切换到": "Switched to ", "访问地址: ": "URL: ", "局域网已开启: ": "LAN enabled: ", "通过": "OK", "不通过": "FAIL"}, "ja": {"关闭": "閉じる", "删除": "削除", "档案": "アーカイブ", "保存": "保存", "说明": "説明", "站点": "サイト", "媒体库": "ライブラリ", "模型": "モデル", "端口": "ポート", "局域网": "LAN", "保存设置": "設定を保存", "① 全流程": "① 全処理", "建库": "再構築", "增量扫描": "差分スキャン", "语义识别": "分類", "抓取": "取得", "跑队列": "キュー実行", "清空队列": "キューを空に", "停止": "停止", "上限(0=全部)": "上限 (0=すべて)", "模式": "モード", "语义组(0=全部)": "分類組 (0=すべて)", "AI组(0=全部)": "AI組 (0=すべて)", "队列": "キュー", "筛选": "絞り込み", "质量:全部": "品質: すべて", "来源:全部": "取得元: すべて", "语义:全部": "分類: すべて", "(未跑)": "(未実行)", "刷新": "更新", "已选": "選択中", "条": "件", "重跑·网站": "再取得 · サイト", "重跑·AI": "再取得 · AI", "AI 补全": "AI タグ補完", "AI 看片": "AI 映像解析", "重跑·全流程": "再実行 · 全処理", "重跑队列": "キューに再実行", "打开目录": "フォルダを開く", "刷新缩略图": "サムネ更新", "删除封面图": "カバー削除", "全选本页": "このページを全選択", "取消选择": "選択解除", "缩略图": "サムネ", "质量": "品質", "来源": "取得元", "番号": "品番", "语义": "分類", "标题 / 元信息": "タイトル / メタ情報", "选择": "選択", "← 上一页": "← 前へ", "下一页 →": "次へ →", "⟳ 刷新列表": "⟳ 再読込", "清空": "クリア", "站点设置": "サイト設定", "检测连通性": "接続確認", "深度自检": "詳細チェック", "搜索 名字/标题/番号": "名前 / タイトル / 品番を検索", "总数": "総数", "质量·有": "品質·完全", "质量·缺": "品質·不足", "质量·有误": "品質·要確認", "质量·无": "品質·なし", "质量·删除": "品質·削除済", "来源·code": "取得元·code", "来源·Uncen": "取得元·Uncen", "来源·AI": "取得元·AI", "语义未跑": "分類未実行", "简介": "あらすじ", "标签": "タグ", "作者": "出演", "年份": "年", "制作": "メーカー", "双击修改": "ダブルクリックで編集", "本地打开大图": "原寸画像を開く", "(待接入)": "(未対応)", "检测中…（逐个真实请求）": "確認中…（1件ずつ実リクエスト）", "检测完成": "確認完了", "至少勾一个站点": "サイトを1つ以上選択してください", "先选条目": "先に項目を選択してください", "已有任务在跑": "既に実行中のタスクがあります", "已清空": "クリアしました", "当前：已设置": "現在: 設定済み", "当前：未设置": "現在: 未設定", "已保存": "保存しました", "保存成功": "保存しました", "文件": "ファイル", "逗号分隔": "カンマ区切り", "确认": "確認", "是": "はい", "否": "いいえ", "有": "完全", "缺": "不足", "有误": "要確認", "无": "なし", "启用": "有効", "类型": "種別", "入口": "入口", "状态": "状態", "时间": "日時", "原因": "理由", "名字": "名前", "模型缺失": "モデル未検出", "未选中条目": "未選択", "【删除】共 {n} 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？": "【削除】{n} 件のフォルダ（動画含む）→ Windows ゴミ箱\n\n⚠ NAS ネットワークパスでは【完全削除】となり復元できません。\n\n続行しますか？", "再次确认：永久删除这 {n} 个？": "再確認：この {n} 件を完全削除しますか？", "【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？": "【再構築】は全アーカイブを消去して作り直します！\n全行の状態/分類/メタ情報はリセットされ、旧記録は「アーカイブ」へ移動します。\n\n続行しますか？", "请再次确认：真的要【建库】吗？": "再確認：本当に【再構築】しますか？", "将对【全部/有简介但没标签】的条目按简介补标签，继续？": "【全件 / あらすじ有りタグ無し】の項目にあらすじからタグを補完します。続行しますか？", "将对【全部/无/有误】的条目抽帧看视频（较慢），继续？": "【全件 / なし / 要確認】の項目をフレーム抽出して解析します（低速）。続行しますか？", "删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？": "選択項目のカバー画像（poster.jpg 等）とサムネイルキャッシュを削除します。続行しますか？", "已保存 (%d 字符)": "保存しました (%d 文字)", "已保存：": "保存しました: ", "已删除封面/缩略图 %s 个文件": "カバー/サムネ %s 件を削除しました", "已重建 %s 张缩略图": "サムネ %s 件を再生成しました", "切换失败（重启后生效）：": "切替失敗（再起動後に反映）: ", "已切换到": "切替完了: ", "访问地址: ": "URL: ", "局域网已开启: ": "LAN 有効: ", "通过": "OK", "不通过": "NG"}, "es": {"关闭": "Cerrar", "删除": "Eliminar", "档案": "Archivo", "保存": "Guardar", "说明": "Ayuda", "站点": "Sitios", "媒体库": "Biblioteca", "模型": "Modelo", "端口": "Puerto", "局域网": "LAN", "保存设置": "Guardar", "① 全流程": "① Flujo completo", "建库": "Reconstruir", "增量扫描": "Escanear", "语义识别": "Clasificar", "抓取": "Obtener", "跑队列": "Ejecutar cola", "清空队列": "Vaciar cola", "停止": "Detener", "上限(0=全部)": "Límite (0=todo)", "模式": "Modo", "语义组(0=全部)": "Grupo sem. (0=todo)", "AI组(0=全部)": "Grupo IA (0=todo)", "队列": "Cola", "筛选": "Filtro", "质量:全部": "Calidad: todo", "来源:全部": "Fuente: todo", "语义:全部": "Semántica: todo", "(未跑)": "(sin ejecutar)", "刷新": "Actualizar", "已选": "Seleccionados", "条": "ítems", "重跑·网站": "Re-ejecutar · sitios", "重跑·AI": "Re-ejecutar · IA", "AI 补全": "Relleno IA", "AI 看片": "Ver con IA", "重跑·全流程": "Re-ejecutar · completo", "重跑队列": "Re-ejecutar en cola", "打开目录": "Abrir carpeta", "刷新缩略图": "Actualizar miniaturas", "删除封面图": "Borrar portada", "全选本页": "Seleccionar página", "取消选择": "Quitar selección", "缩略图": "Miniatura", "质量": "Calidad", "来源": "Fuente", "番号": "Código", "语义": "Semántica", "标题 / 元信息": "Título / metadatos", "选择": "Seleccionar", "← 上一页": "← Anterior", "下一页 →": "Siguiente →", "⟳ 刷新列表": "⟳ Actualizar lista", "清空": "Vaciar", "站点设置": "Ajustes de sitios", "检测连通性": "Comprobar conexión", "深度自检": "Comprobación real", "搜索 名字/标题/番号": "Buscar nombre / título / código", "总数": "Total", "质量·有": "Cal·OK", "质量·缺": "Cal·Parcial", "质量·有误": "Cal·Revisar", "质量·无": "Cal·Ninguno", "质量·删除": "Cal·Borrado", "来源·code": "Fuente·code", "来源·Uncen": "Fuente·Uncen", "来源·AI": "Fuente·IA", "语义未跑": "Sem:sin ejecutar", "简介": "Sinopsis", "标签": "Etiquetas", "作者": "Autor", "年份": "Año", "制作": "Estudio", "双击修改": "Doble clic para editar", "本地打开大图": "Abrir imagen completa", "(待接入)": "(pendiente)", "检测中…（逐个真实请求）": "Comprobando… (una petición real cada uno)", "检测完成": "Comprobación lista", "至少勾一个站点": "Marca al menos un sitio", "先选条目": "Selecciona elementos primero", "已有任务在跑": "Ya hay una tarea en ejecución", "已清空": "Vaciado", "当前：已设置": "Actual: definido", "当前：未设置": "Actual: sin definir", "已保存": "Guardado", "保存成功": "Guardado", "文件": "Archivo", "逗号分隔": "separado por comas", "确认": "Confirmar", "是": "Sí", "否": "No", "有": "OK", "缺": "Parcial", "有误": "Revisar", "无": "Ninguno", "启用": "Activo", "类型": "Tipo", "入口": "Entrada", "状态": "Estado", "时间": "Hora", "原因": "Motivo", "名字": "Nombre", "模型缺失": "modelo ausente", "未选中条目": "Nada seleccionado", "【删除】共 {n} 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？": "[Eliminar] {n} carpetas (con vídeos) → Papelera de Windows\n\n⚠ En una ruta de red NAS esto es un borrado PERMANENTE, irrecuperable.\n\n¿Continuar?", "再次确认：永久删除这 {n} 个？": "Confirma de nuevo: ¿borrar permanentemente estos {n}?", "【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？": "¡[Reconstruir] borra y rehace todos los registros!\nSe reinician estado/semántica/metadatos de todas las filas; los antiguos pasan a \"Archivo\".\n\n¿Continuar?", "请再次确认：真的要【建库】吗？": "Confirma otra vez: ¿realmente reconstruir?", "将对【全部/有简介但没标签】的条目按简介补标签，继续？": "Se añadirán etiquetas desde la sinopsis para [todo / con sinopsis sin etiquetas]. ¿Continuar?", "将对【全部/无/有误】的条目抽帧看视频（较慢），继续？": "Se extraerán fotogramas y se analizarán vídeos para [todo / ninguno / revisar] (lento). ¿Continuar?", "删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？": "Se borrarán las portadas (poster.jpg etc.) y la caché de miniaturas de lo seleccionado. ¿Continuar?", "已保存 (%d 字符)": "Guardado (%d caracteres)", "已保存：": "Guardado: ", "已删除封面/缩略图 %s 个文件": "Eliminados %s archivos de portada/miniatura", "已重建 %s 张缩略图": "Regeneradas %s miniaturas", "切换失败（重启后生效）：": "Fallo al cambiar (tras reiniciar): ", "已切换到": "Cambiado a ", "访问地址: ": "URL: ", "局域网已开启: ": "LAN activada: ", "通过": "OK", "不通过": "FALLO"}, "zh-Hant": {"(待接入)": "(待接入)", "(未跑)": "(未跑)", "AI 看片": "AI 看片", "AI 补全": "AI 補全", "AI组(0=全部)": "AI組(0=全部)", "← 上一页": "← 上一頁", "① 全流程": "① 全流程", "⟳ 刷新列表": "⟳ 刷新列表", "上限(0=全部)": "上限(0=全部)", "下一页 →": "下一頁 →", "作者": "作者", "保存": "保存", "保存成功": "保存成功", "保存设置": "保存設置", "停止": "停止", "先选条目": "先選條目", "全选本页": "全選本頁", "关闭": "關閉", "删除": "刪除", "删除封面图": "刪除封面圖", "制作": "製作", "刷新": "刷新", "刷新缩略图": "刷新縮略圖", "双击修改": "雙擊修改", "取消选择": "取消選擇", "否": "否", "增量扫描": "增量掃描", "媒体库": "媒體庫", "局域网": "局域網", "已保存": "已保存", "已有任务在跑": "已有任務在跑", "已清空": "已清空", "已选": "已選", "年份": "年份", "建库": "建庫", "当前：已设置": "當前：已設置", "当前：未设置": "當前：未設置", "总数": "總數", "打开目录": "打開目錄", "抓取": "抓取", "搜索 名字/标题/番号": "搜索 名字/標題/番號", "文件": "文件", "无": "無", "是": "是", "有": "有", "有误": "有誤", "本地打开大图": "本地打開大圖", "条": "條", "来源": "來源", "来源:全部": "來源:全部", "来源·AI": "來源·AI", "来源·Uncen": "來源·Uncen", "来源·code": "來源·code", "标签": "標籤", "标题 / 元信息": "標題 / 元信息", "档案": "檔案", "检测中…（逐个真实请求）": "檢測中…（逐個真實請求）", "检测完成": "檢測完成", "检测连通性": "檢測連通性", "深度自检": "深度自檢", "模型": "模型", "模式": "模式", "清空": "清空", "清空队列": "清空隊列", "番号": "番號", "确认": "確認", "站点": "站點", "站点设置": "站點設置", "端口": "端口", "筛选": "篩選", "简介": "簡介", "缩略图": "縮略圖", "缺": "缺", "至少勾一个站点": "至少勾一個站點", "语义": "語義", "语义:全部": "語義:全部", "语义未跑": "語義未跑", "语义组(0=全部)": "語義組(0=全部)", "语义识别": "語義識別", "说明": "說明", "质量": "質量", "质量:全部": "質量:全部", "质量·删除": "質量·刪除", "质量·无": "質量·無", "质量·有": "質量·有", "质量·有误": "質量·有誤", "质量·缺": "質量·缺", "跑队列": "跑隊列", "选择": "選擇", "逗号分隔": "逗號分隔", "重跑·AI": "重跑·AI", "重跑·全流程": "重跑·全流程", "重跑·网站": "重跑·網站", "重跑队列": "重跑隊列", "队列": "隊列", "启用": "啓用", "类型": "類型", "入口": "入口", "状态": "狀態", "时间": "時間", "原因": "原因", "名字": "名字", "模型缺失": "模型缺失", "未选中条目": "未選中條目", "【删除】共 {n} 个目录（含视频）→ Windows 回收站\n\n⚠ NAS 网络路径，实际是【永久删除】，不可恢复。\n\n继续？": "【刪除】共 {n} 個目錄（含視頻）→ Windows 回收站\n\n⚠ NAS 網絡路徑，實際是【永久刪除】，不可恢復。\n\n繼續？", "再次确认：永久删除这 {n} 个？": "再次確認：永久刪除這 {n} 個？", "【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？": "【建庫】會清空並重建全部檔案！\n當前所有行的狀態/語義/元信息都會被重置，舊記錄先進入「檔案」。\n\n確定繼續？", "请再次确认：真的要【建库】吗？": "請再次確認：真的要【建庫】嗎？", "将对【全部/有简介但没标签】的条目按简介补标签，继续？": "將對【全部/有簡介但沒標籤】的條目按簡介補標籤，繼續？", "将对【全部/无/有误】的条目抽帧看视频（较慢），继续？": "將對【全部/無/有誤】的條目抽幀看視頻（較慢），繼續？", "删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？": "刪除選中條目的封面圖（poster.jpg 等）+ 縮略圖緩存，繼續？", "已保存 (%d 字符)": "已保存 (%d 字符)", "已保存：": "已保存：", "已删除封面/缩略图 %s 个文件": "已刪除封面/縮略圖 %s 個文件", "已重建 %s 张缩略图": "已重建 %s 張縮略圖", "切换失败（重启后生效）：": "切換失敗（重啓後生效）：", "已切换到": "已切換到", "访问地址: ": "訪問地址: ", "局域网已开启: ": "局域網已開啓: ", "通过": "通過", "不通过": "不通過"}};
 // 动态文案：整串模式的按语言替换（就这几条，写死在表里）
+DICT.en['整理嵌套目录']='Flatten nested folders';
+DICT.en['继续整理']='Continue';
+DICT.en['回滚上一次整理']='Undo last flatten';
+DICT.en['取消']='Cancel';
 const PATS={
  'en':[[/^共\s*(\d+)\s*条$/, 'Total $1'], [/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, 'Page $1 / $2'], [/^通过\s*/, 'OK '], [/^不通过\s*/, 'FAIL ']],
  'ja':[[/^共\s*(\d+)\s*条$/, '全 $1 件'], [/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, '$1 / $2 ページ'], [/^通过\s*/, 'OK '], [/^不通过\s*/, 'NG ']],
