@@ -660,15 +660,17 @@ def _items_by_ids(ids=None):
         'SELECT id,name,path,kind,quality FROM items WHERE present=1 ORDER BY id')]
 
 
-def _job_health(ids=None):
-    """只读体检：逐个视频探测能否打开/容器是否被截；结果写 health 表。不写媒体文件。"""
+def _job_health(ids=None, force=False):
+    """只读体检：逐文件探测并写入 health 表。
+
+    已体检过（且文件体积未变）的默认**跳过**；force=1 才重测。
+    """
     _begin('health', 1)
     dbc = mlib.db()
     try:
-        dbc.execute(HEALTH_SQL)
-        dbc.commit()
         items = _items_by_ids(ids)
-        bad, files, fixable, heavy, dead, nbad = {}, 0, [], [], [], 0
+        bad, files, checked, skipped = {}, 0, 0, 0
+        fixable, heavy, dead = set(), set(), set()
         _tick(0, len(items))
         for n, it in enumerate(items, 1):
             if _stop_req():
@@ -679,63 +681,99 @@ def _job_health(ids=None):
                 dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?)',
                             (it['id'], '', 'novideo', '目录里没有视频', 'none', 0, mlib.now()))
                 continue
+            known = {}
+            if not force:
+                for r in dbc.execute('SELECT file,cls,tier,size FROM health WHERE item_id=?', (it['id'],)):
+                    known[r['file']] = dict(r)
             for f in vids:
+                base = os.path.basename(f)
                 files += 1
                 try:
-                    p = repair.plan_repair(f)
-                except Exception as e:
-                    p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
-                cls = p.get('cls')
-                dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?)',
-                            (it['id'], os.path.basename(f), cls, (p.get('reason') or '')[:170],
-                             p.get('tier') or '', int(p.get('size') or 0), mlib.now()))
+                    sz = os.path.getsize(f)
+                except Exception:
+                    sz = 0
+                k = known.get(base)
+                if k and k.get('cls') and int(k.get('size') or 0) == sz:
+                    cls, tier = k['cls'], k.get('tier') or ''
+                    skipped += 1
+                else:
+                    try:
+                        p = repair.plan_repair(f)
+                    except Exception as e:
+                        p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
+                    cls, tier = p.get('cls'), p.get('tier') or ''
+                    dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?)',
+                                (it['id'], base, cls, (p.get('reason') or '')[:170], tier, sz, mlib.now()))
+                    checked += 1
+                    if cls != 'ok':
+                        _log('  id=%s %s [%s] %s' % (it['id'], base[:42], cls, (p.get('reason') or '')[:64]))
                 if cls != 'ok':
                     bad.setdefault(cls, []).append(it['id'])
-                    nbad += 1
-                    _log('  id=%s %s [%s] %s' % (it['id'], os.path.basename(f)[:42], cls,
-                                                 (p.get('reason') or '')[:64]))
-                if p.get('tier') == 'index':
-                    fixable.append(it['id'])
-                elif p.get('tier') == 'reencode':
-                    heavy.append(it['id'])
-                elif cls not in ('ok',):
-                    dead.append(it['id'])
-            _tick(n)
+                if tier == 'index':
+                    fixable.add(it['id'])
+                elif tier == 'reencode':
+                    heavy.add(it['id'])
+                elif cls != 'ok':
+                    dead.add(it['id'])
             if n % 20 == 0:
                 dbc.commit()
+            _tick(n)
         dbc.commit()
-        _log('体检完成：%d 条 / %d 个视频；可修索引 %d / 需重编码 %d / 不可修 %d'
-             % (len(items), files, len(set(fixable)), len(set(heavy)), len(set(dead))))
-        for k, v in sorted(bad.items(), key=lambda x: -len(x[1])):
-            _log('  %-11s %d 条' % (k, len(v)))
+        _log('体检完成：%d 条 / %d 个视频（新测 %d、跳过已测 %d）；可修索引 %d / 需重编码 %d / 不可修 %d'
+             % (len(items), files, checked, skipped, len(fixable), len(heavy), len(dead)))
+        for k2, v2 in sorted(bad.items(), key=lambda x: -len(x[1])):
+            _log('  %-11s %d 个文件' % (k2, len(v2)))
         LAST_OP.clear()
-        LAST_OP.update({'kind': 'health', 'files': files, 'bad': nbad,
-                        'fixable': len(set(fixable)), 'heavy': len(set(heavy)),
-                        'dead': len(set(dead)), 'ids': sorted(set(fixable))})
+        LAST_OP.update({'kind': 'health', 'files': files, 'bad': sum(len(v) for v in bad.values()),
+                        'checked': checked, 'skipped': skipped, 'fixable': len(fixable),
+                        'heavy': len(heavy), 'dead': len(dead), 'ids': sorted(fixable)})
         _end('health 完成')
     except Exception:
         _log('ERR ' + traceback.format_exc()[:500])
         _end('health 失败')
 
 
-def _repair_plan(ids=None, cap=80):
-    """只读：给 UI 预览（每个条目下有哪些坏文件、该走哪级）。"""
+def _health_of(item_id):
+    """读 health 表里某个条目的记录（file 名 -> dict）。"""
+    dbc = mlib.db()
+    try:
+        return {r['file']: dict(r) for r in dbc.execute(
+            'SELECT file,cls,reason,tier,size,checked_at FROM health WHERE item_id=?', (item_id,))}
+    except Exception:
+        return {}
+
+
+
+def _repair_plan(ids=None, cap=80, refresh=False):
+    """给 UI 的预览：**优先用 health 表里的体检记录**；未测过的才现场探测（refresh=1 全部重测）。"""
     out = []
     for it in _items_by_ids(ids)[:cap]:
         recs = []
+        known = {} if refresh else _health_of(it['id'])
         for f in _video_files(it['path']):
-            try:
-                p = repair.plan_repair(f)
-            except Exception as e:
-                p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
-            if p.get('cls') != 'ok':
-                recs.append({'file': os.path.basename(f), 'cls': p.get('cls'),
-                             'reason': (p.get('reason') or '')[:110], 'tier': p.get('tier') or 'none',
-                             'plan': p.get('plan') or [], 'size': int(p.get('size') or 0)})
+            base = os.path.basename(f)
+            k = known.get(base)
+            if k and k.get('cls'):
+                cls, tier = k['cls'], k.get('tier') or 'none'
+                reason = k.get('reason') or ''
+                plan = (['① 索引重建（追加·原地·可回滚）'] if tier == 'index'
+                        else (['③ 容错重编码（独立目录→自动替换）'] if tier == 'reencode' else []))
+            else:
+                try:
+                    p = repair.plan_repair(f)
+                except Exception as e:
+                    p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
+                cls, tier = p.get('cls'), p.get('tier') or 'none'
+                reason = p.get('reason') or ''
+                plan = p.get('plan') or []
+            if cls != 'ok':
+                recs.append({'file': base, 'cls': cls, 'reason': reason[:110], 'tier': tier,
+                             'plan': plan, 'size': int((k or {}).get('size') or 0)})
         if recs:
             out.append({'id': it['id'], 'name': it['name'], 'files': recs})
     return {'items': out, 'n_items': len(out), 'n_files': sum(len(x['files']) for x in out),
             'gap_sec': repair.GAP_SEC}
+
 
 
 def _job_repair(ids=None, mode='index', go=False):
@@ -894,7 +932,10 @@ def items(params):
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
     rows = dbc.execute('SELECT id,name,code,sem_kind,sem_code,sem_manual,status,site,'
-                       'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen '
+                       'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
+                       "(SELECT CASE WHEN COUNT(*)=0 THEN 0 "
+                       "WHEN SUM(CASE WHEN cls<>'ok' THEN 1 ELSE 0 END)>0 THEN 2 ELSE 1 END "
+                       "FROM health h WHERE h.item_id=items.id) AS hstate "
                        'FROM items WHERE ' + ws + ' ORDER BY ' + order_by + ' LIMIT ? OFFSET ?',
                        args + [limit, offset]).fetchall()
     return {'total': total, 'limit': limit, 'offset': offset, 'rows': [dict(r) for r in rows]}
@@ -1430,10 +1471,10 @@ class H(BaseHTTPRequestHandler):
                                int(q.get('ai_group') or 0))
             elif p == '/api/health':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                ok = start_job(_job_health, ids)
+                ok = start_job(_job_health, ids, (q.get('force') or '') in ('1', 'true', 'yes'))
             elif p == '/api/repair/plan':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                return self._json(_repair_plan(ids))
+                return self._json(_repair_plan(ids, refresh=(q.get('refresh') or '') in ('1', 'true', 'yes')))
             elif p == '/api/repair/last':
                 return self._json(dict(LAST_OP))
             elif p == '/api/repair/purge':
@@ -1761,7 +1802,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
   $('#rows').innerHTML=d.rows.map(r=>{
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
-    +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+'</td>'
+    +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
     +'<td class="q-'+q+' ed" data-f="quality" data-id="'+r.id+'" data-v="'+(q||'')+'" title="双击修改">'+(q||'无')+'</td>'
     +'<td class="s-'+(r.source||'')+' ed" data-f="source" data-id="'+r.id+'" data-v="'+(r.source||'')+'" title="双击修改">'+(r.source||'—')+'</td>'
     +'<td class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改">'+esc(r.sem_code||r.code||'')+'</td>'
@@ -1844,6 +1885,7 @@ $('#fl-undo').onclick=async()=>{
   alert(j.ok?(T('回滚完成')+'：restored '+j.restored+((j.errors&&j.errors.length)?('，异常 '+j.errors.length):'')):(T('回滚失败')+'：'+(j.error||'')));
   await fetch('/api/scan?mode=incr',{method:'POST'});list();};
 let _jbWas=false;
+function hbadge(r){const s=+r.hstate||0;if(!s)return '';return s===2?' <span style="color:var(--bad)" title="体检：发现问题">⚠</span>':' <span style="color:#4ade80" title="体检：正常">✓</span>';}
 function rpShow(title,sum,html,btns){
   $('#rp-title').textContent=title;$('#rp-sum').textContent=sum||'';$('#rp-body').innerHTML=html||'';
   $('#rp-btns').innerHTML='';(btns||[]).forEach(b=>{const el=document.createElement('button');
@@ -1853,11 +1895,13 @@ $('#md6-close').onclick=()=>$('#modal6').classList.remove('on');
 $('#a-health').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做只读体检（逐文件探测，较慢；不写任何文件），继续？')))return;
-  await post('/api/health'+(ids?'?ids='+ids:''));};
+  const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
+  await post('/api/health'+(ids?'?ids='+ids:'')+fq);};
 $('#a-repair').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
-  const r=await(await fetch('/api/repair/plan'+(ids?'?ids='+ids:''),{method:'POST'})).json();
+  const rfq=((document.getElementById('force')||{}).checked)?'&refresh=1':'';
+  const r=await(await fetch('/api/repair/plan'+(ids?'?ids='+ids:'')+rfq,{method:'POST'})).json();
   const closeBtn={label:T('关闭'),fn:()=>$('#modal6').classList.remove('on')};
   if(!r.n_files){rpShow(T('修复'),'', '<p>'+T('选中的条目没有发现需要修复的文件。')+'</p>',[closeBtn]);return;}
   const rows=(r.items||[]).map(x=>'<tr><td>'+x.id+'</td><td>'+esc(String(x.name||'').slice(0,30))+'</td><td>'

@@ -90,6 +90,7 @@ def db():
         id INTEGER, path TEXT, name TEXT, code TEXT, title TEXT,
         quality TEXT, source TEXT, archived_at TEXT, reason TEXT)""")
     c.execute('CREATE TABLE IF NOT EXISTS config(k TEXT PRIMARY KEY, v TEXT)')
+    c.execute('CREATE TABLE IF NOT EXISTS health(item_id INTEGER, file TEXT, cls TEXT, reason TEXT, tier TEXT, size INTEGER, checked_at TEXT, PRIMARY KEY(item_id,file))')
     c.execute('''CREATE TABLE IF NOT EXISTS queue(
         item_id INTEGER PRIMARY KEY, mode TEXT, added_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS joblog(
