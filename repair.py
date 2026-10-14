@@ -947,7 +947,7 @@ def tolerant_reencode(path, out_dir=None, log=None, tick=None):
         orig = '%s.orig%d' % (path, k); k += 1
     try:
         os.replace(path, orig)             # 原文件 -> 回滚点（同卷 rename，不占额外空间）
-        shutil.copy2(stage, path)          # 新文件就位（跨卷，按实际速度）
+        _copy_progress(stage, path, log=log)          # 新文件就位（跨卷，按实际速度）
     except Exception as e:
         return {'ok': False, 'error': '替换失败: %s' % str(e)[:120], 'stage': stage, 'orig': orig}
     try:
@@ -1009,7 +1009,7 @@ def remux_copy(path, log=None, tick=None):
         orig = '%s.orig%d' % (path, k); k += 1
     try:
         os.replace(path, orig)
-        shutil.copy2(stage, path)
+        _copy_progress(stage, path, log=log)
     except Exception as e:
         return {'ok': False, 'error': '替换失败: %s' % str(e)[:110], 'stage': stage, 'orig': orig}
     try:
@@ -1020,6 +1020,36 @@ def remux_copy(path, log=None, tick=None):
     return {'ok': True, 'kind': 'remux', 'path': path, 'orig_backup': orig,
             'undo': {'action': 'restore', 'path': path, 'backup': orig},
             'secs': round(time.time() - t0, 1)}
+
+
+def _copy_progress(src, dst, log=None, every=6.0, block=4 * 1024 * 1024):
+    """跨卷拷贝并在日志里报进度。
+
+    大文件拷回 NAS 可能要几分钟；原先用 shutil.copy2 全程无输出，
+    看起来就像"卡住了"。这里每 every 秒报一次（MB 进度 + 速度 + 预估剩余）。
+    """
+    total = os.path.getsize(src)
+    done_bytes = 0
+    t0 = t_last = time.time()
+    with open(src, 'rb') as fi, open(dst, 'wb') as fo:
+        while True:
+            b = fi.read(block)
+            if not b:
+                break
+            fo.write(b)
+            done_bytes += len(b)
+            now = time.time()
+            if log and (now - t_last >= every):
+                t_last = now
+                sp = done_bytes / max(1e-6, now - t0) / 1048576.0
+                left = (total - done_bytes) / max(1e-6, sp * 1048576) / 60.0
+                log('    替换中… %d/%d MB（%.0f MB/s，剩约 %.1f 分钟）'
+                    % (done_bytes // 1048576, total // 1048576, sp, left))
+    try:
+        shutil.copystat(src, dst)
+    except Exception:
+        pass
+    return done_bytes
 
 
 def undo_restore(path, backup):
@@ -1165,7 +1195,7 @@ def interp_gap(path, gaps=None, log=None, tick=None, mi_mode='mci', verify=True,
         orig = '%s.orig%d' % (path, k); k += 1
     try:
         os.replace(path, orig)                 # 原文件 -> 回滚点（同卷改名，不占空间）
-        shutil.copy2(stage, path)
+        _copy_progress(stage, path, log=log)
     except Exception as e:
         return {'ok': False, 'error': '替换失败: %s' % str(e)[:110], 'stage': stage, 'orig': orig}
     try:

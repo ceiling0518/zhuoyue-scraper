@@ -323,7 +323,7 @@ def _job_scan(mode):
     try:
         _scan_pass(mode); _end('scan 完成')
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500]); _end('scan 失败')
+        _log('ERR ' + traceback.format_exc()[:1600]); _end('scan 失败')
 
 
 def _job_sem(limit, force, group=None):
@@ -331,7 +331,7 @@ def _job_sem(limit, force, group=None):
     try:
         ok, tot = _sem_pass(limit, force, group); mlib.unload_ai(); _end('sem %d/%d' % (ok, tot))
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500]); _end('sem 失败')
+        _log('ERR ' + traceback.format_exc()[:1600]); _end('sem 失败')
 
 
 def _job_fetch(mode, limit, ai_group=None):
@@ -339,7 +339,7 @@ def _job_fetch(mode, limit, ai_group=None):
     try:
         ok, tot = _fetch_pass(mode, limit, ai_group); mlib.unload_ai(); _end('fetch %d/%d' % (ok, tot))
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500]); _end('fetch 失败')
+        _log('ERR ' + traceback.format_exc()[:1600]); _end('fetch 失败')
 
 
 def _nested_mark(dbc, r):
@@ -428,7 +428,7 @@ def _job_fill(limit, ai_group=None, ids=None):
         mlib.unload_ai()
         _end('fill %d/%d' % (ok, tot))
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500]); _end('fill 失败')
+        _log('ERR ' + traceback.format_exc()[:1600]); _end('fill 失败')
 
 
 def _vscan_pass(limit, ids=None):
@@ -493,7 +493,7 @@ def _job_vscan(limit, ids=None):
         mlib.unload_ai()
         _end('vscan %d/%d' % (ok, tot))
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500]); _end('vscan 失败')
+        _log('ERR ' + traceback.format_exc()[:1600]); _end('vscan 失败')
 
 
 def _job_pipeline(limit, sgroup=None, agroup=None):
@@ -508,7 +508,7 @@ def _job_pipeline(limit, sgroup=None, agroup=None):
         _sem_pass(limit, False, sgroup); _fetch_pass('auto', limit, agroup)
         mlib.unload_ai(); _end('pipeline 完成')
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500]); _end('pipeline 失败')
+        _log('ERR ' + traceback.format_exc()[:1600]); _end('pipeline 失败')
 
 
 def _job_one(iid, mode, force):
@@ -516,7 +516,7 @@ def _job_one(iid, mode, force):
     try:
         _one(mlib.db(), iid, mode, force); _tick(1); _end('run 完成')
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500]); _end('run 失败')
+        _log('ERR ' + traceback.format_exc()[:1600]); _end('run 失败')
 
 
 def _job_runset(ids, mode='auto'):
@@ -630,7 +630,7 @@ def _job_flatten(ids=None):
             _log('  回滚文件：%s' % mf)
         _end('flatten %d 个目录 / 共改名 %d' % (len(done), sum(d[1] for d in done)))
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500])
+        _log('ERR ' + traceback.format_exc()[:1600])
         _end('flatten 失败')
 
 
@@ -872,7 +872,7 @@ def _job_health(ids=None, force=False, deep=False):
                         'lists': {k: v[:200] for k, v in lists.items()}})
         _end(('deephealth' if deep else 'health') + ' 完成')
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500])
+        _log('ERR ' + traceback.format_exc()[:1600])
         _end('health 失败')
 
 
@@ -947,6 +947,7 @@ def _mark_repaired(dbc, item_id, base, path, kind, backup, log=None):
 def _job_repair(ids=None, mode='index', go=False):
     """按体检结果修复。mode=index 只做索引重建（快/原地/可回滚）；mode=all 也做容错重编码。"""
     _begin('repair', 1)
+    dbc = mlib.db()          # 本函数要用：写回体检记录 / 读深检记录的洞区间
     n_idx, n_remux, n_gap, n_re, n_skip, n_fail, backs = 0, 0, 0, 0, 0, 0, []
     lists = {'index': [], 'remux': [], 'gap': [], 'recode': [], 'fail': [], 'skip': []}
     try:
@@ -1089,7 +1090,7 @@ def _job_repair(ids=None, mode='index', go=False):
                         'lists': {k: v[:200] for k, v in lists.items()}})
         _end('repair 完成')
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:500])
+        _log('ERR ' + traceback.format_exc()[:1600])
         _end('repair 失败')
 
 
@@ -1117,7 +1118,7 @@ def start_job(fn, *a):
         try:
             fn(*a)
         except Exception:
-            _log('ERR ' + traceback.format_exc()[:500])
+            _log('ERR ' + traceback.format_exc()[:1600])
             with _LOCK:
                 STATE['running'] = False
     threading.Thread(target=runner, daemon=True).start()
