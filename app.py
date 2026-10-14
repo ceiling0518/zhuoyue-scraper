@@ -921,27 +921,51 @@ def _repair_plan(ids=None, cap=80, refresh=False):
 
 
 def _mark_repaired(dbc, item_id, base, path, kind, backup, log=None):
-    """修复成功后写回体检记录：
+    """修复后的收尾：抽窗校验 -> 写回体检记录 -> 清理回滚点。
 
-    - 不写回的话，列表会一直显示旧状态，而且下次修复会拿陈旧记录再修一遍。
-    - 状态置 ok（产物已校验：可播 + 时长一致）并把 deepscan 的旧洞结果清掉，
-      下次体检/深检会重新评估（想立刻重评就勾 force）。
+    - 产物是全新写入的完整字节流（物理上不可能有数据洞），所以不做全文件字节扫描
+      （那只是空转），改做**抽窗解码校验**：通过即记 deep=1（徽标 ✓✓）。
+    - 校验不过则只记 ok（仍 ✓），并在 reason 里点名"建议 force 深检"。
+    - 回滚点默认删除（避免长期占空间、目录里多出 .orig）；设 MS_KEEP_BACKUP=1 可保留。
     """
     try:
         sz = os.path.getsize(path)
     except Exception:
         sz = 0
+    deep, note = 0, ''
+    try:
+        w = repair.probe_windows(path, n=4, sec=6)
+        if w and not (w.get('bad') or []):
+            deep, note = 1, '；抽窗解码校验通过'
+        elif w:
+            note = '；⚠ 抽窗仍有 %d 个窗口报错，建议 force 深检' % len(w.get('bad') or [])
+    except Exception as e:
+        note = '；校验异常 %s' % type(e).__name__
     try:
         dbc.execute("INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)",
                     (item_id, base, 'ok',
-                     ('已修复（%s）；回滚点 %s' % (kind, os.path.basename(backup or '') or '无'))[:170],
-                     'ok', sz, mlib.now(), 0))
+                     ('已修复（%s）%s' % (kind, note))[:170], 'ok', sz, mlib.now(), deep))
         dbc.execute("DELETE FROM deepscan WHERE item_id=? AND file=?", (item_id, base))
         dbc.commit()
     except Exception:
         pass
+    kept = str(os.environ.get('MS_KEEP_BACKUP', '') or '') == '1'
+    if backup and os.path.exists(backup):
+        if kept:
+            if log:
+                log('  回滚点保留（MS_KEEP_BACKUP=1）：%s' % os.path.basename(backup))
+        else:
+            try:
+                os.remove(backup)
+                if log:
+                    log('  已清理回滚点 %s（要保留请设 MS_KEEP_BACKUP=1）'
+                        % os.path.basename(backup))
+            except Exception as e:
+                if log:
+                    log('  !! 回滚点删除失败：%s' % str(e)[:60])
     if log:
-        log('  id=%s %s 已写回体检记录（状态置 ok；体积 %d）' % (item_id, base[:34], sz))
+        log('  id=%s %s 收尾完成：%s，体积 %d'
+            % (item_id, base[:34], '深检合格 ✓✓' if deep else '仅体检 ✓（建议 force 深检）', sz))
 
 
 def _job_repair(ids=None, mode='index', go=False):
@@ -989,7 +1013,9 @@ def _job_repair(ids=None, mode='index', go=False):
                         lists['remux'].append('id=%s %s' % (it['id'], base))
                         _mark_repaired(dbc, it['id'], os.path.basename(f), f, '无损重封装',
                                        r.get('orig_backup'), log=_log)
-                        backs.append(r.get('orig_backup') or '')
+                        _bk = r.get('orig_backup') or ''
+                        if _bk and os.path.exists(_bk):
+                            backs.append(_bk)
                         _log('  id=%s %s 无损重封装 OK（%.0fs；回滚点 %s）'
                              % (it['id'], base, r.get('secs', 0),
                                 os.path.basename(r.get('orig_backup') or '')))
@@ -1029,7 +1055,9 @@ def _job_repair(ids=None, mode='index', go=False):
                         lists['gap'].append('id=%s %s' % (it['id'], base))
                         _mark_repaired(dbc, it['id'], os.path.basename(f), f, '小洞过渡',
                                        r.get('orig_backup'), log=_log)
-                        backs.append(r.get('orig_backup') or '')
+                        _bk = r.get('orig_backup') or ''
+                        if _bk and os.path.exists(_bk):
+                            backs.append(_bk)
                         _log('  id=%s %s 小洞过渡填充 OK（%.0fs；回滚点 %s）'
                              % (it['id'], base, r.get('secs', 0), os.path.basename(r.get('orig_backup') or '')))
                     else:
@@ -1050,7 +1078,9 @@ def _job_repair(ids=None, mode='index', go=False):
                         lists['recode'].append('id=%s %s' % (it['id'], base))
                         _mark_repaired(dbc, it['id'], os.path.basename(f), f, '容错重编码',
                                        r.get('orig_backup'), log=_log)
-                        backs.append(r.get('orig_backup') or '')
+                        _bk = r.get('orig_backup') or ''
+                        if _bk and os.path.exists(_bk):
+                            backs.append(_bk)
                         _log('  id=%s %s 重编码完成（%.0fs；回滚点 %s）'
                              % (it['id'], base, r.get('secs', 0), r.get('orig_backup')))
                     else:
