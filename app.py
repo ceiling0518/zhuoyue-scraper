@@ -820,8 +820,8 @@ def _repair_plan(ids=None, cap=80, refresh=False):
 def _job_repair(ids=None, mode='index', go=False):
     """按体检结果修复。mode=index 只做索引重建（快/原地/可回滚）；mode=all 也做容错重编码。"""
     _begin('repair', 1)
-    n_idx, n_gap, n_re, n_skip, n_fail, backs = 0, 0, 0, 0, 0, []
-    lists = {'index': [], 'gap': [], 'recode': [], 'fail': [], 'skip': []}
+    n_idx, n_remux, n_gap, n_re, n_skip, n_fail, backs = 0, 0, 0, 0, 0, 0, []
+    lists = {'index': [], 'remux': [], 'gap': [], 'recode': [], 'fail': [], 'skip': []}
     try:
         items = _items_by_ids(ids)
         _tick(0, len(items))
@@ -846,6 +846,20 @@ def _job_repair(ids=None, mode='index', go=False):
                     else:
                         n_fail += 1
                         _log('  id=%s %s 索引重建失败：%s' % (it['id'], base, r.get('error')))
+                elif t == 'remux' and go and mode in ('safe', 'all'):
+                    r = repair.remux_copy(f, log=_log)
+                    if r.get('ok'):
+                        n_remux += 1
+                        lists['remux'].append('id=%s %s' % (it['id'], base))
+                        backs.append(r.get('orig_backup') or '')
+                        _log('  id=%s %s 无损重封装 OK（%.0fs；回滚点 %s）'
+                             % (it['id'], base, r.get('secs', 0),
+                                os.path.basename(r.get('orig_backup') or '')))
+                    else:
+                        n_fail += 1
+                        lists['fail'].append('id=%s %s -> %s'
+                                             % (it['id'], base, (r.get('error') or '')[:60]))
+                        _log('  id=%s %s 重封装未采用：%s' % (it['id'], base, (r.get('error') or '')[:90]))
                 elif t == 'gap' and go and mode in ('safe', 'all'):
                     _last2 = [0.0]
 
@@ -891,9 +905,10 @@ def _job_repair(ids=None, mode='index', go=False):
                     plan = ' / '.join(p.get('plan') or [])
                     _log('  id=%s %s [%s] %s' % (it['id'], base, p.get('cls'), (plan or why)[:70]))
             _tick(n)
-        _log('修复结束：索引 %d / 小洞过渡 %d / 重编码 %d / 跳过 %d / 失败 %d'
-             % (n_idx, n_gap, n_re, n_skip, n_fail))
-        for _key, _lab in (('index', '已重建索引'), ('gap', '已填小洞'), ('recode', '已重编码'),
+        _log('修复结束：索引 %d / 重封装 %d / 小洞过渡 %d / 重编码 %d / 跳过 %d / 失败 %d'
+             % (n_idx, n_remux, n_gap, n_re, n_skip, n_fail))
+        for _key, _lab in (('index', '已重建索引'), ('remux', '已重封装'),
+                           ('gap', '已填小洞'), ('recode', '已重编码'),
                            ('fail', '失败'), ('skip', '跳过/未处理')):
             _v = lists.get(_key) or []
             if not _v:
@@ -902,8 +917,8 @@ def _job_repair(ids=None, mode='index', go=False):
             for _x in _v[:40]:
                 _log('      ' + _x)
         LAST_OP.clear()
-        LAST_OP.update({'kind': 'repair', 'index': n_idx, 'gap': n_gap, 'recode': n_re,
-                        'skip': n_skip, 'fail': n_fail, 'ok': n_idx + n_gap + n_re,
+        LAST_OP.update({'kind': 'repair', 'index': n_idx, 'remux': n_remux, 'gap': n_gap, 'recode': n_re,
+                        'skip': n_skip, 'fail': n_fail, 'ok': n_idx + n_remux + n_gap + n_re,
                         'backups': [b for b in backs if b],
                         'lists': {k: v[:200] for k, v in lists.items()}})
         _end('repair 完成')

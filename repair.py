@@ -225,6 +225,76 @@ class _MemFile(object):
         return r
 
 
+def check_index(path):
+    """索引结构自检（只读头部，很快）——比 ffprobe 细：
+
+    1) 顶层 / moov 内每个 box 的声明长度是否越界（被截）
+    2) 两轨表自洽：stco 声明/实际条数、stsc 消耗样本 vs stsz、chunk 偏移是否落在 mdat 内且单调、
+       末 chunk 落点是否越过 mdat 末
+    返回 (ok, issues)；非 MP4/MOV 返回 (None, [...])。
+    用途：抓“ffprobe 能打开但表已坏”的文件（这类不会在头部长度检查里暴露）。
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in MP4_EXT:
+        return (None, ['非 MP4/MOV 容器，本自检不覆盖'])
+    issues = []
+    try:
+        sz = os.path.getsize(path)
+    except Exception:
+        return (False, ['stat 失败'])
+    if sz == 0:
+        return (False, ['0 字节'])
+    try:
+        with open(path, 'rb') as fp:
+            tops = {}
+            for t, o, l, hl in _boxes(fp, 0, sz, limit=64):
+                if o + l > sz:
+                    issues.append('顶层 box %s 越界 %d 字节（被截）' % (t, o + l - sz))
+                tops.setdefault(t, (o, l))
+            if 'moov' not in tops:
+                return (False, issues + ['没有 moov'])
+            if 'mdat' not in tops:
+                return (False, issues + ['没有 mdat'])
+            mo, ml = tops['moov']
+            md0, mdl = tops['mdat']
+            mde = md0 + mdl
+            fp.seek(mo)
+            buf = fp.read(sz - mo)
+            for t, o, l, hl in _boxes(_MemFile(buf), 8, min(ml, len(buf)), limit=512):
+                if o + l > len(buf):
+                    issues.append('moov 内 box %s 越界 %d 字节' % (t, o + l - len(buf)))
+            traks = [b for b in _boxes(_MemFile(buf), 8, len(buf)) if b[0] == 'trak']
+            if not traks:
+                issues.append('没有 trak')
+            for ti, tr in enumerate(traks[:2]):
+                V = _track_tables(buf, tr, mo)
+                if not V:
+                    issues.append('trak%d 的 stsc/stsz/stco 缺失（表被截）' % ti)
+                    continue
+                declared, present = V['nco'], len(V['off'])
+                if present < declared:
+                    issues.append('trak%d stco 声明 %d 条、只剩 %d 条（缺 %d 字节）'
+                                  % (ti, declared, present, (declared - present) * 4))
+                if V.get('nsamp') and V.get('consumed', 0) > V['nsamp']:
+                    issues.append('trak%d stsc 消耗样本 %d > stsz 样本 %d'
+                                  % (ti, V['consumed'], V['nsamp']))
+                offs = V['off']
+                if offs:
+                    bad = sum(1 for o in offs if o < md0 or o >= mde)
+                    if bad:
+                        issues.append('trak%d 有 %d 个 chunk 偏移落在 mdat 之外' % (ti, bad))
+                    nz = sum(1 for i in range(1, len(offs)) if offs[i] < offs[i - 1])
+                    if nz:
+                        issues.append('trak%d 有 %d 处 chunk 偏移非单调（索引损坏）' % (ti, nz))
+                    last = offs[-1] + V['cb'][min(present, len(V['cb']) - 1)]
+                    if last > mde + 8:
+                        issues.append('trak%d 末 chunk 落点 %d 超出 mdat 末 %d（超 %d）'
+                                      % (ti, last, mde, last - mde))
+    except Exception as e:
+        return (False, issues + [type(e).__name__ + ': ' + str(e)[:80]])
+    return (not issues, issues)
+
+
 def apply_index(path, log=None):
     """原地纯追加修复（只改文件尾部）。返回 undo 信息。"""
     say = log or (lambda *a: None)
@@ -301,6 +371,13 @@ def probe(path):
                         return r
             except Exception:
                 pass
+            # 索引自洽检查（同样只读头部，很便宜）：抓“能打开但表已坏”的文件
+            okc, iss = check_index(path)
+            if okc is False and iss:
+                r['cls'] = 'index-bad'
+                r['reason'] = '索引结构异常：' + '；'.join(iss[:2])
+                r['issues'] = iss
+                return r
         r['cls'] = 'ok'; r['reason'] = '可打开、头部自洽'
         return r
     low = (se or '').lower()
@@ -496,6 +573,13 @@ def plan_repair(path, deep=False, log=None):
     if pr['cls'] == 'moov-gone':
         out['tier'] = 'none'; out['reason'] = pr['reason']
         return out
+    if pr['cls'] == 'index-bad':
+        out['tier'] = 'remux'
+        i = pr.get('issues') or []
+        out['plan'] = ['② 无损重封装（-c copy 重建索引；不重编码、原画质）',
+                       '注：会先比对时长，不符则拒绝替换（坏索引上 -c copy 不可靠）']
+        out['reason'] = (pr.get('reason') or '')[:160]
+        return out
     if pr['cls'] == 'index-cut':
         p = plan_index(path)
         out['index'] = p
@@ -645,6 +729,56 @@ def _grab_png(src, t, out):
            '-ss', '%.3f' % max(0.0, t), '-i', src, '-frames:v', '1', '-y', out]
     _run(cmd, 240)
     return os.path.isfile(out) and os.path.getsize(out) > 1000
+
+
+def remux_copy(path, log=None, tick=None):
+    """无损重封装（-c copy）：不重编码、重建容器索引。用于“能读但索引坏”的文件。
+
+    产物先校验（可播 + 索引自检无 issue）才原地替换，原文件留 .orig 回滚点。
+    """
+    say = log or (lambda *a: None)
+    t0 = time.time()
+    os.makedirs(OUT_DIR, exist_ok=True)
+    base = os.path.splitext(os.path.basename(path))[0]
+    stage = os.path.join(OUT_DIR, base + '.remux.mp4')
+    say('  无损重封装 -> %s（不重编码）' % os.path.basename(stage))
+    cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-err_detect', 'ignore_err',
+           '-i', path, '-c', 'copy', '-movflags', '+faststart', '-y', stage]
+    rc, so, se = _run(cmd, 7200)
+    if rc != 0 or not os.path.isfile(stage) or os.path.getsize(stage) < 2048:
+        err = ' | '.join([l for l in (se or '').strip().splitlines() if l.strip()][-2:])[:220]
+        return {'ok': False, 'error': '重封装失败 rc=%s: %s' % (rc, err), 'stage': stage}
+    pr = probe(stage)
+    if pr['cls'] != 'ok':
+        return {'ok': False, 'error': '重封装后索引仍异常：%s' % (pr.get('reason') or pr['cls']), 'stage': stage}
+    src_dur = 0.0
+    try:
+        src_dur = float(probe(path).get('duration') or 0)
+    except Exception:
+        src_dur = 0.0
+    d2 = float(pr.get('duration') or 0)
+    if src_dur and d2 and abs(d2 - src_dur) > max(1.0, src_dur * 0.01):
+        return {'ok': False, 'stage': stage,
+                'error': '重封装后时长不符（%.1fs vs %.1fs）—— 索引已损坏时 -c copy 会跟着坏表复制、丢内容；'
+                         '请改走 ① 索引重建或 ③ 容错重编码。原文件未改动'
+                         % (d2, src_dur)}
+    orig = path + '.orig'
+    k = 1
+    while os.path.exists(orig):
+        orig = '%s.orig%d' % (path, k); k += 1
+    try:
+        os.replace(path, orig)
+        shutil.copy2(stage, path)
+    except Exception as e:
+        return {'ok': False, 'error': '替换失败: %s' % str(e)[:110], 'stage': stage, 'orig': orig}
+    try:
+        os.remove(stage)
+    except Exception:
+        pass
+    say('  已原地替换（回滚点 %s，耗时 %.0fs）' % (os.path.basename(orig), time.time() - t0))
+    return {'ok': True, 'kind': 'remux', 'path': path, 'orig_backup': orig,
+            'undo': {'action': 'restore', 'path': path, 'backup': orig},
+            'secs': round(time.time() - t0, 1)}
 
 
 def undo_restore(path, backup):
