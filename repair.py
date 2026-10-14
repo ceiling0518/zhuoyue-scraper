@@ -34,12 +34,41 @@ FFPROBE = os.environ.get('FFPROBE', 'ffprobe')
 GAP_SEC = float(os.environ.get('MS_REPAIR_GAP_SEC', '5') or 5)
 OUT_DIR = os.environ.get('MS_REPAIR_OUT') or r'F:\MediaScraper\repair_out'
 HOLE_MIN = 64 * 1024                      # 洞的最小长度（技能口径：>=64KB 才算真洞）
+THREADS = int(os.environ.get('MS_REPAIR_THREADS', '0') or 0)   # 0 = 按核数自动
+DEEP_WORKERS = int(os.environ.get('MS_DEEP_WORKERS', '0') or 0)  # 0 = 自动（见 _deep_workers）
 VIDEO_EXT = {'.mp4', '.mkv', '.avi', '.wmv', '.mov', '.ts', '.m4v', '.flv',
              '.rmvb', '.rm', '.mpg', '.mpeg', '.webm', '.m2ts', '.mts'}
 MP4_EXT = {'.mp4', '.mov', '.m4v'}
 
 
 # ----------------------------------------------------------------- 基础
+def _cores():
+    """逻辑核数（失败时退回 2）。"""
+    try:
+        return max(1, int(os.cpu_count() or 2))
+    except Exception:
+        return 2
+
+
+def _threads():
+    """编码线程数。实测本机 56 逻辑核，但 x264 帧级线程超过 ~16 收益递减，
+    所以封顶 16；MS_REPAIR_THREADS 可覆盖。"""
+    return THREADS or max(1, min(16, _cores()))
+
+
+def _fthreads():
+    """滤波器线程（minterpolate/blend/scale）：可多给，封顶 32。"""
+    return THREADS or max(1, min(32, _cores()))
+
+
+def _deep_workers():
+    """深检并发流数。**实测结论：并发无收益** —— NAS 总带宽约 8MB/s：
+    单流 7.0~7.5MB/s，4 流并发时每流降到约 3.9MB/s（合计不变）。
+    瓶颈在存储/网络而不是 CPU，所以默认 1（顺序扫）；换存储后再用 MS_DEEP_WORKERS 实测。
+    （注：曾误测到“2 流 96MB/s”，复查发现是系统缓存假象。）"""
+    return max(1, min(8, DEEP_WORKERS)) if DEEP_WORKERS else 1
+
+
 def _run(cmd, timeout=300):
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=timeout)
@@ -643,9 +672,11 @@ def plan_repair(path, deep=False, log=None):
 
 
 def reencode_cmd(path, out):
-    return [FFMPEG, '-hide_banner', '-err_detect', 'ignore_err', '-i', path,
+    th, ft = _threads(), _fthreads()
+    return [FFMPEG, '-hide_banner', '-filter_threads', str(ft),
+            '-err_detect', 'ignore_err', '-i', path,
             '-fps_mode', 'cfr', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
-            '-c:a', 'aac', '-y', out]
+            '-threads', str(th), '-c:a', 'aac', '-y', out]
 
 
 def _ffprobe_wh(path):
@@ -682,7 +713,9 @@ def tolerant_reencode(path, out_dir=None, log=None, tick=None):
         dur = float(pr.get('duration') or 0)
     except Exception:
         pass
-    say('  重编码 -> %s（预计 %s）' % (stage, ('%d 分钟' % round(dur / 5.1 / 60)) if dur else '未知'))
+    say('  重编码 -> %s（线程 编码 %d / 滤波 %d；逻辑核 %d；预计 %s）'
+        % (stage, _threads(), _fthreads(), _cores(),
+           ('%d 分钟' % round(dur / 5.1 / 60)) if dur else '未知'))
     cmd = reencode_cmd(path, stage)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          universal_newlines=True, bufsize=1)
@@ -867,9 +900,13 @@ def interp_gap(path, gaps=None, log=None, tick=None, mi_mode='mci', verify=True,
     graph = ';'.join(fc)
     say('  minterpolate(%s) 插帧 -> %s（预计 %.1f 分钟）'
         % (mi_mode, os.path.basename(stage), sum(s[4] for s in segs) / 0.034 / 60.0))
-    cmd = [FFMPEG, '-hide_banner', '-err_detect', 'ignore_err'] + inputs + \
+    _th, _ft = _threads(), _fthreads()
+    say('  线程：编码 %d / 滤波 %d（逻辑核 %d）' % (_th, _ft, _cores()))
+    cmd = [FFMPEG, '-hide_banner', '-filter_threads', str(_ft),
+           '-err_detect', 'ignore_err'] + inputs + \
           ['-filter_complex', graph, '-map', '[v]', '-map', '0:a?',
-           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-y', stage]
+           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-threads', str(_th),
+           '-c:a', 'aac', '-y', stage]
     if dry:
         return {'ok': False, 'dry': True, 'cmd': cmd, 'graph': graph, 'gaps': len(gs),
                 'segs': [[round(s[0], 2), round(s[1], 2)] for s in segs]}
