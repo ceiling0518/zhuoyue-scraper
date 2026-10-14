@@ -510,6 +510,20 @@ def _job_one(iid, mode, force):
         _log('ERR ' + traceback.format_exc()[:500]); _end('run 失败')
 
 
+def _job_runset(ids, mode='auto'):
+    """只跑指定的一批 id（不经过队列）—— 队列里有什么都不影响这一批。"""
+    _begin('runset', len(ids))
+    dbc = mlib.db()
+    n, ok = 0, 0
+    for iid in ids:
+        if _stop_req():
+            _log('! 已请求停止，剩余 %d 个未跑' % (len(ids) - n))
+            break
+        n += 1
+        ok += 1 if _one(dbc, iid, mode, force=True) else 0
+        _tick(n)
+    mlib.unload_ai()
+    _end('runset %d/%d' % (ok, n))
 def _job_queue():
     _begin('queue', len(QUEUE))
     dbc = mlib.db()
@@ -1228,6 +1242,11 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/pipeline':
                 ok = start_job(_job_pipeline, lim, int(q.get('group') or 0),
                                int(q.get('ai_group') or 0))
+            elif p == '/api/runset':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                if not ids:
+                    return self._json({'ok': False, 'error': 'ids 为空'}, 400)
+                ok = start_job(_job_runset, ids, mode)
             elif p == '/api/queue/run':
                 ok = start_job(_job_queue)
             elif p == '/api/queue/clear':
@@ -1436,13 +1455,13 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   <div class="bar" id="actbar" style="background:#171c25">
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
-    <button class="primary" id="a-web">重跑·网站</button>
-    <button id="a-ai">重跑·AI</button>
+    <button class="primary" id="a-web" title="只对【选中的条目】跑网站线（不经过队列，队列里有别的也不会被跑）">重跑·网站</button>
+    <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
     <button id="a-fill">AI 补全</button>
     <button id="a-vscan">AI 看片</button>
-    <button id="a-auto">重跑·全流程</button>
+    <button id="a-auto" title="只对【选中的条目】跑全流程（不经过队列）">重跑·全流程</button>
     <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
-    <button id="a-queue">重跑队列</button>
+    <button id="a-queue" title="把选中条目加入队列（用右侧 qmode 的模式），之后点「跑队列」才执行">加入队列</button>
     <button id="a-open">打开目录</button>
     <button id="a-thumbs">刷新缩略图</button>
     <button id="a-coverdel">删除封面图</button>
@@ -1558,9 +1577,8 @@ function selSet(b,on){const id=b.dataset.id,tr=b.closest('tr');
   else{SEL.delete(id);tr.classList.remove('sel');b.textContent='选择';}}
 $('#a-selall').onclick=()=>{document.querySelectorAll('.selbtn').forEach(b=>selSet(b,true));selinfo();};
 $('#a-selnone').onclick=()=>{SEL.clear();document.querySelectorAll('.selbtn').forEach(b=>selSet(b,false));selinfo();};
-function batchRun(mode){return async()=>{if(!SEL.size)return alert(T('先选条目'));let n=0;
-  for(const id of SEL){const r=await post('/api/queue/'+id+'?mode='+mode);n=r.queue;}
-  $('#qcount').textContent=n;await post('/api/queue/run');};}
+function batchRun(mode){return async()=>{if(!SEL.size)return alert(T('先选条目'));
+  await post('/api/runset?mode='+mode+'&ids='+[...SEL].join(','));};}
 $('#a-web').onclick=batchRun('website');
 $('#a-ai').onclick=batchRun('ai');
 $('#a-fill').onclick=async()=>{
