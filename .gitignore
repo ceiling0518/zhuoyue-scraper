@@ -1,4 +1,4 @@
-# ---- 运行时数据 / 隐私：绝对不要提交 ----
+﻿# ---- 运行时数据 / 隐私：绝对不要提交 ----
 mlib.db
 mlib.db-wal
 mlib.db-shm
@@ -26,3 +26,5 @@ _commitmsg.txt
 # ---- Docker 构建 / 测试临时产物 ----
 _dtest/
 build.log
+repair_out/
+tests/_fixture_*/
