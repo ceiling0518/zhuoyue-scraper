@@ -1400,6 +1400,28 @@ def biggest_video(dirpath):
     return best
 
 
+def pick_cover_video(dirpath, top=10):
+    """封面取帧要用的视频：**多视频时随机挑一个**（仍按体积取前 top 个做池子，
+    避免挑到花絮/样片这类小文件）；单视频目录就是它自己。
+    """
+    import random
+    try:
+        vids = [os.path.join(dirpath, f) for f in os.listdir(dirpath)
+                if os.path.splitext(f)[1].lower() in VIDEO_EXT]
+    except Exception:
+        return None
+    if not vids:
+        return None
+    try:
+        vids.sort(key=os.path.getsize, reverse=True)
+    except Exception:
+        pass
+    pool = vids[:max(1, int(top))]
+    if len(pool) > 1:
+        random.shuffle(pool)
+    return pool[0]
+
+
 def video_duration(vpath):
     try:
         o = subprocess.run([FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
@@ -1428,6 +1450,29 @@ def video_frames(vpath, n=6, width=512):
         except Exception:
             pass
     return out
+
+
+def cover_frame(dirpath, width=640):
+    """缩略图兜底：随机挑一个视频 + 在 [MIN_START, 片尾] 内随机取一帧，返回 jpeg bytes。"""
+    import random
+    p = pick_cover_video(dirpath)
+    if not p:
+        return None
+    try:
+        dur = video_duration(p)
+    except Exception:
+        dur = 0.0
+    lo = COVER.MIN_START if (dur and dur / 3.0 > COVER.MIN_START) else 0.0
+    hi = max(lo, (dur or 0) - COVER.TAIL)
+    t = random.uniform(lo, hi) if hi > lo else lo
+    try:
+        r = subprocess.run([FFMPEG, '-v', 'error', '-ss', '%.2f' % t, '-i', p,
+                            '-frames:v', '1', '-vf', 'scale=%d:-1' % width,
+                            '-f', 'image2', '-vcodec', 'mjpeg', '-'],
+                           capture_output=True, timeout=180)
+        return r.stdout if (r.stdout and len(r.stdout) > 800) else None
+    except Exception:
+        return None
 
 
 VIDEO_PROMPT = """下面是一部影片的若干截图（按时间顺序）。文件名没有任何可用信息，只能靠画面判断。
@@ -1780,30 +1825,28 @@ def make_cover(item, force=False):
         return os.path.join(dirpath, 'poster.jpg')
     out = os.path.join(dirpath, 'poster.jpg')
     series = (live_kind(item) == 'series')
+    # 多视频：随机挑一个（仍按体积取前 10 个做池子，避免挑到小样片）
+    pool = pick_cover_video(dirpath, top=10)
     cands = []
-    if series:
-        try:
-            names = os.listdir(dirpath)
-        except Exception:
-            names = []
-        vids = [os.path.join(dirpath, f) for f in names
-                if os.path.splitext(f)[1].lower() in VIDEO_EXT]
-        try:
-            vids.sort(key=os.path.getsize, reverse=True)
-        except Exception:
-            pass
-        cands = vids[:10]
-    else:
-        v = biggest_video(dirpath)
-        cands = [os.path.join(dirpath, v)] if v else []
+    if pool:
+        cands = [pool]
+        if series:                     # 剧集：池子里剩下的作为兜底
+            try:
+                rest = [os.path.join(dirpath, f) for f in os.listdir(dirpath)
+                        if os.path.splitext(f)[1].lower() in VIDEO_EXT]
+                rest.sort(key=os.path.getsize, reverse=True)
+                cands = [pool] + [x for x in rest[:10] if x != pool]
+            except Exception:
+                pass
     for p in cands:
         try:
             dur = COVER.duration(p)
         except Exception:
             dur = 0
-        ms = 120.0 if (series and dur and dur / 3.0 > 120) else 0.0
+        # 长视频：起点只在 [MIN_START, 片尾] 内随机（不再只对剧集生效）
+        ms = COVER.MIN_START if (dur and dur / 3.0 > COVER.MIN_START) else 0.0
         try:
-            if COVER.pick(p, out, n=12, verbose=False, min_start=ms):
+            if COVER.pick(p, out, n=12, verbose=False, min_start=ms, rand=True):
                 return out
         except Exception:
             continue

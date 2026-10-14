@@ -25,6 +25,13 @@ for _s in (sys.stdout, sys.stderr):
 
 FFMPEG = os.environ.get('FFMPEG', 'ffmpeg')
 FFPROBE = os.environ.get('FFPROBE', 'ffprobe')
+
+# 封面取帧策略（可用环境变量调）
+#   起点在 [MIN_START, 片尾-TAIL] 内**随机**，每次取样的窗口为 WINDOW 秒
+MIN_START = float(os.environ.get('MS_COVER_MIN_SEC', '120'))      # 最早取帧时间（秒），默认 2:00
+WINDOW = float(os.environ.get('MS_COVER_WINDOW_SEC', '120'))      # 单次取样窗口（秒）
+TAIL = float(os.environ.get('MS_COVER_TAIL_SEC', '5'))            # 离片尾保留的余量（秒）
+import random                                                     # noqa: E402
 VIDEO_EXT = {'.mp4', '.mkv', '.avi', '.wmv', '.mov', '.ts', '.m4v', '.flv', '.rmvb', '.mpg', '.mpeg'}
 _COVER_NAMES = ('poster.jpg', 'folder.jpg', 'cover.jpg', 'poster.png', 'folder.png')
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -165,18 +172,25 @@ def grab_batch(path, times, width=640):
 
 
 def pick(video, out, n=12, start_frac=0.05, end_frac=0.90, width=640, verbose=True,
-         want_json=False, fast=False, min_start=120.0):
+         want_json=False, fast=False, min_start=None, rand=False, window=None):
+    """取封面帧。rand=True 时，取样起点在 [min_start, 片尾-TAIL] 内**随机**。"""
+    if min_start is None:
+        min_start = MIN_START
     dur = duration(video)
     if dur <= 0:
         return None
     det = face_detector()
-    # Poster rule: a frame may only be taken from 2:00 onward.
+    # Poster rule: a frame may only be taken from MIN_START onward.
     a = max(min_start, dur * start_frac)
-    b = dur * end_frac
+    b = min(dur * end_frac, max(a, dur - TAIL))
     if b <= a:
         if verbose:
-            print('  dur=%.0fs < min_start=%.0fs -> no frame after 2min, skip' % (dur, min_start))
+            print('  dur=%.0fs < min_start=%.0fs -> no frame after min_start, skip' % (dur, min_start))
         return None
+    if rand:                                   # 随机起点：在 [a, b] 里均匀取一个 t0
+        w = min(float(window or WINDOW), b - a)
+        a = random.uniform(a, max(a, b - w))
+        b = min(b, a + w)
     times = [a + (b - a) * i / max(1, n - 1) for i in range(n)]
     imgs = grab_batch(video, times, width) if fast else []
     if len(imgs) < 2:

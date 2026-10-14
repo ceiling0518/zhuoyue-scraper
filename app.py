@@ -772,17 +772,15 @@ def make_poster(iid):
     if imgs:
         imgs.sort(key=lambda x: os.path.getsize(x), reverse=True)
         src = imgs[0]
-    # 2) 没有图 -> 从视频里截一帧（时间轴中点）
+    # 2) 没有图 -> 从视频里随机取一帧（多视频随机挑；长视频在 [2min, 片尾] 内随机起点）
     if not src:
-        v = mlib.biggest_video(p)
-        if v:
-            frames = mlib.video_frames(os.path.join(p, v), n=1)
-            if frames:
-                try:
-                    io.open(dst, 'wb').write(frames[0])
-                    return dst
-                except Exception:
-                    return None
+        fr = mlib.cover_frame(p)          # 随机视频 + 随机取帧（见 mlib.cover_frame）
+        if fr:
+            try:
+                io.open(dst, 'wb').write(fr)
+                return dst
+            except Exception:
+                return None
     if src:
         try:
             if os.path.abspath(src) != os.path.abspath(dst):

@@ -69,7 +69,7 @@
 | 🎬 **AI video watching** | When the filename says nothing (e.g. `226`, `227`): ffmpeg grabs frames → **vision model** looks at them → title / plot / tags |
 | 🏷 **AI tag fill** | Items with a plot but no tags get tags generated from the plot (selection can force-overwrite old tags) |
 | 🔀 **Two lanes in parallel** | Site lane (network I/O) and AI lane (GPU) run at the same time without starving each other |
-| 🖼 **Covers** | Site poster > folder image > **frame grab** (ffmpeg + OpenCV face/sharpness scoring). **Refresh thumbs** can auto-build a cover |
+| 🖼 **Covers** | Site poster > folder image > **frame grab** (ffmpeg + OpenCV face/sharpness scoring); **long videos pick a random start in [2min, end]**, and **a random video when there are several**; **Refresh thumbs** can auto-build a cover |
 | 🧹 **Delete cover** | Removes cover files + thumbnail cache in one go, back to "no cover" |
 | 📺 **Series** | Multiple videos in one folder are detected as a series and get **one merged `tvshow.nfo`** (no per-episode split) |
 | 🚧 **Nested-folder check** | A subfolder that still contains videos (or ≥2 subfolders) is marked `有误` (bad) immediately — **no scraping**, hand it to a human |
@@ -118,6 +118,9 @@ Available for **linux/amd64 and linux/arm64** (Synology/QNAP ARM models included
 | `MS_HOST` / `MS_PORT` | `0.0.0.0` / `8800` | Listen address and port inside the container |
 | `PUID` / `PGID` | `0` | Which uid writes files; set this to your media owner or the .nfo files end up root-owned |
 | `MS_JAVDB` | empty | javdb mirror domain (when your region is blocked) |
+| `MS_COVER_MIN_SEC` | `120` | Earliest frame time (s) for covers; long videos pick a **random** start between here and the end |
+| `MS_COVER_WINDOW_SEC` | `120` | Sampling window (s) per grab; the best-scoring frame inside the window wins |
+| `MS_COVER_TAIL_SEC` | `5` | Safety margin (s) kept away from the end of the video |
 
 ### ❗ Works without Ollama
 
