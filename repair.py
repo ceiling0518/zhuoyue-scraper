@@ -702,9 +702,9 @@ def holes_to_time(path, holes):
         with open(path, 'rb') as fp:
             sz = os.path.getsize(path)
             tops = {t: (o, l) for t, o, l, hl in _boxes(fp, 0, sz, limit=64)}
-            mo = tops['moov'][0]
+            mo, ml = tops['moov'][0], tops['moov'][1]
             fp.seek(mo)
-            buf = fp.read()
+            buf = fp.read(ml)   # 只读 moov；faststart（moov 在前）时原写法会把整个文件读进来
     except Exception:
         return []
     traks = [b for b in _boxes(_MemFile(buf), 8, len(buf)) if b[0] == 'trak']
