@@ -950,7 +950,7 @@ def tolerant_reencode(path, out_dir=None, log=None, tick=None):
             secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
             tick(min(secs / dur, 0.995), '重编码 %.1f%%' % (100 * secs / dur))
         if 'Error' in line and 'ignore_err' not in line:
-            say('  ffmpeg: ' + line.strip()[:110])
+            say('  ERR ffmpeg: ' + line.strip()[:110])
     p.wait()
     done = (p.returncode == 0 and os.path.isfile(stage) and os.path.getsize(stage) > 1024)
     if not done:

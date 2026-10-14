@@ -9,7 +9,7 @@ No OpenClaw / Control UI dependency.  Start with run.cmd, then open the printed 
 来源 source  : code(javbus/javdb) / Uncen(missav) / AI(模型)
 """
 import threading
-import io, json, os, shutil, subprocess, sys, threading, time, traceback
+import io, json, os, re, shutil, subprocess, sys, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -55,17 +55,27 @@ def _logdb():
 
 
 def _flush_log():
-    """Write buffered log lines to joblog in one go (every 5 lines)."""
+    """Write buffered log lines to joblog in one go (every 5 lines).
+
+    错误行特殊处理：库里也只保留一条（删掉旧的 ERR 行再写当前这条）。
+    """
     with _LOCK:
-        if not _LOGBUF:
-            return
         rows = list(_LOGBUF)
         _LOGBUF[:] = []
+    err = STATE.get('errline')
+    new_err = err if (err and err != STATE.get('err_db')) else None
+    if not rows and not new_err:
+        return
     try:
         with _DLOK:
             c = _logdb()
-            c.executemany('INSERT INTO joblog(ts,line) VALUES(?,?)',
-                          [(mlib.now(), x) for x in rows])
+            if rows:
+                c.executemany('INSERT INTO joblog(ts,line) VALUES(?,?)',
+                              [(mlib.now(), x) for x in rows])
+            if new_err:
+                c.execute('DELETE FROM joblog WHERE line LIKE ?', ('%' + _ERRTAG + '%',))
+                c.execute('INSERT INTO joblog(ts,line) VALUES(?,?)', (mlib.now(), new_err))
+                STATE['err_db'] = new_err
             c.execute('DELETE FROM joblog WHERE id NOT IN '
                       '(SELECT id FROM joblog ORDER BY id DESC LIMIT 3000)')
             c.commit()
@@ -121,7 +131,60 @@ def q_clear():
         pass
 
 
+_ERRTAG = '  ERR '
+_ERRRE = re.compile(r'(^|\s)ERR(\s|:|$)')
+_ERRPAT = re.compile(r'ERR|ffmpeg:|ffprobe|Invalid NAL|Error submitting|missing picture|'
+                     r'Invalid data|Terminating thread|corrupt', re.I)
+
+
+def _log_purge():
+    """删掉日志里的错误行（内存 + joblog 库），返回删除条数。"""
+    with _LOCK:
+        lg = STATE['log']
+        keep = [x for x in lg if not _ERRPAT.search(x)]
+        n = len(lg) - len(keep)
+        lg[:] = keep
+        STATE.pop('errline', None)
+        STATE.pop('err_db', None)
+    try:
+        with _DLOK:
+            c = _logdb()
+            rows = c.execute('SELECT id, line FROM joblog').fetchall()
+            ids = [r[0] for r in rows if _ERRPAT.search(r[1] or '')]
+            for i in range(0, len(ids), 400):
+                ch = ids[i:i + 400]
+                c.execute('DELETE FROM joblog WHERE id IN (%s)'
+                          % ','.join('?' * len(ch)), ch)
+            c.commit()
+    except Exception:
+        pass
+    return n
+
+
 def _log(msg):
+    """普通流水一行一条；**错误只保留一条**（新的替换旧的，最多每秒更新一次）。"""
+    msg = str(msg)
+    if _ERRRE.search(msg):
+        body = msg[4:] if msg.startswith('ERR ') else msg
+        flat = '%s%s%s' % (time.strftime('%H:%M:%S'), _ERRTAG, ' '.join(body.split()))
+        with _LOCK:
+            now = time.time()
+            if STATE.get('errline') and now - STATE.get('err_t', 0.0) < 1.0:
+                STATE['err_drop'] = STATE.get('err_drop', 0) + 1     # 同一秒内的后续错误丢弃
+                return
+            STATE['err_t'] = now
+            STATE['errline'] = flat
+            lg = STATE['log']
+            for k in range(len(lg) - 1, -1, -1):
+                if _ERRTAG in lg[k]:
+                    lg[k] = flat                                    # 就地替换上一条错误
+                    break
+            else:
+                lg.append(flat)
+                if len(lg) > LOGMAX:
+                    del lg[:LOGMAX // 2]
+        _flush_log()
+        return
     line = '%s  %s' % (time.strftime('%H:%M:%S'), msg)
     with _LOCK:
         STATE['log'].append(line)
@@ -1799,6 +1862,8 @@ class H(BaseHTTPRequestHandler):
                 return self._json(d or {'error': 'not found'}, 200 if d else 404)
             if p == '/api/archive':
                 return self._json({'rows': archive_rows(int(q.get('limit') or 200))})
+            if p == '/api/log/purge':
+                return self._json({'removed': _log_purge()})
             if p == '/api/job':
                 with _LOCK:
                     return self._json(dict(STATE, queue=len(QUEUE)))
