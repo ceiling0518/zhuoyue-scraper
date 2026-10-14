@@ -1248,8 +1248,9 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
            sum(1 for x in segs if x[2] == 'tol'), 100.0 * kept / max(1e-6, dur), total_tol))
     if dry:
         return {'ok': True, 'dry': True, 'segs': segs}
-    tmp = tempfile.mkdtemp(prefix='splice_', dir=os.path.dirname(path) if os.path.isdir(os.path.dirname(path)) else None)
-    stage = os.path.join(os.path.dirname(path) or '.', os.path.splitext(os.path.basename(path))[0] + '.splice.mp4')
+    tmp = tempfile.mkdtemp(prefix='splice_')          # 临时目录不进媒体库
+    os.makedirs(OUT_DIR, exist_ok=True)
+    stage = os.path.join(OUT_DIR, os.path.splitext(os.path.basename(path))[0] + '.splice.mp4')
     t0 = time.time()
     try:
         names = []
@@ -1324,6 +1325,11 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
         try:
             import shutil as _sh
             _sh.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+        try:
+            if os.path.isfile(stage):
+                os.remove(stage)            # stage 绝不留下（含校验失败路径）
         except Exception:
             pass
 

@@ -990,13 +990,32 @@ def _repair_plan(ids=None, cap=80, refresh=False):
 
 
 
+def _sweep_temp(log=None):
+    """清掉上次异常退出留下的中间产物（只在 OUT_DIR，绝不碰媒体库）。"""
+    n = 0
+    try:
+        for f in os.listdir(repair.OUT_DIR):
+            if (f.startswith('_gap') and f.endswith('.png')) or \
+                    f.endswith(('.gapfix.mp4', '.remux.mp4', '.splice.mp4')):
+                try:
+                    os.remove(os.path.join(repair.OUT_DIR, f))
+                    n += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if n and log:
+        log('  清理上次遗留的中间产物 %d 个' % n)
+    return n
+
+
 def _mark_repaired(dbc, item_id, base, path, kind, backup, log=None):
     """修复后的收尾：抽窗校验 -> 写回体检记录 -> 清理回滚点。
 
     - 产物是全新写入的完整字节流（物理上不可能有数据洞），所以不做全文件字节扫描
       （那只是空转），改做**抽窗解码校验**：通过即记 deep=1（徽标 ✓✓）。
     - 校验不过则只记 ok（仍 ✓），并在 reason 里点名"建议 force 深检"。
-    - 回滚点默认删除（避免长期占空间、目录里多出 .orig）；设 MS_KEEP_BACKUP=1 可保留。
+    - .orig 只是执行过程中的暂存：完成即删，不留回滚点（media 库保持干净）。
     """
     try:
         sz = os.path.getsize(path)
@@ -1019,28 +1038,43 @@ def _mark_repaired(dbc, item_id, base, path, kind, backup, log=None):
         dbc.commit()
     except Exception:
         pass
-    kept = str(os.environ.get('MS_KEEP_BACKUP', '') or '') == '1'
+    # .orig 只是执行过程中的暂存：完成后一律删除，不留回滚点。
     if backup and os.path.exists(backup):
-        if kept:
+        try:
+            os.remove(backup)
             if log:
-                log('  回滚点保留（MS_KEEP_BACKUP=1）：%s' % os.path.basename(backup))
-        else:
-            try:
-                os.remove(backup)
-                if log:
-                    log('  已清理回滚点 %s（要保留请设 MS_KEEP_BACKUP=1）'
-                        % os.path.basename(backup))
-            except Exception as e:
-                if log:
-                    log('  !! 回滚点删除失败：%s' % str(e)[:60])
+                log('  已清理暂存 %s' % os.path.basename(backup))
+        except Exception as e:
+            if log:
+                log('  !! 暂存删除失败：%s' % str(e)[:60])
+    # 媒体目录保持干净：清掉本文件相关的任何暂存残留
+    _k = 0
+    try:
+        d = os.path.dirname(path)
+        b = os.path.basename(path)
+        st = os.path.splitext(b)[0]
+        for n in os.listdir(d):
+            if (n.startswith(b + '.orig') or n == st + '.splice.mp4'
+                    or n == st + '.gapfix.mp4' or n == st + '.remux.mp4'):
+                try:
+                    os.remove(os.path.join(d, n))
+                    _k += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if _k and log:
+        log('  已清理媒体目录残留 %d 个' % _k)
     if log:
         log('  id=%s %s 收尾完成：%s，体积 %d'
-            % (item_id, base[:34], '深检合格 ✓✓' if deep else '仅体检 ✓（建议 force 深检）', sz))
+            % (item_id, base[:34],
+               '深检合格 ✓✓' if deep else '仅体检 ✓（建议 force 深检）', sz))
 
 
 def _job_repair(ids=None, mode='index', go=False):
     """按体检结果修复。mode=index 只做索引重建（快/原地/可回滚）；mode=all 也做容错重编码。"""
     _begin('repair', 1)
+    _sweep_temp(log=_log)
     dbc = mlib.db()          # 本函数要用：写回体检记录 / 读深检记录的洞区间
     n_idx, n_remux, n_gap, n_re, n_skip, n_fail, backs = 0, 0, 0, 0, 0, 0, []
     lists = {'index': [], 'remux': [], 'gap': [], 'recode': [], 'fail': [], 'skip': []}
