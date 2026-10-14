@@ -685,6 +685,7 @@ def _job_health(ids=None, force=False, deep=False):
         items = _items_by_ids(ids)
         bad, files, checked, skipped = {}, 0, 0, 0
         fixable, heavy, dead = set(), set(), set()
+        lists = {'index': [], 'gap': [], 'reencode': [], 'dead': [], 'novideo': []}
         if deep:
             _log('深检：逐文件扫 mdat 找洞（NAS ~11MB/s，大文件较慢）')
         _tick(0, len(items))
@@ -714,6 +715,8 @@ def _job_health(ids=None, force=False, deep=False):
                 if usable and not force:
                     cls, tier = k['cls'], k.get('tier') or ''
                     skipped += 1
+                    if cls not in ('ok',):
+                        _log('  id=%s %s [%s]（跳过已测，沿用记录）' % (it['id'], base[:42], cls))
                 else:
                     try:
                         p = repair.plan_repair(f, deep=deep)
@@ -730,14 +733,15 @@ def _job_health(ids=None, force=False, deep=False):
                         _log('  id=%s %s [%s] %s' % (it['id'], base[:42], cls, (p.get('reason') or '')[:58]))
                 if cls not in ('ok',):
                     bad.setdefault(cls, []).append(it['id'])
+                _tag = 'id=%d %s' % (it['id'], base)
                 if tier == 'index':
-                    fixable.add(it['id'])
+                    fixable.add(it['id']); lists['index'].append(_tag)
                 elif tier == 'gap':
-                    fixable.add(it['id'])
+                    fixable.add(it['id']); lists['gap'].append(_tag)
                 elif tier == 'reencode':
-                    heavy.add(it['id'])
+                    heavy.add(it['id']); lists['reencode'].append(_tag)
                 elif cls not in ('ok',):
-                    dead.add(it['id'])
+                    dead.add(it['id']); lists['dead'].append(_tag + ' [%s]' % cls)
             if n % 20 == 0:
                 dbc.commit()
             _tick(n)
@@ -747,11 +751,22 @@ def _job_health(ids=None, force=False, deep=False):
                 len(fixable), len(heavy), len(dead)))
         for k2, v2 in sorted(bad.items(), key=lambda x: -len(x[1])):
             _log('  %-11s %d 个文件' % (k2, len(v2)))
+        for _key, _lab in (('index', '可修·索引重建'), ('gap', '可修·小洞插帧'),
+                           ('reencode', '需重编码'), ('dead', '不可修'), ('novideo', '无视频')):
+            _v = lists.get(_key) or []
+            if not _v:
+                continue
+            _log('  【%s】%d 个：' % (_lab, len(_v)))
+            for _x in _v[:40]:
+                _log('      ' + _x)
+            if len(_v) > 40:
+                _log('      …还有 %d 个' % (len(_v) - 40))
         LAST_OP.clear()
         LAST_OP.update({'kind': 'health', 'deep': bool(deep), 'files': files,
                         'bad': sum(len(v) for v in bad.values()), 'checked': checked,
                         'skipped': skipped, 'fixable': len(fixable), 'heavy': len(heavy),
-                        'dead': len(dead), 'ids': sorted(fixable)})
+                        'dead': len(dead), 'ids': sorted(fixable),
+                        'lists': {k: v[:200] for k, v in lists.items()}})
         _end(('deephealth' if deep else 'health') + ' 完成')
     except Exception:
         _log('ERR ' + traceback.format_exc()[:500])
@@ -806,6 +821,7 @@ def _job_repair(ids=None, mode='index', go=False):
     """按体检结果修复。mode=index 只做索引重建（快/原地/可回滚）；mode=all 也做容错重编码。"""
     _begin('repair', 1)
     n_idx, n_re, n_skip, n_fail, backs = 0, 0, 0, 0, []
+    lists = {'index': [], 'recode': [], 'fail': [], 'skip': []}
     try:
         items = _items_by_ids(ids)
         _tick(0, len(items))
@@ -824,6 +840,7 @@ def _job_repair(ids=None, mode='index', go=False):
                     r = repair.apply_index(f, log=_log)
                     if r.get('ok'):
                         n_idx += 1
+                        lists['index'].append('id=%s %s' % (it['id'], base))
                         _log('  id=%s %s 索引重建 OK（+%d 字节；回滚=truncate 到 %d）'
                              % (it['id'], base, r['new_size'] - r['orig_size'], r['orig_size']))
                     else:
@@ -839,22 +856,35 @@ def _job_repair(ids=None, mode='index', go=False):
                     r = repair.tolerant_reencode(f, log=_log, tick=_pk)
                     if r.get('ok'):
                         n_re += 1
+                        lists['recode'].append('id=%s %s' % (it['id'], base))
                         backs.append(r.get('orig_backup') or '')
                         _log('  id=%s %s 重编码完成（%.0fs；回滚点 %s）'
                              % (it['id'], base, r.get('secs', 0), r.get('orig_backup')))
                     else:
                         n_fail += 1
+                        lists['fail'].append('id=%s %s -> %s'
+                                             % (it['id'], base, (r.get('error') or '')[:60]))
                         _log('  id=%s %s 重编码失败：%s' % (it['id'], base, r.get('error')))
                 else:
                     n_skip += 1
+                    lists['skip'].append('id=%s %s [%s]' % (it['id'], base, p.get('cls')))
                     why = (p.get('reason') or '')
                     plan = ' / '.join(p.get('plan') or [])
                     _log('  id=%s %s [%s] %s' % (it['id'], base, p.get('cls'), (plan or why)[:70]))
             _tick(n)
         _log('修复结束：索引 %d / 重编码 %d / 跳过 %d / 失败 %d' % (n_idx, n_re, n_skip, n_fail))
+        for _key, _lab in (('index', '已重建索引'), ('recode', '已重编码'),
+                           ('fail', '失败'), ('skip', '跳过/未处理')):
+            _v = lists.get(_key) or []
+            if not _v:
+                continue
+            _log('  【%s】%d 个：' % (_lab, len(_v)))
+            for _x in _v[:40]:
+                _log('      ' + _x)
         LAST_OP.clear()
         LAST_OP.update({'kind': 'repair', 'index': n_idx, 'recode': n_re, 'skip': n_skip,
-                        'fail': n_fail, 'ok': n_idx + n_re, 'backups': [b for b in backs if b]})
+                        'fail': n_fail, 'ok': n_idx + n_re, 'backups': [b for b in backs if b],
+                        'lists': {k: v[:200] for k, v in lists.items()}})
         _end('repair 完成')
     except Exception:
         _log('ERR ' + traceback.format_exc()[:500])
@@ -1952,9 +1982,14 @@ $('#a-repair').onclick=async()=>{
 async function _afterOp(){
   let r={};try{r=await(await fetch('/api/repair/last',{method:'POST'})).json();}catch(e){}
   if(!r||!r.kind)return;
+  const _sec=(k,t)=>{const v=(r.lists&&r.lists[k])||[];if(!v.length)return '';
+    return '<p><b>'+t+'（'+v.length+'）</b></p><pre style="white-space:pre-wrap;max-height:140px;overflow:auto;margin:0 0 8px">'
+      +esc(v.slice(0,40).join('\n'))+(v.length>40?'\n…还有 '+(v.length-40)+' 个':'')+'</pre>';};
   if(r.kind==='health'){
     rpShow(T('体检完成'), T('异常')+' '+r.bad+' / '+T('文件')+' '+r.files,
-      '<p>'+T('可重建索引')+' '+r.fixable+' · '+T('需重编码')+' '+r.heavy+' · '+T('不可修')+' '+r.dead+'</p>',
+      '<p>'+T('可修')+' '+(r.fixable+r.heavy)+' · '+T('不可修')+' '+r.dead+'</p>'
+      +_sec('index',T('可修·索引重建'))+_sec('gap',T('可修·小洞插帧'))
+      +_sec('reencode',T('需重编码'))+_sec('dead',T('不可修'))+_sec('novideo',T('无视频')),
       (r.fixable?[{label:T('是 — 立即修复可修的'),primary:true,fn:async()=>{await post('/api/repair?ids='+(r.ids||[]).join(',')+'&mode=index&go=1');$('#modal6').classList.remove('on');}},
                   {label:T('否 — 稍后再说'),fn:()=>$('#modal6').classList.remove('on')}]
                 :[{label:T('好'),fn:()=>$('#modal6').classList.remove('on')}]));
@@ -1962,6 +1997,7 @@ async function _afterOp(){
     const hasB=(r.backups||[]).length;
     rpShow(T('修复完成'), T('成功')+' '+r.ok+' / '+T('失败')+' '+r.fail,
       '<p>'+T('索引重建')+' '+r.index+' · '+T('重编码')+' '+r.recode+' · '+T('跳过')+' '+r.skip+'</p>'
+      +_sec('index',T('已重建索引'))+_sec('recode',T('已重编码'))+_sec('fail',T('失败'))+_sec('skip',T('跳过/未处理'))
       +(hasB?('<p class="muted">'+T('回滚备份')+' '+hasB+' '+T('个（重编码前原文件）')+'</p>'):
              '<p class="muted">'+T('无回滚备份（索引重建是纯追加，回滚=truncate 回原长度）')+'</p>'),
       (hasB?[{label:T('是 — 删除回滚备份'),fn:async()=>{if(!confirm(T('删除 '+hasB+' 个 .orig 备份？（不可恢复）')))return;const r2=await post('/api/repair/purge');alert(T('已删除')+' '+r2.removed);$('#modal6').classList.remove('on');}},
