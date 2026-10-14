@@ -931,6 +931,15 @@ def tolerant_reencode(path, out_dir=None, log=None, tick=None):
     done = (p.returncode == 0 and os.path.isfile(stage) and os.path.getsize(stage) > 1024)
     if not done:
         return {'ok': False, 'error': '重编码失败（rc=%s）' % p.returncode, 'stage': stage}
+    # 替换前校验：可播 + 时长一致（坏产物绝不覆盖原文件）
+    pr2 = probe(stage)
+    if pr2['cls'] != 'ok':
+        return {'ok': False, 'stage': stage,
+                'error': '产物不可播（%s）—— 未替换原文件' % (pr2.get('reason') or pr2['cls'])}
+    d2 = float(pr2.get('duration') or 0)
+    if dur and d2 and abs(d2 - dur) > max(1.0, dur * 0.01):
+        return {'ok': False, 'stage': stage,
+                'error': '产物时长不符（%.1fs vs %.1fs）—— 未替换原文件' % (d2, dur)}
     say('  重编码完成 %.0fs，替换原文件' % (time.time() - t0))
     orig = path + '.orig'
     k = 1
