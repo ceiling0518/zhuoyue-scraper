@@ -119,6 +119,75 @@ def _path_box(fp, s, e, path):
     return None
 
 
+DEEP_CHUNK = 96 * 1024 * 1024          # 深检每轮扫描的字节数（可被“停止”打断，下次续）
+
+
+def mdat_range(path):
+    """返回 (mdat_off, mdat_end)；非 MP4 或无 mdat 返回 (0, 0)。"""
+    try:
+        sz = os.path.getsize(path)
+        with open(path, 'rb') as fp:
+            for t, o, l, hl in _boxes(fp, 0, sz, limit=64):
+                if t == 'mdat':
+                    return (o, o + l)
+    except Exception:
+        pass
+    return (0, 0)
+
+
+def merge_holes(holes):
+    """按区间合并（相交或相接的洞并成一个）；跨段重复/截断的片段这样就能拼回完整长度。"""
+    iv = sorted([dict(h) for h in (holes or [])], key=lambda x: x['start'])
+    out = []
+    for h in iv:
+        if out and h['start'] <= out[-1]['end']:
+            out[-1]['end'] = max(out[-1]['end'], h['end'])
+            out[-1]['size'] = out[-1]['end'] - out[-1]['start']
+        else:
+            out.append(h)
+    return out
+
+
+def scan_holes_chunk(path, start=0, limit=DEEP_CHUNK, min_hole=None, block=4 * 1024 * 1024):
+    """断点续扫：只扫 mdat 的 [start, start+limit) 这一段。
+
+    返回 dict(holes=[{start,end,size}], next_off, done, scanned, mdat=(m0,m1), error?)。
+    每段与上一段重叠 min_hole-1 字节，保证跨块的洞不丢；重叠区产生的重复按 start 去重。
+    """
+    import re
+    m0, m1 = mdat_range(path)
+    if not m1:
+        return {'holes': [], 'next_off': 0, 'done': True, 'scanned': 0, 'error': '无 mdat（非 MP4 或无数据段）'}
+    min_hole = int(min_hole or HOLE_MIN)
+    start = max(m0, int(start or m0))
+    if start >= m1:
+        return {'holes': [], 'next_off': m1, 'done': True, 'scanned': 0, 'mdat': (m0, m1)}
+    end = min(m1, start + max(1, int(limit)))
+    # 回退 min_hole-1 字节重读：保证跨段的长洞完整可见（结果用 merge_holes 合并去重）
+    read_from = max(m0, start - (min_hole - 1)) if start > m0 else start
+    holes = []
+    rx = re.compile(rb'\x00{%d,}' % min_hole)
+    try:
+        with open(path, 'rb') as fp:
+            fp.seek(read_from)
+            pos = read_from
+            while pos < end:
+                b = fp.read(min(block, end - pos))
+                if not b:
+                    break
+                buf = b
+                for m in rx.finditer(buf):
+                    s, e = pos + m.start(), pos + m.end()
+                    if e > m0 and s < m1:
+                        holes.append({'start': s, 'end': e, 'size': e - s})
+                pos += len(b)
+            return {'holes': merge_holes(holes), 'next_off': end, 'done': end >= m1,
+                    'scanned': end - start, 'mdat': (m0, m1)}
+    except Exception as e:
+        return {'holes': [], 'next_off': start, 'done': False, 'scanned': 0,
+                'mdat': (m0, m1), 'error': type(e).__name__ + ': ' + str(e)[:80]}
+
+
 def _track_tables(buf, trak, moov_off):
     t, to, tl, thl = trak
     sb = _path_box(buf, to + thl, to + tl, [b'mdia'.decode(), 'minf', 'stbl'])
@@ -126,8 +195,9 @@ def _track_tables(buf, trak, moov_off):
         return None
     so, sl, shl = sb
     ch = {c[0]: c for c in _boxes(buf, so + shl, so + sl)}
-    if not all(k in ch for k in ('stsc', 'stsz', 'stco')):
+    if 'stsc' not in ch or 'stsz' not in ch or ('stco' not in ch and 'co64' not in ch):
         return None
+    _co64 = ('stco' not in ch)          # 64 位偏移表（大文件 / 某些 muxer）
     _, o, l, hl = ch['stsc']
     n = struct.unpack('>I', buf[o + hl + 4:o + hl + 8])[0]
     a = o + hl + 8
@@ -137,12 +207,13 @@ def _track_tables(buf, trak, moov_off):
     ns = struct.unpack('>I', buf[o + hl + 8:o + hl + 12])[0]
     a = o + hl + 12
     sizes = [ss] * ns if ss else list(struct.unpack('>%dI' % ns, buf[a:a + ns * 4]))
-    _, o, l, hl = ch['stco']
+    _, o, l, hl = ch['co64' if _co64 else 'stco']
     nco = struct.unpack('>I', buf[o + hl + 4:o + hl + 8])[0]
     a = o + hl + 8
-    have = max(0, (len(buf) - a) // 4)
+    esz = 8 if _co64 else 4
+    have = max(0, (len(buf) - a) // esz)
     P = min(nco, have)
-    co = list(struct.unpack('>%dI' % P, buf[a:a + P * 4]))
+    co = list(struct.unpack(('>%dQ' if _co64 else '>%dI') % P, buf[a:a + P * esz]))
     spc = [0] * (nco + 1)
     for i, (fc, sp, sdi) in enumerate(stsc):
         nxt = stsc[i + 1][0] if i + 1 < len(stsc) else nco + 1
@@ -155,7 +226,7 @@ def _track_tables(buf, trak, moov_off):
         cb[c] = sum(sizes[si:si + cnt])
         si += cnt
     return dict(nco=nco, off=co, cb=cb, data_abs=moov_off + a, avail=len(buf) - a,
-                present=P, nsamp=ns, consumed=si, spc=spc)
+                present=P, nsamp=ns, consumed=si, spc=spc, co64=_co64)
 
 
 # ----------------------------------------------------------------- ① 索引重建
@@ -215,9 +286,11 @@ def plan_index(path):
             if P >= N:
                 out['error'] = 'stco 未缺（present=%d declared=%d）' % (P, N)
                 return out
-            full = struct.pack('>%dI' % N, *[V['off'][i - 1] + V['cb'][i] for i in range(1, N + 1)])
+            fmt = '>%dQ' % N if A.get('co64') else '>%dI' % N
+            full = struct.pack(fmt, *[V['off'][i - 1] + V['cb'][i] for i in range(1, N + 1)])
             append = full[A['avail']:]
-            last = struct.unpack('>I', append[-4:])[0]
+            last = struct.unpack('>Q' if A.get('co64') else '>I',
+                                 append[(-8 if A.get('co64') else -4):])[0]
             ends = last + A['cb'][N]
             free_bytes = 54 + 97                      # 两次实测的 stbl/moov 父尾
             new_size = sz + len(append) + free_bytes
@@ -254,7 +327,124 @@ class _MemFile(object):
         return r
 
 
+TS_EXT = {'.ts', '.m2ts', '.mts'}
+MKV_EXT = {'.mkv', '.webm'}
+
+
+def _check_ts(path):
+    """TS/M2TS：包同步头 + 长度对齐 + 连续计数（只读抽样，很快）。
+
+    自动识别 188（TS）与 192（M2TS：4 字节时间戳 + 188）包长。
+    """
+    issues = []
+    try:
+        sz = os.path.getsize(path)
+        if sz < 188 * 4:
+            return (False, ['文件太小（不足 4 个包）'])
+        with open(path, 'rb') as fp:
+            head = fp.read(2048)
+        found = None
+        for psz in (188, 192):
+            for off in range(psz):
+                if off + 4 * psz > len(head):
+                    break
+                if all(head[off + i * psz:off + i * psz + 1] == b'\x47' for i in range(4)):
+                    found = (psz, off)
+                    break
+            if found:
+                break
+        if not found:
+            return (False, ['找不到 TS 包同步头（0x47）：既不是 188 也不是 192 包长'])
+        psz, off = found
+        if (sz - off) % psz:
+            issues.append('文件长度不是包长 %d 的整数倍（尾部残 %d 字节，可能被截）'
+                          % (psz, (sz - off) % psz))
+        tail_start = max(0, sz - psz * 60)
+        with open(path, 'rb') as fp:
+            fp.seek(tail_start)
+            tail = fp.read()
+        base = (-(tail_start - off)) % psz
+        bad = sum(1 for p in range(base, len(tail), psz) if tail[p:p + 1] != b'\x47')
+        if bad:
+            issues.append('尾部 %d 处包同步头不符（可能被截/损坏）' % bad)
+        cc = {}
+        i = off
+        while i + psz <= len(head) and len(cc) < 40:
+            s = i + 4 if psz == 192 else i
+            p = head[s:s + 188]
+            if len(p) >= 188 and p[0] == 0x47:
+                pid = ((p[1] & 0x1F) << 8) | p[2]
+                if pid != 0x1FFF:
+                    c = p[3] & 0x0F
+                    if pid in cc and (cc[pid] + 1) % 16 != c:
+                        issues.append('PID %d 连续计数跳变（丢包/损坏）' % pid)
+                        break
+                    cc[pid] = c
+            i += psz
+    except Exception as e:
+        return (False, [type(e).__name__ + ': ' + str(e)[:80]])
+    return (not issues, issues)
+
+
+def _check_mkv(path):
+    """MKV/WebM：EBML 头 + Segment 声明长度 vs 文件大小（截断检测）。"""
+    issues = []
+
+    def rd_vint(b, i):
+        if i >= len(b) or b[i] == 0:
+            return None, i + 1
+        first = b[i]
+        length, mask = 1, 0x80
+        while not (first & mask):
+            mask >>= 1
+            length += 1
+            if length > 8:
+                return None, i + 1
+        val = first & (mask - 1)
+        for k in range(1, length):
+            if i + k >= len(b):
+                return None, i + length
+            val = (val << 8) | b[i + k]
+        return val, i + length
+
+    try:
+        sz = os.path.getsize(path)
+        with open(path, 'rb') as fp:
+            head = fp.read(min(4 * 1024 * 1024, sz))
+        if head[:4] != b'\x1a\x45\xdf\xa3':
+            return (False, ['不是 EBML/MKV（magic 不符）'])
+        j = head.find(b'\x18\x53\x80\x67')
+        if j < 0:
+            issues.append('找不到 Segment 元素（EBML 头后缺少主体）')
+            return (False, issues)
+        val, after = rd_vint(head, j + 4)
+        if val is None:
+            issues.append('Segment 长度字段无法解析')
+            return (False, issues)
+        if val < (1 << 56) - 1:
+            decl_end = after + val
+            if decl_end > sz + 8:
+                issues.append('Segment 声明到 %d 字节，超出现有文件 %d 字节（被截）'
+                              % (decl_end, decl_end - sz))
+    except Exception as e:
+        return (False, [type(e).__name__ + ': ' + str(e)[:80]])
+    return (not issues, issues)
+
+
 def check_index(path):
+    """按容器分派的结构级自检。返回 (ok, issues)：
+    True=无问题；False=有问题；None=该格式不做结构级检查（如 rmvb，只能靠解码级）。"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in MP4_EXT:
+        return _check_mp4(path)
+    if ext in TS_EXT:
+        return _check_ts(path)
+    if ext in MKV_EXT:
+        return _check_mkv(path)
+    return (None, ['%s：该容器暂只做解码级检查（未做结构级索引检查）' % (ext or '?')])
+
+
+def _check_mp4(path):
     """索引结构自检（只读头部，很快）——比 ffprobe 细：
 
     1) 顶层 / moov 内每个 box 的声明长度是否越界（被截）
@@ -301,9 +491,14 @@ def check_index(path):
                     issues.append('trak%d 的 stsc/stsz/stco 缺失（表被截）' % ti)
                     continue
                 declared, present = V['nco'], len(V['off'])
-                if present < declared:
-                    issues.append('trak%d stco 声明 %d 条、只剩 %d 条（缺 %d 字节）'
-                                  % (ti, declared, present, (declared - present) * 4))
+                _esz = 8 if V.get('co64') else 4
+                _tab = 'co64' if V.get('co64') else 'stco'
+                if declared and not present:
+                    issues.append('trak%d %s 声明 %d 条但一条都读不到（表损坏/长度错）'
+                                  % (ti, _tab, declared))
+                elif present < declared:
+                    issues.append('trak%d %s 声明 %d 条、只剩 %d 条（缺 %d 字节）'
+                                  % (ti, _tab, declared, present, (declared - present) * _esz))
                 if V.get('nsamp') and V.get('consumed', 0) > V['nsamp']:
                     issues.append('trak%d stsc 消耗样本 %d > stsz 样本 %d'
                                   % (ti, V['consumed'], V['nsamp']))
@@ -338,7 +533,8 @@ def apply_index(path, log=None):
     V = _track_tables(buf, traks[0], p['moov_off'])
     A = _track_tables(buf, traks[1], p['moov_off'])
     N = A['nco']
-    full = struct.pack('>%dI' % N, *[V['off'][i - 1] + V['cb'][i] for i in range(1, N + 1)])
+    fmt = '>%dQ' % N if A.get('co64') else '>%dI' % N
+    full = struct.pack(fmt, *[V['off'][i - 1] + V['cb'][i] for i in range(1, N + 1)])
     lead = struct.pack('>I', 54) + b'free' + b'\0' * 46
     lead2 = struct.pack('>I', 97) + b'free' + b'\0' * 89
     say('  追加 %d + %d 字节' % (len(full[A['avail']:]), len(lead) + len(lead2)))
@@ -400,13 +596,16 @@ def probe(path):
                         return r
             except Exception:
                 pass
-            # 索引自洽检查（同样只读头部，很便宜）：抓“能打开但表已坏”的文件
+        if ext in MP4_EXT or ext in TS_EXT or ext in MKV_EXT:
+            # 索引/容器自洽检查（只读头部/抽样，很便宜）：抓“能打开但表已坏/被截”的文件
             okc, iss = check_index(path)
             if okc is False and iss:
                 r['cls'] = 'index-bad'
-                r['reason'] = '索引结构异常：' + '；'.join(iss[:2])
+                r['reason'] = '索引/容器结构异常：' + '；'.join(iss[:2])
                 r['issues'] = iss
                 return r
+            if okc is None and iss:
+                r['note'] = iss[0]
         r['cls'] = 'ok'; r['reason'] = '可打开、头部自洽'
         return r
     low = (se or '').lower()

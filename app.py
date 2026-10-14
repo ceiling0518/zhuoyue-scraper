@@ -668,7 +668,99 @@ def _ensure_health(dbc):
         dbc.execute("ALTER TABLE health ADD COLUMN deep INTEGER DEFAULT 0")   # 旧库补列
     except Exception:
         pass
+    dbc.execute("CREATE TABLE IF NOT EXISTS deepscan(item_id INTEGER, file TEXT, size INTEGER,"
+                " off INTEGER, done INTEGER, holes TEXT, updated_at TEXT,"
+                " PRIMARY KEY(item_id,file))")
     dbc.commit()
+
+
+def _deep_state(dbc, item_id, base, sz):
+    """取深检续扫状态；文件体积变了就重头扫。"""
+    r = dbc.execute("SELECT size,off,done,holes FROM deepscan WHERE item_id=? AND file=?",
+                    (item_id, base)).fetchone()
+    if r and int(r['size'] or 0) == sz:
+        try:
+            holes = json.loads(r['holes'] or '[]')
+        except Exception:
+            holes = []
+        return {'off': int(r['off'] or 0), 'done': int(r['done'] or 0), 'holes': holes}
+    return {'off': 0, 'done': 0, 'holes': []}
+
+
+def _deep_save(dbc, item_id, base, sz, st):
+    try:
+        dbc.execute("INSERT OR REPLACE INTO deepscan VALUES(?,?,?,?,?,?,?)",
+                    (item_id, base, sz, int(st.get('off') or 0), 1 if st.get('done') else 0,
+                     json.dumps(st.get('holes') or []), mlib.now()))
+        dbc.commit()
+    except Exception:
+        pass
+
+
+def _deep_scan_file(dbc, item_id, f, base, sz, log=None, chunk=None):
+    """断点续扫：每轮扫 chunk 字节并落库；被停止/中断后下次从 off 继续。"""
+    st = _deep_state(dbc, item_id, base, sz)
+    if st['done']:
+        return st
+    chunk = chunk or repair.DEEP_CHUNK
+    guard = 0
+    while not st['done'] and guard < 500:
+        guard += 1
+        r = repair.scan_holes_chunk(f, st['off'], chunk)
+        if r.get('error'):
+            if log:
+                log('  id=%s %s 深检失败：%s' % (item_id, base[:38], r['error']))
+            st['error'] = r['error']
+            return st
+        if r['holes']:
+            st['holes'] = repair.merge_holes(list(st['holes']) + list(r['holes']))
+        st['off'] = r['next_off']
+        st['done'] = bool(r['done'])
+        _deep_save(dbc, item_id, base, sz, st)
+        if _stop_req():
+            if log:
+                log('  ! 已请求停止：id=%s %s（深检进度已存，下次从这里续扫）'
+                    % (item_id, base[:34]))
+            return st
+        if r['scanned'] == 0:
+            break
+    return st
+
+
+def _deep_plan(dbc, item_id, f, base, log=None):
+    """深检结论：洞（映射到时间）-> gap/reencode；无洞 -> 抽窗解码 -> reencode/ok。"""
+    try:
+        sz = os.path.getsize(f)
+    except Exception:
+        return {'cls': 'error', 'reason': 'stat 失败', 'tier': 'none'}
+    st = _deep_scan_file(dbc, item_id, f, base, sz, log=log)
+    if st.get('error'):
+        return {'cls': 'error', 'reason': st['error'], 'tier': 'none'}
+    if not st['done']:
+        return {'cls': 'deep-partial', 'tier': 'none', 'partial': True,
+                'reason': '深检未完成（已扫 %d 字节，可续扫）' % int(st.get('off') or 0)}
+    gaps = repair.holes_to_time(f, st['holes']) if st['holes'] else []
+    if gaps:
+        small = [g for g in gaps if g['dur'] <= repair.GAP_SEC]
+        big = [g for g in gaps if g['dur'] > repair.GAP_SEC]
+        if big:
+            plan = ['③ 大洞 %d 处（> %.0fs，最长 %.1fs）：容错重编码'
+                    % (len(big), repair.GAP_SEC, max(g['dur'] for g in big))]
+        else:
+            plan = ['② 小洞过渡填充：%d 处（合计 %.1fs）'
+                    % (len(small), sum(g['dur'] for g in small))]
+        return {'cls': 'hole', 'tier': ('reencode' if big else 'gap'), 'plan': plan, 'gaps': gaps,
+                'reason': '深检：洞 %d 处（合计 %.1fs）' % (len(gaps), sum(g['dur'] for g in gaps))}
+    w = None
+    try:
+        w = repair.probe_windows(f, n=4, sec=6)
+    except Exception:
+        w = None
+    if w and w.get('bad'):
+        return {'cls': 'bitstream', 'tier': 'reencode', 'windows': w,
+                'reason': '无 >=64KB 数据洞，但抽窗解码有错误（%d 个窗口）' % len(w['bad']),
+                'plan': ['③ 容错重编码（码流错误）']}
+    return {'cls': 'ok', 'tier': 'ok', 'reason': '深检通过（无 >=64KB 数据洞，抽窗无错误）'}
 
 
 def _job_health(ids=None, force=False, deep=False):
@@ -685,7 +777,7 @@ def _job_health(ids=None, force=False, deep=False):
         items = _items_by_ids(ids)
         bad, files, checked, skipped = {}, 0, 0, 0
         fixable, heavy, dead = set(), set(), set()
-        lists = {'index': [], 'gap': [], 'reencode': [], 'dead': [], 'novideo': []}
+        lists = {'index': [], 'gap': [], 'reencode': [], 'dead': [], 'novideo': [], 'partial': []}
         if deep:
             _log('深检：逐文件扫 mdat 找洞（NAS ~11MB/s，大文件较慢）')
         _tick(0, len(items))
@@ -718,13 +810,14 @@ def _job_health(ids=None, force=False, deep=False):
                     if cls not in ('ok',):
                         _log('  id=%s %s [%s]（跳过已测，沿用记录）' % (it['id'], base[:42], cls))
                 else:
-                    try:
-                        p = repair.plan_repair(f, deep=deep)
-                    except Exception as e:
-                        p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
+                    if deep:
+                        p = _deep_plan(dbc, it['id'], f, base, log=_log)
+                    else:
+                        try:
+                            p = repair.plan_repair(f)
+                        except Exception as e:
+                            p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
                     cls, tier = p.get('cls'), p.get('tier') or ''
-                    if deep and p.get('gaps') and cls == 'ok':
-                        cls = 'hole'
                     _old = known.get(base) or {}
                     if (not deep) and int(_old.get('deep') or 0):
                         skipped += 1
@@ -746,6 +839,8 @@ def _job_health(ids=None, force=False, deep=False):
                     fixable.add(it['id']); lists['gap'].append(_tag)
                 elif tier == 'reencode':
                     heavy.add(it['id']); lists['reencode'].append(_tag)
+                elif cls == 'deep-partial':
+                    lists['partial'].append(_tag + '（深检未完成，可续扫）')
                 elif cls not in ('ok',):
                     dead.add(it['id']); lists['dead'].append(_tag + ' [%s]' % cls)
             if n % 20 == 0:
@@ -758,7 +853,8 @@ def _job_health(ids=None, force=False, deep=False):
         for k2, v2 in sorted(bad.items(), key=lambda x: -len(x[1])):
             _log('  %-11s %d 个文件' % (k2, len(v2)))
         for _key, _lab in (('index', '可修·索引重建'), ('gap', '可修·小洞插帧'),
-                           ('reencode', '需重编码'), ('dead', '不可修'), ('novideo', '无视频')):
+                           ('reencode', '需重编码'), ('dead', '不可修'),
+                           ('partial', '深检未完成（可续扫）'), ('novideo', '无视频')):
             _v = lists.get(_key) or []
             if not _v:
                 continue
@@ -2044,7 +2140,7 @@ async function _afterOp(){
     rpShow(T('体检完成'), T('异常')+' '+r.bad+' / '+T('文件')+' '+r.files,
       '<p>'+T('可修')+' '+(r.fixable+r.heavy)+' · '+T('不可修')+' '+r.dead+'</p>'
       +_sec('index',T('可修·索引重建'))+_sec('gap',T('可修·小洞插帧'))
-      +_sec('reencode',T('需重编码'))+_sec('dead',T('不可修'))+_sec('novideo',T('无视频')),
+      +_sec('reencode',T('需重编码'))+_sec('dead',T('不可修'))+_sec('partial',T('深检未完成（可续扫）'))+_sec('novideo',T('无视频')),
       (r.fixable?[{label:T('是 — 立即修复可修的'),primary:true,fn:async()=>{await post('/api/repair?ids='+(r.ids||[]).join(',')+'&mode=safe&go=1');$('#modal6').classList.remove('on');}},
                   {label:T('否 — 稍后再说'),fn:()=>$('#modal6').classList.remove('on')}]
                 :[{label:T('好'),fn:()=>$('#modal6').classList.remove('on')}]));
