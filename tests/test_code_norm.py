@@ -52,5 +52,31 @@ for v, want in (('kss55.cc@SVMGM-052C', 'SVMGM-052'),
     ck('find_code(%s)' % v, JS.find_code(v), want)
 
 print()
+print("== semantic_batch：批量路径（曾因插入位置错误崩掉）==")
+import json as _json                                                  # noqa: E402
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _fake_chat(*a, **k):
+    return _json.dumps([{'kind': 'coded', 'code': '480FRIN-052C'},
+                        {'kind': 'coded', 'code': '483SGK-052C'},
+                        {'kind': 'uncensored', 'code': '10musume-011526_01'}])
+
+
+_orig = getattr(mlib, '_chat', None)
+mlib._chat = _fake_chat
+try:
+    items = [{'name': 'a', 'path': _HERE}, {'name': 'b', 'path': _HERE},
+             {'name': 'c', 'path': _HERE}]
+    out = mlib.semantic_batch(items, model='fake')
+finally:
+    mlib._chat = _orig
+ck('semantic_batch -> code 列表', [o['code'] for o in (out or [])],
+   ['FRIN-052', 'SGK-052', '10musume-011526_01'])
+ck('semantic_batch -> kind 列表', [o['kind'] for o in (out or [])],
+   ['coded', 'coded', 'uncensored'])
+
+print()
 print("  >>> %s" % ('全部通过' if not fails else '未通过: %s' % fails))
 sys.exit(1 if fails else 0)

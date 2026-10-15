@@ -1659,11 +1659,11 @@ def semantic_batch(items, model=None):
         kind = str(j.get('kind') or '').strip().lower()
         if kind not in ('coded', 'uncensored', 'none'):
             kind = 'none'
-        out.append({'kind': kind,
-                    'code': re.sub(r'^[:：\s]+', '', str(j.get('code') or '').strip())})
-        code = split_code(code)[0]
+        code = re.sub(r'^[:：\s]+', '', str(j.get('code') or '').strip())
         if kind == 'coded':
-            code = strip_code_prefix(code)          # 前导数字前缀也不属于番号    # 版本后缀（C/X/J/HD…）不属于番号，剥掉
+            code = split_code(code)[0]          # 版本后缀（C/X/J/HD…）不属于番号
+            code = strip_code_prefix(code)      # 前导数字前缀也不属于番号
+        out.append({'kind': kind, 'code': code})
     return out
 
 
@@ -1822,6 +1822,9 @@ def semantic_code(item, model=None):
         if kind not in ('coded', 'uncensored', 'none'):
             kind = 'none'
         code = re.sub(r'^[:：\s]+', '', str(j.get('code') or '').strip())
+        if kind == 'coded':
+            code = split_code(code)[0]          # 版本后缀（C/X/J/HD…）不属于番号
+            code = strip_code_prefix(code)      # 前导数字前缀也不属于番号
         # guard against an invented code: its digits must appear in name/filename
         cd = re.sub(r'\D', '', code)
         blob = re.sub(r'\D', '', name + ' ' + (vfile or ''))
