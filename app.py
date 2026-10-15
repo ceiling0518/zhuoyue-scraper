@@ -895,7 +895,7 @@ def _job_health(ids=None, force=False, deep=False):
             if not force:
                 for r in dbc.execute('SELECT file,cls,tier,size,deep FROM health WHERE item_id=?', (it['id'],)):
                     known[r['file']] = dict(r)
-            for f in vids:
+            for _fi, f in enumerate(vids, 1):
                 base = os.path.basename(f)
                 files += 1
                 try:
@@ -912,7 +912,14 @@ def _job_health(ids=None, force=False, deep=False):
                         _log('  id=%s %s [%s]（跳过已测，沿用记录）' % (it['id'], base[:42], cls))
                 else:
                     if deep:
-                        p = _deep_plan(dbc, it['id'], f, base, log=_log)
+                        try:
+                            p = _deep_plan(dbc, it['id'], f, base, log=_log)
+                        except Exception as e:
+                            # 单个文件异常不该终结整个深检作业
+                            # （否则表现就是「第一条检完就自动结束」）
+                            p = {'cls': 'error', 'tier': 'none',
+                                 'reason': '深检异常 %s: %s'
+                                           % (type(e).__name__, str(e)[:60])}
                     else:
                         try:
                             p = repair.plan_repair(f)
@@ -932,6 +939,10 @@ def _job_health(ids=None, force=False, deep=False):
                     checked += 1
                     if cls not in ('ok',):
                         _log('  id=%s %s [%s] %s' % (it['id'], base[:42], cls, (p.get('reason') or '')[:58]))
+                    elif len(vids) > 1:
+                        # 多视频条目：逐个文件都报一行，避免看起来「只检了第一个」
+                        _log('  id=%s %s [ok] 深检 %d/%d'
+                             % (it['id'], base[:42], _fi, len(vids)))
                 if cls not in ('ok',):
                     bad.setdefault(cls, []).append(it['id'])
                 _tag = 'id=%d %s' % (it['id'], base)
