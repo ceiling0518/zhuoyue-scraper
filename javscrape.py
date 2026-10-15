@@ -43,12 +43,21 @@ def new_session():
     return s
 
 # 番号 patterns: ABC-123 / ABC-01234 / FC2-PPV-1234567 / 123ABC-456
+# 版本后缀（C=中文字幕 / J,X=破解 / HD,SD,4K=画质）不是番号：匹配时容忍，返回前剥掉
+CODE_SUFFIX = r'(?:[-_ ]?(?:HD|SD|FHD|4K|C|J|X|U))?'
 CODE_RE = re.compile(
     r'(?<![A-Za-z0-9])('
     r'FC2[-_ ]?PPV[-_ ]?\d{4,8}'
     r'|[A-Z]{2,6}[-_ ]?\d{2,5}'
     r'|\d{3}[A-Z]{2,5}[-_ ]?\d{2,5}'
-    r')(?![A-Za-z0-9])', re.I)
+    r')' + CODE_SUFFIX + r'(?![A-Za-z0-9])', re.I)
+
+_SUFFIX_RE = re.compile(r'[-_ ]?(?:HD|SD|FHD|4K|C|J|X|U)$', re.I)
+
+
+def strip_suffix(s):
+    # 剥掉版本后缀（不属于番号）
+    return _SUFFIX_RE.sub('', (s or '').strip())
 
 
 def norm_code(s):
@@ -60,11 +69,14 @@ def norm_code(s):
 
 
 def find_code(name):
-    hits = CODE_RE.findall(name)
+    # 站点前缀（kss55.cc@ / dxxdom.com@ …）必须先剥掉，
+    # 否则会把站名当番号：kss55.cc@SVMGM-052C -> KSS55
+    s = re.sub(r'^[^@]*@', '', (name or ''))
+    hits = CODE_RE.findall(s)
     if not hits:
         return None
-    # prefer the longest / most specific
-    return norm_code(max(hits, key=len))
+    # prefer the longest / most specific（返回前剥掉版本后缀）
+    return norm_code(strip_suffix(max(hits, key=len)))
 
 
 def get(url, timeout=40, session=None, headers=None):

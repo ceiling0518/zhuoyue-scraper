@@ -360,6 +360,8 @@ def scan(root=None, mode='incr', dbc=None):
             continue
         seen.add(p)
         code = JS.find_code(name) or ''
+        if code and not is_uncensored(name):
+            code = strip_code_prefix(code)          # 剥前导数字（coded 风格目录）
         nfo = read_nfo(p)
         q, src = nfo_state(nfo, name)
         if q == '有误':
@@ -719,6 +721,18 @@ def split_code(code):
     if m:
         return m.group(1).upper(), m.group(2).upper()
     return c.upper(), ''
+
+# 前导数字不是番号：480FRIN-052 -> FRIN-052
+# （coded 用；uncensored 的 10musume / 1pondo 不能剥 —— 数字是站点名的一部分）
+CODE_PREFIX_RE = re.compile(r'^\d{2,4}[-_ ]?(?=[A-Za-z]{2,6}[-_ ]?\d)', re.I)
+
+
+def strip_code_prefix(code):
+    # 剥掉 coded 番号的前导数字；uncensored 不要调用
+    c = re.sub(r'\s+', ' ', (code or '').strip())
+    m = CODE_PREFIX_RE.match(c)
+    return (c[m.end():] if m else c).upper()
+
 
 
 def fetch_123av(item):
@@ -1647,7 +1661,9 @@ def semantic_batch(items, model=None):
             kind = 'none'
         out.append({'kind': kind,
                     'code': re.sub(r'^[:：\s]+', '', str(j.get('code') or '').strip())})
-        code = split_code(code)[0]    # 版本后缀（C/X/J/HD…）不属于番号，剥掉
+        code = split_code(code)[0]
+        if kind == 'coded':
+            code = strip_code_prefix(code)          # 前导数字前缀也不属于番号    # 版本后缀（C/X/J/HD…）不属于番号，剥掉
     return out
 
 
