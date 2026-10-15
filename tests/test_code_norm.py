@@ -52,6 +52,22 @@ for v, want in (('kss55.cc@SVMGM-052C', 'SVMGM-052'),
     ck('find_code(%s)' % v, JS.find_code(v), want)
 
 print()
+print("== norm_code_for_kind：补横杠 + 10musume 保护 ==")
+for kind, v, wk, wc in (
+        ('coded', 'OYC263', 'coded', 'OYC-263'),
+        ('coded', 'APKH108', 'coded', 'APKH-108'),
+        ('coded', '480FRIN-052C', 'coded', 'FRIN-052'),
+        ('coded', '259LUXU-1696', 'coded', 'LUXU-1696'),
+        ('coded', 'SSIS-352', 'coded', 'SSIS-352'),
+        ('coded', 'FC2-PPV-1234567', 'coded', 'FC2-PPV-1234567'),
+        ('coded', '10musume-072922_01', 'uncensored', '10musume-072922_01'),
+        ('none', '\t10musume-100317_01', 'uncensored', '10musume-100317_01'),
+        ('coded', '1pondo-012817_473', 'uncensored', '1pondo-012817_473'),
+        ('uncensored', '10musume-011526_01', 'uncensored', '10musume-011526_01')):
+    ck('norm_code_for_kind(%s, %r)' % (kind, v), mlib.norm_code_for_kind(kind, v),
+       (wk, wc))
+
+print()
 print("== semantic_batch：批量路径（曾因插入位置错误崩掉）==")
 import json as _json                                                  # noqa: E402
 
@@ -61,6 +77,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 def _fake_chat(*a, **k):
     return _json.dumps([{'kind': 'coded', 'code': '480FRIN-052C'},
                         {'kind': 'coded', 'code': '483SGK-052C'},
+                        {'kind': 'coded', 'code': 'OYC263'},
+                        {'kind': 'coded', 'code': '10musume-072922_01'},
                         {'kind': 'uncensored', 'code': '10musume-011526_01'}])
 
 
@@ -68,14 +86,15 @@ _orig = getattr(mlib, '_chat', None)
 mlib._chat = _fake_chat
 try:
     items = [{'name': 'a', 'path': _HERE}, {'name': 'b', 'path': _HERE},
-             {'name': 'c', 'path': _HERE}]
+             {'name': 'c', 'path': _HERE}, {'name': 'd', 'path': _HERE},
+             {'name': 'e', 'path': _HERE}]
     out = mlib.semantic_batch(items, model='fake')
 finally:
     mlib._chat = _orig
 ck('semantic_batch -> code 列表', [o['code'] for o in (out or [])],
-   ['FRIN-052', 'SGK-052', '10musume-011526_01'])
+   ['FRIN-052', 'SGK-052', 'OYC-263', '10musume-072922_01', '10musume-011526_01'])
 ck('semantic_batch -> kind 列表', [o['kind'] for o in (out or [])],
-   ['coded', 'coded', 'uncensored'])
+   ['coded', 'coded', 'coded', 'uncensored', 'uncensored'])
 
 print()
 print("  >>> %s" % ('全部通过' if not fails else '未通过: %s' % fails))

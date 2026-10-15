@@ -734,6 +734,37 @@ def strip_code_prefix(code):
     return (c[m.end():] if m else c).upper()
 
 
+# 无码站点系列：数字是系列名的一部分，不能剥、也不能改大小写
+UNCENSORED_SERIES_RE = re.compile(
+    r'^(10musume|1pondo|caribbeancom|pacopacomama|tokyo-?hot|heyzo|heydouga|'
+    r'muramura|mesubuta|gachinco|xxx-?av)\b', re.I)
+CODE_DASH_RE = re.compile(r'^([A-Za-z]{2,6})[-_ ]?(\d{2,5})$')
+
+
+def is_uncensored_series(code):
+    # 10musume / 1pondo / caribbeancom … 这类，数字就是系列名的一部分
+    return bool(UNCENSORED_SERIES_RE.match((code or '').strip()))
+
+
+def norm_code_for_kind(kind, code):
+    # 统一归一化入口，返回 (kind, code)。
+    # · 无码站点系列 -> 强制 uncensored 且原样保留（只清空白/前导标点）
+    # · coded        -> 剥版本后缀 + 剥前导数字 + 字母与数字间补 '-'
+    # · 其它         -> 只清空白/前导标点
+    c = re.sub(r'\s+', ' ', (code or '').strip())
+    c = re.sub(r'^[:：\s]+', '', c)
+    if is_uncensored_series(c):
+        return 'uncensored', c
+    if kind == 'coded':
+        c = split_code(c)[0]                     # 版本后缀（C/X/J/HD…）不属于番号
+        c = strip_code_prefix(c)                 # 前导数字前缀也不属于番号
+        m = CODE_DASH_RE.match(c)
+        if m:
+            c = '%s-%s' % (m.group(1), m.group(2))   # OYC263 -> OYC-263
+        c = c.upper()
+    return kind, c
+
+
 
 def fetch_123av(item):
     """123AV（无码）：详情页 HTML 里就有封面/时长/演员/制作商/类型。"""
@@ -1573,6 +1604,8 @@ SEM_BATCH_PROMPT = """你是影片番号识别助手。下面是 {N} 个影片�
 
 - coded：有明确番号（ABF-362 / SIRO-5288 / 259LUXU-1696 / 200GANA-2566）
 - uncensored：无码系列或 FC2（1pondo-... / 10musume-... / caribbeancom-... / heyzo ... / fc2-ppv-...）
+- 10musume / 天然素人：code 形如 10musume-093022_01，
+  保留小写与下划线，不要加横杠、不要改大小写
 - 版本后缀不算番号：C/X/J 是字幕/破解标记，HD/SD/4K 是画质标记，不要写进 code；例：SVMGM-052C 的番号是 SVMGM-052
 - none：没有可用番号（纯中文片名、探花、自拍、合集）
 
@@ -1660,9 +1693,7 @@ def semantic_batch(items, model=None):
         if kind not in ('coded', 'uncensored', 'none'):
             kind = 'none'
         code = re.sub(r'^[:：\s]+', '', str(j.get('code') or '').strip())
-        if kind == 'coded':
-            code = split_code(code)[0]          # 版本后缀（C/X/J/HD…）不属于番号
-            code = strip_code_prefix(code)      # 前导数字前缀也不属于番号
+        kind, code = norm_code_for_kind(kind, code)
         out.append({'kind': kind, 'code': code})
     return out
 
@@ -1792,6 +1823,8 @@ SEM_PROMPT = """你是影片番号识别助手。根据文件夹名和文件名�
 
 - coded：有明确番号，如 ABF-362 / SIRO-5288 / 259LUXU-1696 / 200GANA-2566 / MIAA-123
 - uncensored：无码系列或 FC2，如 1pondo-012817_473 / 10musume-050317_01 / caribbeancom-111425-001 / heyzo 3715 / fc2-ppv-4609474
+- 10musume / 天然素人：code 形如 10musume-093022_01，
+  保留小写与下划线，不要加横杠、不要改大小写
 - none：没有可用番号（纯中文片名、探花、自拍、合集等）
 
 文件夹名: {name}
@@ -1822,9 +1855,7 @@ def semantic_code(item, model=None):
         if kind not in ('coded', 'uncensored', 'none'):
             kind = 'none'
         code = re.sub(r'^[:：\s]+', '', str(j.get('code') or '').strip())
-        if kind == 'coded':
-            code = split_code(code)[0]          # 版本后缀（C/X/J/HD…）不属于番号
-            code = strip_code_prefix(code)      # 前导数字前缀也不属于番号
+        kind, code = norm_code_for_kind(kind, code)
         # guard against an invented code: its digits must appear in name/filename
         cd = re.sub(r'\D', '', code)
         blob = re.sub(r'\D', '', name + ' ' + (vfile or ''))
