@@ -36,22 +36,21 @@ def seq(path, t, sec=1.0):
     return out
 
 
-def common_run(x, y):
-    """x 的帧序列在 y 里最长的「连续相同」段（允许整体偏移）。"""
-    best, pos = 0, {}
+def longest(x, y):
+    """x 的帧序列在 y 里最长的「连续相同」段；返回 (长度, x 起点, y 起点)。
+
+    y 起点 - x 起点 = 该点的时间轴漂移（帧）。
+    """
+    best, pos = (0, -1, -1), {}
     for i, v in enumerate(y):
-        pos.setdefault(v, i)
-    i = 0
-    while i < len(x):
-        j = pos.get(x[i])
-        if j is None:
-            i += 1
-            continue
-        k = 0
-        while i + k < len(x) and j + k < len(y) and x[i + k] == y[j + k]:
-            k += 1
-        best = max(best, k)
-        i += max(1, k)
+        pos.setdefault(v, []).append(i)
+    for i, v in enumerate(x):
+        for j in pos.get(v, []):
+            k = 0
+            while i + k < len(x) and j + k < len(y) and x[i + k] == y[j + k]:
+                k += 1
+            if k > best[0]:
+                best = (k, i, j)
     return best
 
 
@@ -63,7 +62,7 @@ rc, so, se = RP._run([RP.FFMPEG, '-hide_banner', '-v', 'error', '-f', 'lavfi',
 if rc:
     print("  夹具失败"); sys.exit(1)
 m0, m1 = RP.mdat_range(src)
-N = 5
+N = 7
 step = (m1 - m0) // (N + 1)
 with open(src, 'r+b') as fp:
     for i in range(1, N + 1):
@@ -104,17 +103,23 @@ else:
           % (p['cls'], pdur, dur, os.path.getsize(src) / 1048576.0, len(wins_out)))
     if p['cls'] != 'ok':
         fails.append('产物不可播: %s' % p['cls'])
-    if abs(pdur - dur) > max(1.5, dur * 0.05):
-        fails.append('时长差过大')
+    if abs(pdur - dur) > 1.0:
+        fails.append('时长差过大（%+.2fs）' % (pdur - dur))
     W = [(float(w[0]), float(w[1])) for w in wins_out]
     safe = [t for t in PTS if all(t + 1.0 < a - 0.2 or t > b + 0.2 for a, b in W)]
     print("  搬运区间内的安全采样点：%d 个" % len(safe))
-    bad = []
+    bad, drifts = [], []
+    # POST 取样窗放宽（前后各留 0.6s）：TS 分段每段会多出 ~1 个 AAC 帧
+    # （1024/44100 = 0.023s）造成累积漂移 —— 逐帧内容仍一致，只是时间轴后移，
+    # 所以比对必须允许这个整体偏移，不能用同宽的窗口硬比。
     for t in safe:
-        post = seq(src, t)
-        run = common_run(PRE[t], post)
-        if not PRE[t] or run < len(PRE[t]) - 3:
-            bad.append((t, run, len(PRE[t])))
+        post = seq(src, max(0.0, t - 0.6), sec=2.2)
+        n, ix, iy = longest(PRE[t], post)
+        drifts.append(iy - ix)
+        if not PRE[t] or n < len(PRE[t]):
+            bad.append((t, n, len(PRE[t])))
+    if drifts:
+        print("  时间轴漂移（帧）: %s" % ' '.join('%+d' % d for d in drifts[:12]))
     print("  序列比对：通过 %d / 不一致 %d %s"
           % (len(safe) - len(bad), len(bad), ('（例：%s）' % bad[:4]) if bad else ''))
     if len(safe) < 6:

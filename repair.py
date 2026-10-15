@@ -1148,6 +1148,16 @@ def _ts_seg(path, start, end, out, mode='copy', log=None):
     return ok
 
 
+def _ts_dur(p):
+    # 单段实测时长（帧级准确）—— 分段校验的基准，不用容器声明值
+    try:
+        rc, so, se = _run([FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
+                           '-of', 'csv=p=0', p], 120)
+        return float((so or '').strip().splitlines()[0])
+    except Exception:
+        return -1.0
+
+
 def _probe_at(path, t, sec=2.0):
     """在 t 处解码 sec 秒，返回 (是否有错, 错误数)。用于校验拼接点。"""
     try:
@@ -1274,6 +1284,9 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
             names.append(out)
             if tick:
                 tick(0.7 * (i + 1) / max(1, len(segs)), '切段 %d/%d' % (i + 1, len(segs)))
+        segsum = sum(max(0.0, _ts_dur(n)) for n in names)
+        say('  分段实测合计 %.1fs（%d 段；源声明 %.1fs，差 %+.1fs）'
+            % (segsum, len(names), dur, segsum - dur))
         lst = os.path.join(tmp, 'list.txt')
         with io.open(lst, 'w', encoding='utf-8', newline='\n') as f:
             for n in names:
@@ -1290,7 +1303,16 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
         d2 = float(p2.get('duration') or 0)
         if p2['cls'] != 'ok':
             return {'ok': False, 'error': '产物不可播（%s）' % (p2.get('reason') or p2['cls'])}
-        if d2 < dur - total_tol - 5.0 or d2 > dur + 5.0:
+        if segsum > 0 and abs(d2 - segsum) > 1.5:
+            # 产物与分段合计不符 -> 这才是拼接/封装真出错
+            return {'ok': False, 'error': '产物时长与分段合计不符（%.1fs vs %.1fs）'
+                    % (d2, segsum)}
+        if segsum > 0:
+            # 分段合计可信时：源声明只作下界（保证没丢内容）
+            if d2 < dur - total_tol - 5.0:
+                return {'ok': False, 'error': '产物偏短（%.1fs vs 源 %.1fs，损坏段共 %.1fs）'
+                        % (d2, dur, total_tol)}
+        elif d2 < dur - total_tol - 5.0 or d2 > dur + 5.0:
             return {'ok': False, 'error': '产物时长异常（%.1fs vs 源 %.1fs，损坏段共 %.1fs）'
                     % (d2, dur, total_tol)}
         bads = 0
@@ -1318,7 +1340,8 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
         except Exception:
             pass
         return {'ok': True, 'kind': 'splice', 'path': path, 'orig_backup': orig,
-                'windows': merged, 'kept_ratio': kept / max(1e-6, dur),
+                'windows': merged, 'segsum': round(segsum, 3),
+                'kept_ratio': kept / max(1e-6, dur),
                 'undo': {'action': 'restore', 'path': path, 'backup': orig},
                 'secs': round(time.time() - t0, 1)}
     finally:
