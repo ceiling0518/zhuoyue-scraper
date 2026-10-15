@@ -706,7 +706,7 @@ def fetch_fc2(item):
 
 # ---------------------------------------------------------------- 番号后缀规则
 # <番号>-<编号>[-<版本后缀>]：C=中文字幕 / J,X=破解 / HD=高画质 / SD=低画质 / 4K
-CODE_SUFFIX_RE = re.compile(r'^(.+?\d)[-_ ](HD|SD|4K|C|J|X|U)$', re.I)
+CODE_SUFFIX_RE = re.compile(r'^(.+?\d)[-_ ]?(HD|SD|FHD|4K|C|J|X|U)$', re.I)
 
 
 def split_code(code):
@@ -1559,6 +1559,7 @@ SEM_BATCH_PROMPT = """你是影片番号识别助手。下面是 {N} 个影片�
 
 - coded：有明确番号（ABF-362 / SIRO-5288 / 259LUXU-1696 / 200GANA-2566）
 - uncensored：无码系列或 FC2（1pondo-... / 10musume-... / caribbeancom-... / heyzo ... / fc2-ppv-...）
+- 版本后缀不算番号：C/X/J 是字幕/破解标记，HD/SD/4K 是画质标记，不要写进 code；例：SVMGM-052C 的番号是 SVMGM-052
 - none：没有可用番号（纯中文片名、探花、自拍、合集）
 
 {ITEMS}
@@ -1646,6 +1647,7 @@ def semantic_batch(items, model=None):
             kind = 'none'
         out.append({'kind': kind,
                     'code': re.sub(r'^[:：\s]+', '', str(j.get('code') or '').strip())})
+        code = split_code(code)[0]    # 版本后缀（C/X/J/HD…）不属于番号，剥掉
     return out
 
 
