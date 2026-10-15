@@ -833,6 +833,35 @@ def _deep_plan(dbc, item_id, f, base, log=None):
     return {'cls': 'ok', 'tier': 'ok', 'reason': '深检通过（无 >=64KB 数据洞，抽窗无错误）'}
 
 
+def _prune_health(dbc, item_id, dirpath, log=None):
+    # 删掉 health/deepscan 里【文件已不存在】的僵尸行。
+    # 目录列不出来（NAS 掉线等）时一律不动，避免误删。
+    try:
+        have = set(os.listdir(dirpath))
+    except Exception:
+        return 0
+    if not have:
+        return 0
+    try:
+        rows = dbc.execute('SELECT file FROM health WHERE item_id=?', (item_id,)).fetchall()
+    except Exception:
+        return 0
+    dead = [r['file'] for r in rows if r['file'] not in have]
+    if not dead:
+        return 0
+    try:
+        for f in dead:
+            dbc.execute('DELETE FROM health WHERE item_id=? AND file=?', (item_id, f))
+            dbc.execute('DELETE FROM deepscan WHERE item_id=? AND file=?', (item_id, f))
+        dbc.commit()
+    except Exception:
+        return 0
+    if log:
+        log('  id=%s 清理失效记录 %d 条（文件已不在）：%s'
+            % (item_id, len(dead), '、'.join(x[:26] for x in dead[:4])))
+    return len(dead)
+
+
 def _job_health(ids=None, force=False, deep=False):
     """只读体检，结果写入 health 表（下次默认跳过）。
 
@@ -856,6 +885,8 @@ def _job_health(ids=None, force=False, deep=False):
                 _log('! 已请求停止')
                 break
             vids = _video_files(it['path'])
+            if vids:
+                _prune_health(dbc, it['id'], it['path'], log=_log)
             if not vids:
                 dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)',
                             (it['id'], '', 'novideo', '目录里没有视频', 'none', 0, mlib.now(), 1 if deep else 0))
@@ -1384,7 +1415,7 @@ def items(params):
         if not d.get('hstate'):
             continue
         try:
-            recs = dbc.execute('SELECT file,size FROM health WHERE item_id=?',
+            recs = dbc.execute('SELECT file,size,cls,deep FROM health WHERE item_id=?',
                                (d['id'],)).fetchall()
         except Exception:
             recs = []
@@ -1392,16 +1423,31 @@ def items(params):
             d['hstate'] = 0
             continue
         p = d.get('path') or ''
-        stale = 0
+        stale, dead = 0, []
         for r in recs:
             try:
                 cur = os.path.getsize(os.path.join(p, r['file']))
             except Exception:
                 cur = -1
-            if int(r['size'] or 0) != cur:
+            if cur < 0:
+                dead.append(r['file'])              # 文件已不在 -> 僵尸行
+            elif int(r['size'] or 0) != cur:
                 stale += 1
-        if stale:
-            d['hstate'] = 4
+        if dead:                                    # 删掉僵尸行，否则条目永远卡在「需重测」
+            try:
+                for f in dead:
+                    dbc.execute('DELETE FROM health WHERE item_id=? AND file=?', (d['id'], f))
+                    dbc.execute('DELETE FROM deepscan WHERE item_id=? AND file=?', (d['id'], f))
+                dbc.commit()
+            except Exception:
+                pass
+            recs = [r for r in recs if r['file'] not in dead]
+        if not recs:
+            d['hstate'] = 0
+            continue
+        bad = sum(1 for r in recs if (r['cls'] or '') not in ('ok',))
+        deep_ok = sum(1 for r in recs if int(r['deep'] or 0) >= 1)
+        d['hstate'] = 4 if stale else (2 if bad else (3 if deep_ok == len(recs) else 1))
     return {'total': total, 'limit': limit, 'offset': offset, 'rows': out}
 
 
