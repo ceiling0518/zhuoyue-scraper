@@ -912,8 +912,15 @@ def _job_health(ids=None, force=False, deep=False):
                 except Exception:
                     sz = 0
                 k = known.get(base)
-                usable = (k and k.get('cls') and int(k.get('size') or 0) == sz
-                          and (int(k.get('deep') or 0) >= (1 if deep else 0)))
+                if deep:
+                    # 深检：只有「已深检且合格(ok)」的才算已测并跳过；
+                    # 没测过 / 没测完 / 有问题的都自动重扫，不需要 force
+                    usable = (k and (k.get('cls') or '') == 'ok'
+                              and int(k.get('size') or 0) == sz
+                              and int(k.get('deep') or 0) >= 1)
+                else:
+                    usable = (k and k.get('cls') and int(k.get('size') or 0) == sz
+                              and int(k.get('deep') or 0) >= 0)
                 if usable and not force:
                     cls, tier = k['cls'], k.get('tier') or ''
                     skipped += 1
@@ -2250,16 +2257,19 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
     <button id="a-queue" title="把选中条目加入队列（用右侧 qmode 的模式），之后点「跑队列」才执行">加入队列</button>
     <button id="a-open">打开目录</button>
-    <button id="a-thumbs">刷新缩略图</button>
-    <button id="a-coverdel">删除封面图</button>
-    <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
-    <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button><span id="hb-legend" style="margin-left:10px;font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 体检+深检（深） · <b style="color:#1565c0">✓</b> 仅体检（浅） · <b style="color:var(--bad)">⚠</b> 有问题 · <b style="color:var(--muted)">↻</b> 需重测</span>
-    <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
+<span id="hb-legend" style="margin-left:10px;font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 体检+深检（深） · <b style="color:#1565c0">✓</b> 仅体检（浅） · <b style="color:var(--bad)">⚠</b> 有问题 · <b style="color:var(--muted)">↻</b> 需重测</span>
     <button id="a-flatten" title="把嵌套子目录平铺成 app 可自动刮削的结构：图片 P_、视频 V_，具名目录 序号_名字_；子目录移入 trash 可回滚">整理嵌套目录</button>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
     <button id="a-selall">全选本页</button>
     <button id="a-selnone">取消选择</button>
+  </div>
+  <div class="bar" id="actbar2" style="background:#171c25">
+    <button id="a-thumbs">刷新缩略图</button>
+    <button id="a-coverdel">删除封面图</button>
+    <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
+    <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button>
+    <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
   </div>
   </div>
   <table><thead><tr>
