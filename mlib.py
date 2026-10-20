@@ -343,6 +343,11 @@ def scan(root=None, mode='incr', dbc=None):
     dbc = dbc or db()
     root = root or scan_root()
     ts = now()
+    try:
+        dbc.execute('ALTER TABLE items ADD COLUMN dir_mtime INTEGER')   # 增量判据
+        dbc.commit()
+    except Exception:
+        pass
     if mode == 'rebuild':
         dbc.execute("INSERT INTO archive(id,path,name,code,title,quality,source,archived_at,reason) "
                     "SELECT id,path,name,code,title,quality,source,?, 'rebuild' FROM items", (ts,))
@@ -350,8 +355,9 @@ def scan(root=None, mode='incr', dbc=None):
         dbc.commit()
         known = {}
     else:
-        known = {r['path']: r['id'] for r in dbc.execute('SELECT id, path FROM items')}
-    seen, added, changed = set(), 0, 0
+        known = {r['path']: (r['id'], int(r['dir_mtime'] or 0))
+                 for r in dbc.execute('SELECT id, path, dir_mtime FROM items')}
+    seen, added, changed, skipped = set(), 0, 0, 0
     if not os.path.isdir(root):
         return {'error': 'root unreachable: %s' % root}
     for name in sorted(os.listdir(root)):
@@ -359,6 +365,15 @@ def scan(root=None, mode='incr', dbc=None):
         if not os.path.isdir(p):
             continue
         seen.add(p)
+        try:
+            mt = int(os.stat(p).st_mtime)
+        except Exception:
+            mt = 0
+        if mode != 'rebuild' and p in known and mt and known[p][1] == mt:
+            # 目录 mtime 没变 -> 内容不可能变：不读 nfo、不 listdir、不查嵌套
+            skipped += 1
+            dbc.execute('UPDATE items SET last_scan=? WHERE id=?', (ts, known[p][0]))
+            continue
         code = JS.find_code(name) or ''
         if code and not is_uncensored(name):
             code = strip_code_prefix(code)          # 剥前导数字（coded 风格目录）
@@ -377,30 +392,32 @@ def scan(root=None, mode='incr', dbc=None):
                   'studio': nfo.get('studio', ''), 'year': nfo.get('year', '')}
         if p not in known:
             dbc.execute("""INSERT INTO items(path,name,code,status,quality,source,kind,title,plot,
-                                             tags,actors,studio,year,first_seen,last_scan,present)
-                           VALUES(?,?,?,'empty',?,?,?,?,?,?,?,?,?,?,?,1)""",
+                                             tags,actors,studio,year,first_seen,last_scan,present,dir_mtime)
+                           VALUES(?,?,?,'empty',?,?,?,?,?,?,?,?,?,?,?,1,?)""",
                         (p, name, code, q, src, kk, nf.get('title', ''), nf.get('plot', ''),
                          nf.get('tags', ''), nf.get('actors', ''), nf.get('studio', ''),
-                         nf.get('year', ''), ts, ts))
+                         nf.get('year', ''), ts, ts, mt))
             added += 1
         else:
-            iid = known[p]
+            iid = known[p][0]
             r = dbc.execute('SELECT code,quality,source,kind,present FROM items WHERE id=?',
                             (iid,)).fetchone()
             if (r['code'] != code or (r['quality'] or '') != q or (r['source'] or '') != src
                     or (r['kind'] or '') != kk or r['present'] != 1):
-                dbc.execute('UPDATE items SET code=?,quality=?,source=?,kind=?,present=1,last_scan=? '
-                            'WHERE id=?', (code, q, src, kk, ts, iid))
+                dbc.execute('UPDATE items SET code=?,quality=?,source=?,kind=?,present=1,'
+                            'last_scan=?,dir_mtime=? WHERE id=?', (code, q, src, kk, ts, mt, iid))
                 changed += 1
             else:
-                dbc.execute('UPDATE items SET last_scan=? WHERE id=?', (ts, iid))
+                dbc.execute('UPDATE items SET last_scan=?, dir_mtime=? WHERE id=?'
+                            , (ts, mt, iid))
             if nfo:      # mirror the on-disk nfo into the row (list needs no NAS read)
                 dbc.execute('UPDATE items SET title=?,plot=?,tags=?,actors=?,studio=?,year=? '
                             'WHERE id=?',
                             (nf['title'], nf['plot'], nf['tags'], nf['actors'],
                              nf['studio'], nf['year'], iid))
     removed = 0
-    for p, i in known.items():
+    for p, _v in known.items():
+        i = _v[0]
         if p not in seen:
             cur = dbc.execute('SELECT quality FROM items WHERE id=?', (i,)).fetchone()
             if (cur['quality'] or '') != '删除':
@@ -414,7 +431,7 @@ def scan(root=None, mode='incr', dbc=None):
                 (ts, 'scan:' + mode, added, removed, len(seen), root))
     dbc.commit()
     return {'mode': mode, 'added': added, 'removed': removed, 'changed': changed,
-            'total': len(seen), 'root': root}
+            'skipped': skipped, 'total': len(seen), 'root': root}
 
 
 # ------------------------------------------------------------------ website scrape

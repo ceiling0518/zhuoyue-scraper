@@ -388,10 +388,19 @@ def _fetch_pass(mode, limit, ai_group=None):
 
 
 # ---------------------------------------------------------------- job bodies
-def _job_scan(mode):
-    _begin('scan:' + mode)
+def _job_scan(mode, sem=False):
+    _begin('scan:' + mode + ('+sem' if sem else ''))
     try:
-        _scan_pass(mode); _end('scan 完成')
+        r = _scan_pass(mode)
+        if not sem:
+            _end('scan 完成')
+            return
+        _log('  扫描完成（新增 %s / 变更 %s / 跳过未变 %s），接着跑语义'
+             % (r.get('added'), r.get('changed'), r.get('skipped')))
+        ok, tot = _sem_pass(0, False, 0)      # 只处理还没语义的（增量）
+        mlib.unload_ai()
+        _end('scan+sem 完成：新增 %s 变更 %s 跳过 %s / 语义 %d/%d'
+             % (r.get('added'), r.get('changed'), r.get('skipped'), ok, tot))
     except Exception:
         _log('ERR ' + traceback.format_exc()[:1600]); _end('scan 失败')
 
@@ -1987,7 +1996,8 @@ class H(BaseHTTPRequestHandler):
                     mlib.cfg_set('model', q['model'])
                 return self._json({'ok': True, 'root': mlib.scan_root(), 'model': mlib.ai_model()})
             if p == '/api/scan':
-                ok = start_job(_job_scan, q.get('mode') or 'incr')
+                ok = start_job(_job_scan, q.get('mode') or 'incr',
+                               (q.get('sem') or '') in ('1', 'true', 'yes'))
             elif p == '/api/sem':
                 ok = start_job(_job_sem, lim, force, int(q.get('group') or 0))
             elif p == '/api/fetch':
@@ -2201,6 +2211,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button class="primary" id="b-pipeline">① 全流程</button>
     <button class="warn-btn" id="b-rebuild">建库</button>
     <button id="b-incr">增量扫描</button>
+<button id="b-incrsem">增量+语义</button>
     <button id="b-sem">语义识别</button>
     <button id="b-fetch">抓取</button>
     <button id="b-qrun">跑队列</button>
@@ -2316,7 +2327,7 @@ async function job(){const j=await(await fetch('/api/job')).json();
   const L=$('#log');L.scrollTop=L.scrollHeight;   // 永远默认停在最后一行
   const p=j.total?Math.round(j.done*100/j.total):0;
   $('#prog').firstElementChild.style.width=(j.running?Math.max(p,3):(j.done?'100':'0'))+'%';
-  const busy=j.running;['b-pipeline','b-rebuild','b-incr','b-sem','b-fetch','b-qrun'].forEach(i=>$('#'+i).disabled=busy);
+  const busy=j.running;['b-pipeline','b-rebuild','b-incr','b-incrsem','b-sem','b-fetch','b-qrun'].forEach(i=>$('#'+i).disabled=busy);
   $('#b-stop').disabled=!busy;$('#qcount').textContent=j.queue||0;}
 function saveState(){try{localStorage.setItem('ms_state',JSON.stringify({off:off,
   quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,
@@ -2549,6 +2560,7 @@ $('#b-pipeline').onclick=()=>post('/api/pipeline?limit='+$('#limit').value+'&gro
 $('#b-rebuild').onclick=()=>{ if(!confirm(T('【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？')))return;
   if(!confirm(T('请再次确认：真的要【建库】吗？')))return; post('/api/scan?mode=rebuild'); };
 $('#b-incr').onclick=()=>post('/api/scan?mode=incr');
+$('#b-incrsem').onclick=()=>post('/api/scan?mode=incr&sem=1');
 $('#b-sem').onclick=()=>post('/api/sem?limit='+$('#limit').value+'&group='+$('#semg').value+($('#force').checked?'&force=1':''));
 $('#b-fetch').onclick=()=>post('/api/fetch?mode='+$('#mode').value+'&limit='+$('#limit').value+'&ai_group='+$('#aig').value);
 $('#b-cookie').onclick=async()=>{const s=await(await fetch('/api/stats')).json();
