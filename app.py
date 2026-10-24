@@ -1031,7 +1031,7 @@ def _save_ads(dbc, item_id, file, segs, main=False):
     dbc.commit()
 
 
-def _job_adtect(ids=None):
+def _job_adtect(ids=None, mode='headtail'):
     """广告检测：30s 粗扫 + 精修 -> ads_file（逐文件）/ media（最大文件）。
 
     多视频条目：先只测最大的那个。它没有广告就跳过同组其余
@@ -1056,9 +1056,10 @@ def _job_adtect(ids=None):
             fb = os.path.basename(vids[0])
             try:
                 dur = mlib.video_duration(vids[0])
-                _log('[%d/%d] id=%s 检测 %s (%.0fs，共 %d 个视频)'
-                     % (i + 1, len(its), it['id'], fb, dur or 0, len(vids)))
-                segs = mlib.detect_ads(vids[0], dur, log=lambda m: _log(m))
+                _log('[%d/%d] id=%s 检测 %s (%.0fs，共 %d 个视频，%s)'
+                     % (i + 1, len(its), it['id'], fb, dur or 0, len(vids),
+                        '只查头尾' if mode == 'headtail' else '全片'))
+                segs = mlib.detect_ads(vids[0], dur, log=lambda m: _log(m), mode=mode)
                 _save_ads(dbc, it['id'], fb, segs, main=True)
                 _log('    -> %d 段广告 %s' % (len(segs), segs))
                 ok += 1
@@ -1075,7 +1076,8 @@ def _job_adtect(ids=None):
                         b2 = os.path.basename(vp2)
                         try:
                             d2 = mlib.video_duration(vp2)
-                            s2 = mlib.detect_ads(vp2, d2, log=lambda m: _log('      ' + m))
+                            s2 = mlib.detect_ads(vp2, d2, log=lambda m: _log('      ' + m),
+                                                 mode=mode)
                             _save_ads(dbc, it['id'], b2, s2)
                             _log('      %s -> %d 段 %s' % (b2[:36], len(s2), s2))
                         except Exception as e2:
@@ -2505,7 +2507,8 @@ class H(BaseHTTPRequestHandler):
                                lane='heavy')
             elif p == '/api/adtect':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                ok = start_job(_job_adtect, ids, lane='heavy')
+                ok = start_job(_job_adtect, ids, (q.get('mode') or 'headtail'),
+                               lane='heavy')
             elif p == '/api/addel':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_addel, ids, lane='heavy')
@@ -2774,7 +2777,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
     <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button>
      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
-     <button id="a-adtect" title="抽帧判断广告/片头片尾：先随机 30s + 末尾 30s 预检，有广告再按 30s 粗扫，最后 10/5/1s 精修边界；结果显示在列表「广告」列">广告检测</button>
+     <select id="admode" style="min-width:86px" title="头尾：只扫开头/结尾各 4 分钟（能只重封装，秒级）；全片：30 秒全网扫（可能命中中插广告）"><option value="headtail">头尾</option><option value="full">全片</option></select>
+    <button id="a-adtect" title="抽帧判断广告：头尾模式只扫首尾各 4 分钟并 15 秒取样；全片模式 30 秒全网扫。结果写在列表「属性」列">广告检测</button>
      <button id="a-addel" title="按检测结果切掉广告区间（帧级精确重编码），【替换原片】；原文件留 .orig 回滚点，临时文件自动清理">删除广告</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
   </div>
@@ -2993,7 +2997,7 @@ $('#a-deep').onclick=async()=>{
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
-  await post('/api/adtect'+(ids?'?ids='+ids:''));};
+  await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+($('#admode').value));};
 $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));

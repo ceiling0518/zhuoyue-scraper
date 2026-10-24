@@ -2571,17 +2571,24 @@ def _refine(vpath, t_ad, t_nonad, model=None, n=8):
         return lo
     ts = [lo + (hi - lo) * (i + 0.5) / n for i in range(n)]
     flags = ads_batch(vpath, ts, model=model)
-    if not any(flags):
-        return lo
-    if all(flags):
-        return hi
+    if (not any(flags)) or all(flags):
+        # 8 点全同 -> 这批没分辨出交界（模型漏判/广告只占几秒），
+        # 退回精确二分，避免边界落到窗口端点（曾把 1002s 判成 972s，多切 30s）
+        is_ad_lo = _is_ad(vpath, lo, model)
+        while hi - lo > 1.0:
+            mid = (lo + hi) / 2.0
+            if _is_ad(vpath, mid, model) == is_ad_lo:
+                lo = mid
+            else:
+                hi = mid
+        return lo if is_ad_lo else hi
     for i in range(1, n):
         if bool(flags[i]) != bool(flags[0]):
             return (ts[i - 1] + ts[i]) / 2.0
     return hi
 
 
-def detect_ads(vpath, dur=None, model=None, log=None):
+def detect_ads(vpath, dur=None, model=None, log=None, mode='headtail', edge_sec=240):
     """广告检测 v2：30s 网格 + 广告快照库(dhash) + 0.25s dhash 边界精定位。
     - 网格帧先算 dhash 查快照库，命中直接判广告（0 次模型调用）
     - 未命中才送模型（8 张/批）
@@ -2602,24 +2609,40 @@ def detect_ads(vpath, dur=None, model=None, log=None):
 
     # 1) 预检：随机 30s 段 3 帧 + 尾部 3 帧
     import random as _rnd
-    r0 = _rnd.uniform(0.05, 0.8) * dur
-    # 固定采片头（头部广告最常见）+ 中段随机 + 尾部
-    probes = sorted(set(round(p, 1) for p in
-                        [0.5, 2.0, r0, r0 + 10,
-                         max(dur - 8, 0), max(dur - 3, 0), max(dur - 1, 0)]
-                        if 0 <= p < dur))
+    if mode == 'headtail':
+        # 只关心头尾：预检也只采片头/片尾，避免中段画面误触
+        probes = sorted(set(round(p, 1) for p in
+                            [0.5, 2.0, 5.0, 10.0,
+                             max(dur - 8, 0), max(dur - 3, 0), max(dur - 1, 0)]
+                            if 0 <= p < dur))
+    else:
+        r0 = _rnd.uniform(0.05, 0.8) * dur
+        probes = sorted(set(round(p, 1) for p in
+                            [0.5, 2.0, r0, r0 + 10,
+                             max(dur - 8, 0), max(dur - 3, 0), max(dur - 1, 0)]
+                            if 0 <= p < dur))
     pf = ads_batch(vpath, probes, model=model, log=_log)
     _log('  预检 %d 张 -> 广告 %d 张' % (len(pf), sum(pf)))
     if not any(pf):
         return []
 
     # 2) 30s 网格 + 末端；每点取帧算 dhash，先查快照库
-    times = [float(t) for t in range(0, int(dur), 30)]
-    tail = [round(dur - 1, 1)]
-    for t in (dur - 120, dur - 60, dur - 30):
-        if t > 1 and t < dur:
-            tail.append(round(t, 1))
-    times = sorted(set(times + tail))
+    if mode == 'headtail':
+        # 只扫前 edge_sec 秒和后 edge_sec 秒，15 秒一个点
+        e = min(float(edge_sec), dur / 2.0)
+        times = [float(t) for t in range(0, max(1, int(e)), 15)]
+        tail0 = max(0.0, dur - e)
+        times += [round(tail0 + i * 15.0, 1)
+                  for i in range(int((dur - tail0) // 15) + 1)]
+        times = sorted(set(round(t, 1) for t in times if 0 <= t < dur))
+        _log('  只查头尾各 %.0f 秒：%d 个采样点' % (e, len(times)))
+    else:
+        times = [float(t) for t in range(0, int(dur), 30)]
+        tail = [round(dur - 1, 1)]
+        for t in (dur - 120, dur - 60, dur - 30):
+            if t > 1 and t < dur:
+                tail.append(round(t, 1))
+        times = sorted(set(times + tail))
     hmap, ask = {}, []
     for t in times:
         h = _dhash_jpeg(frame_at(vpath, t))
@@ -2688,6 +2711,15 @@ def detect_ads(vpath, dur=None, model=None, log=None):
             t0, t1 = float(a), float(b)
         out.append([round(t0, 1), round(t1, 1)])
         _log('  区间 粗[%.0f-%.0f] -> 精[%.1f-%.1f]' % (a, b, t0, t1))
+    if mode == 'headtail':
+        e = min(float(edge_sec), dur / 2.0)
+        keep2 = []
+        for x0, x1 in out:
+            if x0 <= e or x1 >= dur - e:
+                keep2.append([x0, x1])
+            else:
+                _log('  丢弃中段区间 [%.1f-%.1f]（头尾模式）' % (x0, x1))
+        out = keep2
     return out
 
 def video_bitrate(vpath):
@@ -2835,6 +2867,47 @@ def _try_copy_cut(vpath, t_in, t_out, tmp, log=None, max_shift=5.0):
     return {'t0': start, 't1': t_out, 'dur': got}
 
 
+def _try_copy_cut_multi(vpath, keep, tmp, log=None, max_shift=5.0):
+    """多段保留区间：每段零重编码精裁 -> concat -c copy（全程不重编码）。
+
+    每个拼接点必须落在关键帧，所以每段末端可能少 0~max_shift 秒。
+    """
+    import tempfile as _tf
+    _log = log or (lambda m: None)
+    parts = []
+    tag = '%d_%d' % (os.getpid(), int(time.time()))
+    lst = os.path.join(_tf.gettempdir(), 'adcat_%s.txt' % tag)
+    try:
+        for i, (x0, x1) in enumerate(keep):
+            pf = os.path.join(_tf.gettempdir(), 'adseg_%s_%d.mp4' % (tag, i))
+            r = _try_copy_cut(vpath, x0, x1, pf, _log, max_shift=max_shift)
+            if not r:
+                raise RuntimeError('第 %d 段 [%.1f-%.1f] 无法重封装' % (i + 1, x0, x1))
+            parts.append(pf)
+        with open(lst, 'w', encoding='utf-8') as f:
+            for p in parts:
+                f.write("file '%s'\n" % p.replace('\\', '/'))
+        cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-y', '-f', 'concat',
+               '-safe', '0', '-i', lst, '-map', '0:v:0', '-map', '0:a:0?',
+               '-c', 'copy', '-avoid_negative_ts', 'make_zero', '-dn', '-sn', tmp]
+        rr = subprocess.run(cmd, capture_output=True, timeout=3600)
+        if rr.returncode != 0 or not os.path.exists(tmp):
+            raise RuntimeError('concat 失败: %s'
+                               % (rr.stderr or b'')[-160:].decode('utf-8', 'replace'))
+        _log('    ★ 分段重封装：%d 段拼接（零重编码）' % len(parts))
+        return {'parts': len(parts)}
+    finally:
+        for p in parts:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+        try:
+            os.remove(lst)
+        except Exception:
+            pass
+
+
 def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
     """按广告区间切掉、其余内容原样保留（帧级精确重编码）。
 
@@ -2891,10 +2964,15 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
 
     # 头尾广告：先试零重编码的「只重封装」
     cop = None
-    if replace and len(keep) == 1:
+    if len(keep) == 1:
         cop = _try_copy_cut(vpath, keep[0][0], keep[0][1], tmp, _log)
-    elif len(keep) == 1 and not replace:
-        cop = _try_copy_cut(vpath, keep[0][0], keep[0][1], tmp, _log)
+    else:
+        # 中间广告：分段重封装 + concat，避免全片重编码
+        try:
+            cop = _try_copy_cut_multi(vpath, keep, tmp, _log)
+        except Exception as _e:
+            _log('    分段重封装不可用（%s）-> 回退重编码' % str(_e)[:120])
+            cop = None
 
     has_a = _has_audio(vpath)
     parts, labels = [], []
@@ -2940,7 +3018,8 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
         _log('    编码完成 %.1f 秒 / %.1f MB' % (new_dur, new_size / 1048576.0))
 
         if verify:
-            tol = max(3.0, expect * 0.02)
+            # 重封装会吸附到关键帧，每段允许 max_shift 秒偏差
+            tol = max(6.0, expect * 0.02) if cop else max(3.0, expect * 0.02)
             if not new_dur or abs(new_dur - expect) > tol:
                 _log('    ! 时长校验失败：期望 %.1f±%.1f 秒，实际 %.1f 秒'
                      % (expect, tol, new_dur))
