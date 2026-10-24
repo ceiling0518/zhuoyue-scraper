@@ -1550,11 +1550,26 @@ def splice_repair(path, windows, log=None, tick=None, dry=False, _retry=False):
         while os.path.exists(orig):
             orig = '%s.orig%d' % (path, k)
             k += 1
+        # 先拷到【同目录】临时文件（原文件全程不动），再两次原子换名：
+        #   path -> path.orig,  tmp -> path
+        # 这样原路径永远只会出现「完整旧文件」或「完整新文件」，不会出现半成品，
+        # 修复期间网站抓取/体检等其它任务读它也是安全的。
+        _tmp2 = os.path.join(os.path.dirname(path),
+                             '.' + os.path.basename(path) + '.new')
+        try:
+            _copy_progress(stage, _tmp2, log=log)
+        except Exception as e:
+            try:
+                os.remove(_tmp2)
+            except Exception:
+                pass
+            return {'ok': False, 'error': '写临时文件失败: %s' % str(e)[:100],
+                    'stage': stage}
         _err = None
         for _try in range(5):
             try:
                 os.replace(path, orig)
-                _copy_progress(stage, path, log=log)
+                os.replace(_tmp2, path)
                 _err = None
                 break
             except Exception as e:
@@ -1564,9 +1579,14 @@ def splice_repair(path, windows, log=None, tick=None, dry=False, _retry=False):
                         os.replace(orig, path)      # 原文件先放回去，避免两头空
                 except Exception:
                     pass
-                say('  ! 替换失败（第 %d 次，可能被播放器/网盘同步/杀毒占用）：%s'
+                say('  ! 换名失败（第 %d 次，可能被播放器/网盘同步/杀毒占用）：%s'
                     % (_try + 1, str(e)[:90]))
                 time.sleep(2)
+        try:
+            if os.path.isfile(_tmp2) and _err is None:
+                os.remove(_tmp2)
+        except Exception:
+            pass
         if _err is not None:
             _keep = stage
             try:

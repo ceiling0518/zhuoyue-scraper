@@ -2209,7 +2209,7 @@ class H(BaseHTTPRequestHandler):
                     return self._json({'ok': False, 'error': 'ids 为空'}, 400)
                 ok = start_job(_job_repair, ids, q.get('mode') or 'index',
                                (q.get('go') or '') in ('1', 'true', 'yes'),
-                               lane='heavy', exclusive=True)
+                               lane='heavy')
             elif p == '/api/runset':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 if not ids:
