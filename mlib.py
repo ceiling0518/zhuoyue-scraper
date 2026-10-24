@@ -2660,6 +2660,28 @@ def detect_ads(vpath, dur=None, model=None, log=None):
         _log('  区间 粗[%.0f-%.0f] -> 精[%.1f-%.1f]' % (a, b, t0, t1))
     return out
 
+def video_bitrate(vpath):
+    """源视频码率（bps）。取不到就用 体积/时长 估算（扣掉音频）。"""
+    try:
+        r = subprocess.run([FFPROBE, '-v', 'error', '-select_streams', 'v:0',
+                            '-show_entries', 'stream=bit_rate',
+                            '-of', 'default=nw=1:nk=1', vpath],
+                           capture_output=True, timeout=90)
+        v = (r.stdout or b'').decode('utf-8', 'ignore').strip().split('\n')[0].strip()
+        if v.isdigit() and int(v) > 100000:
+            return int(v)
+    except Exception:
+        pass
+    try:
+        dur = video_duration(vpath)
+        sz = os.path.getsize(vpath)
+        if dur > 1 and sz > 0:
+            return max(200000, int(sz * 8 / dur) - 160000)
+    except Exception:
+        pass
+    return 0
+
+
 def _has_audio(path):
     """是否有音频轨。"""
     try:
@@ -2740,9 +2762,18 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
            '-filter_complex', filt, '-map', '[vo]']
     if has_a:
         cmd += ['-map', '[ao]']
-    cmd += ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-cq', '20', '-pix_fmt', 'yuv420p']
+    # 码率策略：按【源视频码率】封顶。否则固定 cq 会重新"提纯"，
+    # 切掉广告后体积反而变大（源本身是低码率时尤其明显）。
+    vbr = video_bitrate(vpath)
+    if vbr:
+        _log('    源视频码率 %.0f kbps -> 同码率重编码（体积随裁剪时长下降）' % (vbr / 1000.0))
+        cmd += ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-rc', 'vbr',
+                '-b:v', str(vbr), '-maxrate', str(int(vbr * 1.15)),
+                '-bufsize', str(int(vbr * 2)), '-pix_fmt', 'yuv420p']
+    else:
+        cmd += ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-cq', '23', '-pix_fmt', 'yuv420p']
     if has_a:
-        cmd += ['-c:a', 'aac', '-b:a', '160k']
+        cmd += ['-c:a', 'aac', '-b:a', '128k']
     cmd += ['-movflags', '+faststart', tmp]
 
     ok = False
@@ -2771,6 +2802,10 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
             _log('    校验通过（时长 / 抽帧）')
 
         old_size = os.path.getsize(vpath)
+        ratio = expect / dur
+        if new_size > old_size * 0.98 and ratio < 0.9:
+            _log('    ! 体积反而变大：%.1f -> %.1f MB（保留 %.0f%% 时长）'
+                 % (old_size / 1048576.0, new_size / 1048576.0, ratio * 100))
         if not replace:
             ok = True
             _log('    输出 %s（原片未动）' % base)
