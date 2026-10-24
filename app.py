@@ -1015,8 +1015,28 @@ def _prune_health(dbc, item_id, dirpath, log=None):
     return len(dead)
 
 
+def _save_ads(dbc, item_id, file, segs, main=False):
+    """逐文件保存广告区间；main=True 时同步到 media（列表/兼容用）。"""
+    ts = mlib.now()
+    dbc.execute('CREATE TABLE IF NOT EXISTS ads_file(item_id INTEGER, file TEXT, ads TEXT, '
+                'ts TEXT, PRIMARY KEY(item_id,file))')
+    dbc.execute('INSERT INTO ads_file(item_id,file,ads,ts) VALUES(?,?,?,?) '
+                'ON CONFLICT(item_id,file) DO UPDATE SET ads=excluded.ads, ts=excluded.ts',
+                (item_id, file, json.dumps(segs), ts))
+    if main:
+        dbc.execute('INSERT INTO media(item_id,file,ads,ads_ts) VALUES(?,?,?,?) '
+                    'ON CONFLICT(item_id) DO UPDATE SET file=excluded.file, '
+                    'ads=excluded.ads, ads_ts=excluded.ads_ts',
+                    (item_id, file, json.dumps(segs), ts))
+    dbc.commit()
+
+
 def _job_adtect(ids=None):
-    """广告检测：30s 粗扫 + 10/5/1s 精修 -> media.ads（[[t0,t1],...]）。"""
+    """广告检测：30s 粗扫 + 精修 -> ads_file（逐文件）/ media（最大文件）。
+
+    多视频条目：先只测最大的那个。它没有广告就跳过同组其余
+    （同一条目的分片通常共用同一套片头片尾）；有广告才逐个补测。
+    """
     _begin('adtect', 1)
     dbc = mlib.db()
     try:
@@ -1027,23 +1047,39 @@ def _job_adtect(ids=None):
         for i, it in enumerate(its):
             if _stop_req():
                 _log('! 已请求停止'); break
-            v = mlib.biggest_video(it['path'] or '')
-            if not v:
+            vids = _video_files(it['path'] or '')
+            if not vids:
                 _log('[%d/%d] id=%s 没有视频' % (i + 1, len(its), it['id']))
                 _tick(i + 1)
                 continue
-            vp = os.path.join(it['path'], v)
+            vids = sorted(vids, key=lambda p: os.path.getsize(p), reverse=True)
+            fb = os.path.basename(vids[0])
             try:
-                dur = mlib.video_duration(vp)
-                _log('[%d/%d] id=%s 检测 %s (%.0fs)' % (i + 1, len(its), it['id'], v, dur or 0))
-                segs = mlib.detect_ads(vp, dur, log=lambda m: _log(m))
-                dbc.execute('INSERT INTO media(item_id,file,ads,ads_ts) VALUES(?,?,?,?) '
-                            'ON CONFLICT(item_id) DO UPDATE SET file=excluded.file, '
-                            'ads=excluded.ads, ads_ts=excluded.ads_ts',
-                            (it['id'], v, json.dumps(segs), mlib.now()))
-                dbc.commit()
+                dur = mlib.video_duration(vids[0])
+                _log('[%d/%d] id=%s 检测 %s (%.0fs，共 %d 个视频)'
+                     % (i + 1, len(its), it['id'], fb, dur or 0, len(vids)))
+                segs = mlib.detect_ads(vids[0], dur, log=lambda m: _log(m))
+                _save_ads(dbc, it['id'], fb, segs, main=True)
                 _log('    -> %d 段广告 %s' % (len(segs), segs))
                 ok += 1
+                rest = vids[1:]
+                if not rest:
+                    pass
+                elif not segs:
+                    _log('    首个无广告 -> 同组其余 %d 个跳过' % len(rest))
+                else:
+                    _log('    首个有广告 -> 补测同组其余 %d 个' % len(rest))
+                    for vp2 in rest:
+                        if _stop_req():
+                            break
+                        b2 = os.path.basename(vp2)
+                        try:
+                            d2 = mlib.video_duration(vp2)
+                            s2 = mlib.detect_ads(vp2, d2, log=lambda m: _log('      ' + m))
+                            _save_ads(dbc, it['id'], b2, s2)
+                            _log('      %s -> %d 段 %s' % (b2[:36], len(s2), s2))
+                        except Exception as e2:
+                            _log('      %s ERR %s' % (b2[:36], str(e2)[:120]))
             except Exception as e:
                 _log('    ERR %s' % str(e)[:180])
             _tick(i + 1)
@@ -1053,7 +1089,10 @@ def _job_adtect(ids=None):
 
 
 def _job_addel(ids=None):
-    """删除广告：按 media.ads 切掉广告区间，校验后原子替换原片（回滚点 .orig，临时文件清理）。"""
+    """删除广告：按 ads_file（逐文件）切，校验+深检后原子替换原片。
+
+    media.ads 仍作为列表展示/兼容来源；ads_file 是逐文件真值。
+    """
     _begin('addel', 1)
     dbc = mlib.db()
     try:
@@ -1064,43 +1103,62 @@ def _job_addel(ids=None):
         for i, it in enumerate(its):
             if _stop_req():
                 _log('! 已请求停止'); break
-            row = dbc.execute('SELECT ads FROM media WHERE item_id=?', (it['id'],)).fetchone()
-            segs = []
-            if row and row['ads']:
-                try:
-                    segs = json.loads(row['ads'])
-                except Exception:
-                    segs = []
-            if not segs:
+            jobs = []
+            try:
+                for r in dbc.execute('SELECT file,ads FROM ads_file WHERE item_id=?', (it['id'],)):
+                    try:
+                        _s = json.loads(r['ads'] or '[]')
+                    except Exception:
+                        _s = []
+                    if _s and r['file']:
+                        jobs.append((r['file'], _s))
+            except Exception:
+                pass
+            if not jobs:
+                row = dbc.execute('SELECT file,ads FROM media WHERE item_id=?', (it['id'],)).fetchone()
+                if row and row['file'] and row['ads']:
+                    try:
+                        _s = json.loads(row['ads'])
+                    except Exception:
+                        _s = []
+                    if _s:
+                        jobs.append((row['file'], _s))
+            if not jobs:
                 _log('[%d/%d] id=%s 没有广告区间（先跑广告检测）' % (i + 1, len(its), it['id']))
                 _tick(i + 1)
                 continue
-            v = mlib.biggest_video(it['path'] or '')
-            if not v:
-                _tick(i + 1)
-                continue
-            vp = os.path.join(it['path'], v)
-            _log('[%d/%d] id=%s 删除 %d 段广告' % (i + 1, len(its), it['id'], len(segs)))
-            r = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
-            if r.get('ok'):
+            _log('[%d/%d] id=%s 删除广告：%d 个文件' % (i + 1, len(its), it['id'], len(jobs)))
+            for v, segs in jobs:
+                if _stop_req():
+                    break
+                vp = os.path.join(it['path'], v)
+                if not os.path.isfile(vp):
+                    _log('  跳过（文件不存在）: %s' % v[:60])
+                    continue
+                _log('  切 %s（%d 段）' % (v[:60], len(segs)))
+                r = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
+                if not r.get('ok'):
+                    _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
+                    continue
                 _log('    完成: 时长 %.1f -> %.1f 秒，体积 %.1f -> %.1f MB（回滚点 %s）'
                      % (r.get('old_dur') or 0, r.get('new_dur') or 0,
                         (r.get('old_size') or 0) / 1048576.0,
                         (r.get('new_size') or 0) / 1048576.0,
                         os.path.basename(r.get('orig_backup') or '')))
                 try:
-                    dbc.execute('UPDATE media SET ads=?, dur=?, size=? WHERE item_id=?',
-                                ('[]', r.get('new_dur') or 0,
-                                 r.get('new_size') or 0, it['id']))
-                    dbc.execute('DELETE FROM health WHERE item_id=? AND file=?',
-                                (it['id'], v))
-                    dbc.execute('DELETE FROM deepscan WHERE item_id=? AND file=?',
-                                (it['id'], v))
+                    dbc.execute("UPDATE ads_file SET ads='[]', ts=? WHERE item_id=? AND file=?",
+                                (mlib.now(), it['id'], v))
+                    _mr = dbc.execute('SELECT file FROM media WHERE item_id=?', (it['id'],)).fetchone()
+                    if _mr and (_mr['file'] or '') == v:
+                        dbc.execute('UPDATE media SET ads=?, dur=?, size=? WHERE item_id=?',
+                                    ('[]', r.get('new_dur') or 0, r.get('new_size') or 0, it['id']))
+                    dbc.execute('DELETE FROM health WHERE item_id=? AND file=?', (it['id'], v))
+                    dbc.execute('DELETE FROM deepscan WHERE item_id=? AND file=?', (it['id'], v))
                     dbc.commit()
                 except Exception as _e:
                     _log('    库更新失败: %s' % str(_e)[:90])
 
-                # ---- 深检成片（数据级）：有洞/码流错就回滚，绝不留坏文件 ----
+                # ---- 深检成片（数据级）：有洞/码流错就回滚 ----
                 _cls, _rsn, _good = 'error', '', False
                 try:
                     _log('    深检成片（扫 mdat 找洞 + 抽窗解码，NAS 上较慢）...')
@@ -1131,13 +1189,9 @@ def _job_addel(ids=None):
                     try:
                         dbc.execute("UPDATE items SET quality='有误', last_update=? WHERE id=?",
                                     (mlib.now(), it['id']))
-                        dbc.execute('UPDATE media SET dur=?, size=? WHERE item_id=?',
-                                    (r.get('old_dur') or 0, r.get('old_size') or 0, it['id']))
                         dbc.commit()
                     except Exception:
                         pass
-            else:
-                _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
             _tick(i + 1)
         _end('addel %d/%d' % (ok, len(its)))
     except Exception:
