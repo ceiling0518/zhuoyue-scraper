@@ -1161,18 +1161,18 @@ def _job_addel(ids=None):
                 # ---- 深检成片（数据级）：有洞/码流错就回滚 ----
                 _cls, _rsn, _good = 'error', '', False
                 try:
-                    _log('    深检成片（扫 mdat 找洞 + 抽窗解码，NAS 上较慢）...')
-                    _dp = _deep_plan(dbc, it['id'], vp, v, log=_log)
+                    _log('    浅检验证（索引/头部，秒级）...')
+                    _dp = repair.plan_repair(vp)
                     _cls = _dp.get('cls') or 'error'
-                    _rsn = (_dp.get('reason') or '')[:200]
+                    _rsn = (_dp.get('reason') or ' / '.join(_dp.get('plan') or []))[:200]
                     _good = (_cls == 'ok')
-                    _log('    深检结论: %s — %s' % (_cls, _rsn))
+                    _log('    浅检结论: %s — %s' % (_cls, _rsn))
                     dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)',
                                 (it['id'], v, _cls, _rsn, _dp.get('tier') or 'none',
-                                 os.path.getsize(vp), mlib.now(), 1))
+                                 os.path.getsize(vp), mlib.now(), 0))
                     dbc.commit()
                 except Exception as _e:
-                    _log('    深检异常: %s' % str(_e)[:120])
+                    _log('    浅检异常: %s' % str(_e)[:120])
 
                 if _good:
                     ok += 1
