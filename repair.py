@@ -32,6 +32,84 @@ import time
 # app 可设置停止钩子：repair.STOP_HOOK = lambda: bool
 STOP_HOOK = None
 
+# ---- 重编码码率策略（app 启动时注入；默认与历史行为一致：CRF 20）----
+ENC_MODE = 'crf'          # 'crf' | 'kbps' | 'scale'
+ENC_CRF = 20
+ENC_KBPS = 0              # 固定码率（kbps）
+ENC_SCALE = 1.3           # 源码率倍数（scale 模式）
+
+
+def set_encode(mode=None, crf=None, kbps=None, scale=None):
+    global ENC_MODE, ENC_CRF, ENC_KBPS, ENC_SCALE
+    if mode in ('crf', 'kbps', 'scale'):
+        ENC_MODE = mode
+    if crf is not None:
+        try:
+            ENC_CRF = max(0, min(51, int(crf)))
+        except Exception:
+            pass
+    if kbps is not None:
+        try:
+            ENC_KBPS = max(0, int(kbps))
+        except Exception:
+            pass
+    if scale is not None:
+        try:
+            ENC_SCALE = max(0.3, min(5.0, float(scale)))
+        except Exception:
+            pass
+    return {'mode': ENC_MODE, 'crf': ENC_CRF, 'kbps': ENC_KBPS, 'scale': ENC_SCALE}
+
+
+def video_kbps(path):
+    """源视频平均码率（kbps）；读不到返回 0。"""
+    try:
+        rc, so, se = _run([FFPROBE, '-v', 'error', '-select_streams', 'v:0',
+                           '-show_entries', 'stream=bit_rate', '-of', 'default=nw=1:nk=1',
+                           path], 60)
+        v = float((so or '0').strip() or 0) / 1000.0
+        if v > 1:
+            return v
+    except Exception:
+        pass
+    try:
+        sz = os.path.getsize(path)
+        d = video_duration(path)
+        if sz and d:
+            return sz * 8 / d / 1000.0
+    except Exception:
+        pass
+    return 0
+
+
+def video_duration(path):
+    try:
+        rc, so, se = _run([FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
+                           '-of', 'default=nw=1:nk=1', path], 60)
+        return float((so or '0').strip() or 0)
+    except Exception:
+        return 0.0
+
+
+def enc_args(path=None):
+    """返回 ffmpeg 视频编码参数列表（不含 -y/输出）。"""
+    if ENC_MODE == 'kbps' and ENC_KBPS > 0:
+        k = int(ENC_KBPS)
+        return ['-c:v', 'libx264', '-preset', 'veryfast',
+                '-b:v', '%dk' % k, '-maxrate', '%dk' % int(k * 1.4),
+                '-bufsize', '%dk' % int(k * 2)]
+    if ENC_MODE == 'scale' and path:
+        src = video_kbps(path)
+        if src > 1:
+            k = int(src * ENC_SCALE)
+            return ['-c:v', 'libx264', '-preset', 'veryfast',
+                    '-b:v', '%dk' % k, '-maxrate', '%dk' % int(k * 1.4),
+                    '-bufsize', '%dk' % int(k * 2)]
+    return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', str(ENC_CRF)]
+
+
+
+
 # ---------------- 回滚点（.orig）统一存放策略 ----------------
 # 不再把 .orig 留在媒体库里：替换成功后搬到 BAK_DIR，超过 BAK_DAYS 天自动删除；
 # BAK_DAYS=0 表示不留回滚点（替换完直接删掉 .orig）。
@@ -1003,7 +1081,7 @@ def reencode_cmd(path, out):
     th, ft = _threads(), _fthreads()
     return [FFMPEG, '-hide_banner', '-filter_threads', str(ft),
             '-err_detect', 'ignore_err', '-i', path,
-            '-fps_mode', 'cfr', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+            '-fps_mode', 'cfr'] + enc_args(path) + [
             '-threads', str(th), '-c:a', 'aac', '-y', out]
 
 
@@ -1314,8 +1392,7 @@ def _ts_seg(path, start, end, out, mode='copy', log=None):
     if mode == 'copy':
         cmd += ['-c', 'copy', '-avoid_negative_ts', 'make_zero']
     else:
-        cmd += ['-err_detect', 'ignore_err', '-fps_mode', 'cfr',
-                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+        cmd += ['-err_detect', 'ignore_err', '-fps_mode', 'cfr'] + enc_args(path) + [
                 '-threads', str(_threads()), '-c:a', 'aac']
     cmd += ['-f', 'mpegts', '-y', out]
     rc, so, se = _run(cmd, 7200)
@@ -1754,7 +1831,7 @@ def _interp_clip(path, g, stem, W, H, fps, arate, acl, log=None):
                        '-loop', '1', '-framerate', '%.4f' % fr, '-t', '%.3f' % dur, '-i', yf,
                        '-f', 'lavfi', '-t', '%.3f' % dur, '-i', 'anullsrc=r=%d:cl=%s' % (arate, acl),
                        '-filter_complex', vf, '-map', '[v]', '-map', '2:a',
-                       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                       ] + enc_args(None) + [
                        '-threads', str(_threads()),
                        '-c:a', 'aac', '-ar', str(arate),
                        '-ac', '1' if acl == 'mono' else '2', '-shortest',
@@ -1920,9 +1997,8 @@ def interp_gap(path, gaps=None, log=None, tick=None, mi_mode='mci', verify=True,
     say('  线程：编码 %d / 滤波 %d（逻辑核 %d）' % (_th, _ft, _cores()))
     cmd = [FFMPEG, '-hide_banner', '-filter_threads', str(_ft),
            '-err_detect', 'ignore_err'] + inputs + \
-          ['-filter_complex', graph, '-map', '[v]', '-map', '0:a?',
-           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-threads', str(_th),
-           '-c:a', 'aac', '-y', stage]
+          ['-filter_complex', graph, '-map', '[v]', '-map', '0:a?'] + enc_args(path) + [
+           '-threads', str(_th), '-c:a', 'aac', '-y', stage]
     if dry:
         return {'ok': False, 'dry': True, 'cmd': cmd, 'graph': graph, 'gaps': len(gs),
                 'segs': [[round(s[0], 2), round(s[1], 2)] for s in segs]}

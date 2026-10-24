@@ -2420,6 +2420,10 @@ class H(BaseHTTPRequestHandler):
                 _n = dict(net_state())
                 _n['bak_days'] = repair.BAK_DAYS
                 _n['bak_dir'] = repair.BAK_DIR
+                _n['enc_mode'] = repair.ENC_MODE
+                _n['enc_crf'] = repair.ENC_CRF
+                _n['enc_kbps'] = repair.ENC_KBPS
+                _n['enc_scale'] = repair.ENC_SCALE
                 return self._json(_n)
             if p == '/api/lang':
                 return self._json({'lang': mlib.ui_lang(), 'out_lang': mlib.out_lang()})
@@ -2615,13 +2619,33 @@ class H(BaseHTTPRequestHandler):
                         _bd = 7
                     mlib.cfg_set('bak_keep_days', str(_bd))
                     repair.set_backup_policy(days=_bd)
+                _em = q.get('enc_mode')
+                if _em in ('crf', 'kbps', 'scale'):
+                    _ev = (q.get('enc_val') or '').strip()
+                    mlib.cfg_set('enc_mode', _em)
+                    if _em == 'crf':
+                        _ev = _ev or '20'
+                        mlib.cfg_set('enc_crf', _ev)
+                        repair.set_encode(mode=_em, crf=_ev)
+                    elif _em == 'kbps':
+                        _ev = _ev or '3000'
+                        mlib.cfg_set('enc_kbps', _ev)
+                        repair.set_encode(mode=_em, kbps=_ev)
+                    else:
+                        _ev = _ev or '1.3'
+                        mlib.cfg_set('enc_scale', _ev)
+                        repair.set_encode(mode=_em, scale=_ev)
                 mlib.cfg_set('port', str(_p))
                 mlib.cfg_set('lan', '1' if _lan else '0')
                 _ok, _msg = rebind('0.0.0.0' if _lan else '127.0.0.1', _p)
                 _st = net_state()
                 return self._json({'ok': _ok, 'msg': _msg, 'port': _st['port'],
                                    'lan': _st['lan'], 'urls': _st['urls'],
-                                   'bak_days': repair.BAK_DAYS})
+                                   'bak_days': repair.BAK_DAYS,
+                                   'enc_mode': repair.ENC_MODE,
+                                   'enc_crf': repair.ENC_CRF,
+                                   'enc_kbps': repair.ENC_KBPS,
+                                   'enc_scale': repair.ENC_SCALE})
             elif p == '/api/lang':
                 if q.get('lang') is not None:
                     mlib.cfg_set('lang', mlib.norm_lang(q.get('lang')))
@@ -2715,6 +2739,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <span class="muted">模型</span><select id="cfg-model"></select><span class="muted">输出语言</span><select id="cfg-outlang" title="元数据输出语言" style="min-width:104px"><option value="">跟随界面</option><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
+  <span class="muted">修复码率</span><select id="cfg-encmode" title="重编码时的码率策略"><option value="crf">CRF</option><option value="kbps">固定 kbps</option><option value="scale">源码率×N</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数">
   <button id="cfg-save">保存设置</button>
   <span id="ollama" class="muted right">ollama …</span>
 </header>
@@ -3115,12 +3140,15 @@ $('#md2-close').onclick=()=>$('#modal2').classList.remove('on');
 $('#cfg-save').onclick=async()=>{await fetch('/api/config?root='+encodeURIComponent($('#cfg-root').value)
   +'&model='+encodeURIComponent($('#cfg-model').value),{method:'POST'});
   const n=await(await fetch('/api/net?port='+($('#cfg-port').value||0)+'&lan='+($('#cfg-lan').checked?1:0)
-    +'&bak_days='+($('#cfg-bakdays').value||0),{method:'POST'})).json();
+    +'&bak_days='+($('#cfg-bakdays').value||0)
+    +'&enc_mode='+($('#cfg-encmode').value)+'&enc_val='+encodeURIComponent($('#cfg-encval').value||''),{method:'POST'})).json();
   if(n.msg)console.log(n.msg); if(n.urls&&n.urls.length)console.log(T('访问地址: ')+n.urls.join('  '));
   cfg();};
 (async()=>{try{const n=await(await fetch('/api/net')).json();
   $('#cfg-port').value=n.port||8800; $('#cfg-lan').checked=!!n.lan;
   if(n.bak_days!==undefined)$('#cfg-bakdays').value=n.bak_days;
+  if(n.enc_mode!==undefined){$('#cfg-encmode').value=n.enc_mode;
+    $('#cfg-encval').value=(n.enc_mode==='crf')?n.enc_crf:((n.enc_mode==='kbps')?n.enc_kbps:n.enc_scale);}
   if(n.lan)console.log(T('局域网已开启: ')+(n.urls||[]).join('  '));}catch(e){}})();
 $('#b-pipeline').onclick=()=>post('/api/pipeline?limit='+$('#limit').value+'&group='+$('#semg').value+'&ai_group='+$('#aig').value);
 $('#b-rebuild').onclick=()=>{ if(!confirm(T('【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？')))return;
@@ -3378,6 +3406,12 @@ def main():
         _st = repair.set_backup_policy(mlib.cfg_get('bak_dir') or None, _bd)
         repair.purge_backups(lambda m: print('    ' + m))
         print('    backup : %s  (%d 天)' % (_st['dir'], _st['days']))
+        _es = repair.set_encode(mlib.cfg_get('enc_mode') or 'crf',
+                                mlib.cfg_get('enc_crf') or 20,
+                                mlib.cfg_get('enc_kbps') or 0,
+                                mlib.cfg_get('enc_scale') or 1.3)
+        print('    encode : %s (crf=%s kbps=%s scale=%s)'
+              % (_es['mode'], _es['crf'], _es['kbps'], _es['scale']))
     except Exception as _e:
         print('    backup : %s' % str(_e)[:120])
     srv = ThreadingHTTPServer((HOST, PORT), H)
