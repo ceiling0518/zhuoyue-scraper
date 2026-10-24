@@ -1199,7 +1199,7 @@ def kf_times(path):
     st = _stss(buf, traks[0])
     if not st:
         # stss 读不到（索引损坏 / 全关键帧）-> 退化为顺序读包标志，仍能拿到关键帧
-        return _kf_probe(path)
+        return []      # 索引不可用 -> 交给 splice_repair 的切点局部探测（_kf_snap）
     scale = _mdhd_timescale(buf, traks[0]) or 1000
     ts = []
     t = 0
