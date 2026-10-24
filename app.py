@@ -2855,9 +2855,7 @@ $('#a-adtect').onclick=async()=>{
 $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
-  if(!confirm(T('删除选中条目的广告区间？
-
-会输出 <原名>.adfree.mp4（保留原片，帧级精确重编码）。')))return;
+  if(!confirm(T('删除选中条目的广告区间？（会输出 <原名>.adfree.mp4，保留原片，帧级精确重编码）')))return;
   await post('/api/addel?ids='+ids);};
 $('#a-media').onclick=async()=>{
   const ids=[...SEL].join(',');
