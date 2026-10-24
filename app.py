@@ -2566,10 +2566,10 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   </div>
   <table><thead><tr>
-    <th style="width:74px">缩略图</th><th style="width:48px">id</th>
+    <th style="width:104px">缩略图</th><th style="width:48px">id</th>
     <th style="width:58px">质量</th><th style="width:66px">来源</th>
-    <th style="width:96px">番号</th><th style="width:92px">语义</th>
-    <th style="width:86px">分辨率</th><th style="width:100px">码率</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
+    <th style="width:80px">番号</th><th style="width:74px">语义</th>
+    <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><span id="page" class="muted"></span><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
@@ -2644,7 +2644,7 @@ function loadState(){try{const s=JSON.parse(localStorage.getItem('ms_state')||'{
   if(s.sort!==undefined)$('#f-sort').value=s.sort;
   if(s.order!==undefined)$('#f-order').value=s.order;}catch(e){}}
 function resLabel(w,h){const m=Math.min(w,h),M=Math.max(w,h);
-  return (M>=2000&&m>=1000)?'4K':(M>=1300?'1440p':(M>=1000?'1080p':(M>=700?'720p':M+'×'+m)));}
+  return (m>=2000)?'4K':(m>=1400?'1440p':(m>=1000?'1080p':(m>=700?'720p':M+'×'+m)));}
 async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
   quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,
   sort:$('#f-sort').value,order:$('#f-order').value});
@@ -2657,9 +2657,12 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     +'<td class="s-'+(r.source||'')+' ed" data-f="source" data-id="'+r.id+'" data-v="'+(r.source||'')+'" title="双击修改">'+(r.source||'—')+'</td>'
     +'<td class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改">'+esc(r.sem_code||r.code||'')+'</td>'
     +'<td class="ed" data-f="sem_kind" data-id="'+r.id+'" data-v="'+(r.sem_kind||'')+'" title="双击修改">'+(r.sem_kind||'—')+(r.sem_manual?' <span class="muted">(人工)</span>':'')+'</td>'
-    +'<td class="muted">'+(r.kbps?(r.kbps>=1000?(r.kbps/1000).toFixed(1)+' Mbps':r.kbps+' kbps')
-      +'<div class="meta" style="color:'+((r.bpp&&r.bpp<0.04)?'var(--bad)':(r.bpp&&r.bpp<0.08)?'var(--warn)':'var(--ok)')     +'">'+(r.bpp?'bpp '+r.bpp.toFixed(3):'')+'</div>':'—')+'</td>'
-    +'<td class="muted">'+(r.mw&&r.mh?resLabel(r.mw,r.mh)+'<div class="meta">'+r.mw+'×'+r.mh+' @'+(Math.round((r.mfps||0)*10)/10)+'</div>':'—')+'</td>'
+    +'<td class="muted">'+(r.mw&&r.mh
+      ?resLabel(r.mw,r.mh)+' <span style="color:var(--fg)">'
+       +(r.kbps?(r.kbps>=1000?(r.kbps/1000).toFixed(1)+'Mb':r.kbps+'k'):'')+'</span>'
+      +'<div class="meta" style="color:'+((r.bpp&&r.bpp<0.04)?'var(--bad)':(r.bpp&&r.bpp<0.08)?'var(--warn)':'var(--ok)')     +'">'+(r.bpp?'bpp '+r.bpp.toFixed(3):'')+'</div>'
+      +'<div class="meta">'+r.mw+'×'+r.mh+' @'+(Math.round((r.mfps||0)*10)/10)+'</div>'
+      :'—')+'</td>'
     +'<td><a href="#" data-id="'+r.id+'" class="lk" style="color:var(--fg)">'+esc(r.title||r.name)+'</a>'
     +'<div class="meta">简介: '+esc((r.plot||'').slice(0,70))+'</div>'
     +'<div class="meta">标签: <span class="tags">'+esc(tagsOf(r.tags))+'</span></div>'
