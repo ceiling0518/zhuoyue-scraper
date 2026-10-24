@@ -1083,7 +1083,6 @@ def _job_addel(ids=None):
             _log('[%d/%d] id=%s 删除 %d 段广告' % (i + 1, len(its), it['id'], len(segs)))
             r = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
             if r.get('ok'):
-                ok += 1
                 _log('    完成: 时长 %.1f -> %.1f 秒，体积 %.1f -> %.1f MB（回滚点 %s）'
                      % (r.get('old_dur') or 0, r.get('new_dur') or 0,
                         (r.get('old_size') or 0) / 1048576.0,
@@ -1100,6 +1099,43 @@ def _job_addel(ids=None):
                     dbc.commit()
                 except Exception as _e:
                     _log('    库更新失败: %s' % str(_e)[:90])
+
+                # ---- 深检成片（数据级）：有洞/码流错就回滚，绝不留坏文件 ----
+                _cls, _rsn, _good = 'error', '', False
+                try:
+                    _log('    深检成片（扫 mdat 找洞 + 抽窗解码，NAS 上较慢）...')
+                    _dp = _deep_plan(dbc, it['id'], vp, v, log=_log)
+                    _cls = _dp.get('cls') or 'error'
+                    _rsn = (_dp.get('reason') or '')[:200]
+                    _good = (_cls == 'ok')
+                    _log('    深检结论: %s — %s' % (_cls, _rsn))
+                    dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)',
+                                (it['id'], v, _cls, _rsn, _dp.get('tier') or 'none',
+                                 os.path.getsize(vp), mlib.now(), 1))
+                    dbc.commit()
+                except Exception as _e:
+                    _log('    深检异常: %s' % str(_e)[:120])
+
+                if _good:
+                    ok += 1
+                else:
+                    _bk = r.get('orig_backup')
+                    if _bk and os.path.exists(_bk):
+                        _rr = repair.undo_restore(vp, _bk)
+                        if _rr.get('ok'):
+                            _log('    ! 深检不合格 -> 已回滚原片（%s）' % _rsn[:90])
+                        else:
+                            _log('    ! 回滚失败: %s' % str(_rr.get('error') or '')[:110])
+                    else:
+                        _log('    ! 深检不合格，且无回滚点（保留 0 天），请人工检查')
+                    try:
+                        dbc.execute("UPDATE items SET quality='有误', last_update=? WHERE id=?",
+                                    (mlib.now(), it['id']))
+                        dbc.execute('UPDATE media SET dur=?, size=? WHERE item_id=?',
+                                    (r.get('old_dur') or 0, r.get('old_size') or 0, it['id']))
+                        dbc.commit()
+                    except Exception:
+                        pass
             else:
                 _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
             _tick(i + 1)

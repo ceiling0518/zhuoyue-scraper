@@ -2494,10 +2494,14 @@ def frame_at(vpath, t, width=480):
 
 
 def ads_batch(vpath, times, model=None, log=None):
-    """一次请求多张截图，返回与 times 等长的 bool 列表。每批最多 8 张。"""
+    """一次请求多张截图，返回与 times 等长的 bool 列表。
+    批大小默认 20（MS_AD_BATCH 可调）：图越多请求次数越少，整体更快。"""
     model = model or ai_model()
     out = [False] * len(times)
-    chunk = 8
+    try:
+        chunk = max(1, min(24, int(os.environ.get('MS_AD_BATCH') or 20)))
+    except Exception:
+        chunk = 20
     for s in range(0, len(times), chunk):
         ts = times[s:s + chunk]
         imgs, keep = [], []
@@ -2508,6 +2512,7 @@ def ads_batch(vpath, times, model=None, log=None):
                 keep.append(i)
         if not imgs:
             continue
+        _t0 = time.time()
         prompt = AD_PROMPT.replace('{N}', str(len(imgs)))
         try:
             r = requests.post(OLLAMA + '/api/chat', timeout=900,
@@ -2527,7 +2532,8 @@ def ads_batch(vpath, times, model=None, log=None):
                 if 0 <= idx < len(imgs):
                     out[s + keep[idx]] = True
             if log:
-                log('    批次 %d 张 -> 广告 %d 张' % (len(imgs), len([x for x in ad])))
+                log('    批次 %d 张 -> 广告 %d 张（%.1fs）'
+                    % (len(imgs), len([x for x in ad]), time.time() - _t0))
         except Exception as e:
             if log:
                 log('    ads_batch err %s' % str(e)[:80])
@@ -2538,17 +2544,25 @@ def _is_ad(vpath, t, model=None):
     return ads_batch(vpath, [t], model=model)[0]
 
 
-def _refine(vpath, t_ad, t_nonad, model=None):
-    """在 [min,max] 之间二分，找到最后一个广告时刻（精度 1s）。"""
+def _refine(vpath, t_ad, t_nonad, model=None, n=8):
+    """在 [min,max] 之间一次采 n 点（1 次模型调用）找交界。
+
+    原来是二分：每次 1 张图，30s 窗口要 5~6 次调用（每次 2-7 秒）。
+    现在整窗口打包成 1 次请求，精度 (hi-lo)/n ≈ 4 秒，快 5 倍。
+    """
     lo, hi = sorted([float(t_ad), float(t_nonad)])
-    is_ad_lo = _is_ad(vpath, lo, model)
-    while hi - lo > 1.0:
-        mid = (lo + hi) / 2.0
-        if _is_ad(vpath, mid, model) == is_ad_lo:
-            lo = mid
-        else:
-            hi = mid
-    return lo if is_ad_lo else hi
+    if hi - lo < 1.0:
+        return lo
+    ts = [lo + (hi - lo) * (i + 0.5) / n for i in range(n)]
+    flags = ads_batch(vpath, ts, model=model)
+    if not any(flags):
+        return lo
+    if all(flags):
+        return hi
+    for i in range(1, n):
+        if bool(flags[i]) != bool(flags[0]):
+            return (ts[i - 1] + ts[i]) / 2.0
+    return hi
 
 
 def detect_ads(vpath, dur=None, model=None, log=None):
