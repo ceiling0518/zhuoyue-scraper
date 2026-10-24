@@ -948,7 +948,8 @@ def tolerant_reencode(path, out_dir=None, log=None, tick=None):
     say = log or (lambda *a: None)
     out_dir = out_dir or OUT_DIR
     os.makedirs(out_dir, exist_ok=True)
-    stage = os.path.join(out_dir, os.path.splitext(os.path.basename(path))[0] + '.mp4')
+    stage = os.path.join(out_dir,
+                         os.path.splitext(os.path.basename(path))[0] + '.reenc.mp4')
     dur = 0.0
     try:
         pr = probe(path)
@@ -1549,11 +1550,34 @@ def splice_repair(path, windows, log=None, tick=None, dry=False, _retry=False):
         while os.path.exists(orig):
             orig = '%s.orig%d' % (path, k)
             k += 1
-        try:
-            os.replace(path, orig)
-            _copy_progress(stage, path, log=log)
-        except Exception as e:
-            return {'ok': False, 'error': '替换失败: %s' % str(e)[:120], 'orig': orig, 'stage': stage}
+        _err = None
+        for _try in range(5):
+            try:
+                os.replace(path, orig)
+                _copy_progress(stage, path, log=log)
+                _err = None
+                break
+            except Exception as e:
+                _err = e
+                try:
+                    if os.path.exists(orig) and not os.path.exists(path):
+                        os.replace(orig, path)      # 原文件先放回去，避免两头空
+                except Exception:
+                    pass
+                say('  ! 替换失败（第 %d 次，可能被播放器/网盘同步/杀毒占用）：%s'
+                    % (_try + 1, str(e)[:90]))
+                time.sleep(2)
+        if _err is not None:
+            _keep = stage
+            try:
+                _keep = os.path.join(OUT_DIR, base + '.splice-keep.mp4')
+                os.replace(stage, _keep)        # 改名保留成品（finally 不会误删）
+            except Exception:
+                _keep = stage
+            say('  ! 重试 5 次仍被占用 —— 成品已保留：%s' % _keep)
+            say('    关闭占用该文件的程序（播放器/资源管理器预览/网盘同步）后可重试替换')
+            return {'ok': False, 'locked': True, 'stage': _keep, 'orig': orig,
+                    'error': '文件被占用（重试 5 次）: %s' % str(_err)[:90]}
         try:
             os.remove(stage)
         except Exception:

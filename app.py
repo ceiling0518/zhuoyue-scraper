@@ -1350,9 +1350,17 @@ def _job_repair(ids=None, mode='index', go=False):
                             r = {'ok': False, 'error': 'splice 异常: %s: %s'
                                  % (type(e).__name__, str(e)[:60])}
                         if not r.get('ok'):
-                            _log('  id=%s %s 分段修复未采用（%s）-> 改走整段容错重编码'
-                                 % (it['id'], base[:34], (r.get('error') or '')[:70]))
-                            r = None
+                            if r.get('locked'):
+                                _log('  id=%s %s 分段成品已生成，但原文件被占用；'
+                                     '关闭播放器/预览后重试（成品：%s）'
+                                     % (it['id'], base[:34], r.get('stage')))
+                                lists['fail'].append('id=%s %s -> 文件被占用（成品已保留）'
+                                                     % (it['id'], base))
+                                n_fail += 1
+                            else:
+                                _log('  id=%s %s 分段修复未采用（%s）-> 改走整段容错重编码'
+                                     % (it['id'], base[:34], (r.get('error') or '')[:70]))
+                                r = None
                     else:
                         r = repair.interp_gap(f, gaps=_gaps, log=_log, tick=_pk2)
                         if not r.get('ok'):
@@ -1404,9 +1412,17 @@ def _job_repair(ids=None, mode='index', go=False):
                             r = {'ok': False, 'error': 'splice 异常: %s: %s'
                                  % (type(e).__name__, str(e)[:60])}
                         if not r.get('ok'):
-                            _log('  id=%s %s 分段修复未采用（%s）-> 回退整段重编码'
-                                 % (it['id'], base[:34], (r.get('error') or '')[:70]))
-                            r = None
+                            if r.get('locked'):
+                                _log('  id=%s %s 分段成品已生成，但原文件被占用；'
+                                     '关闭播放器/预览后重试（成品：%s）'
+                                     % (it['id'], base[:34], r.get('stage')))
+                                lists['fail'].append('id=%s %s -> 文件被占用（成品已保留）'
+                                                     % (it['id'], base))
+                                n_fail += 1
+                            else:
+                                _log('  id=%s %s 分段修复未采用（%s）-> 回退整段重编码'
+                                     % (it['id'], base[:34], (r.get('error') or '')[:70]))
+                                r = None
                     if r is None:
                         r = repair.tolerant_reencode(f, log=_log, tick=_pk)
                     if r.get('ok'):
