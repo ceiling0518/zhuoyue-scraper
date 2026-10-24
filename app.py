@@ -3221,6 +3221,11 @@ def main():
     if HOST == '0.0.0.0':
         for _ip in _local_ips():
             print('    lan    : http://%s:%d/' % (_ip, PORT))
+    # 启动即迁移：补齐 media.ads / ads_ts（否则 /api/items 会报 no such column）
+    try:
+        _ensure_media(mlib.db())
+    except Exception as _e:
+        print('    migrate: %s' % str(_e)[:120])
     srv = ThreadingHTTPServer((HOST, PORT), H)
     SERVER = srv
     try:
