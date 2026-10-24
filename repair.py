@@ -1205,7 +1205,7 @@ def _split_failed_copy(path, a, b, tmp, say, min_len=40.0, depth=0, budget=None)
     return out
 
 
-def splice_repair(path, windows, log=None, tick=None, dry=False):
+def splice_repair(path, windows, log=None, tick=None, dry=False, _retry=False):
     """分段修复：未损坏段 -c copy（**零损失**），只重编码损坏窗口，再拼接。
 
     windows: [{'t1','t2', ...}] 需重编码(容错)的时间区间（一般来自深检的洞）
@@ -1367,8 +1367,33 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
                     bads += 1
                     bad_at.append(round(t, 1))
         if bads:
-            return {'ok': False, 'error': '拼接点抽窗仍有 %d 处报错（t=%s）'
-                    % (bads, bad_at[:8])}
+            if not _retry and windows:
+                # 只差最后一步：把报错时间点附近的窗口各扩 3s，重拼一次
+                w2, n_w = [], 0
+                for _x in windows:
+                    try:
+                        _a1 = float(_x.get('t1') or 0)
+                        _b1 = float(_x.get('t2') or 0)
+                    except Exception:
+                        w2.append(_x)
+                        continue
+                    _near = any(abs(_a1 - _t) <= 8.0 or abs(_b1 - _t) <= 8.0
+                                or _a1 <= _t <= _b1 for _t in bad_at)
+                    if _near:
+                        _y = dict(_x)
+                        _y['t1'] = max(0.0, _a1 - 3.0)
+                        _y['t2'] = min(dur, _b1 + 3.0)
+                        w2.append(_y)
+                        n_w += 1
+                    else:
+                        w2.append(_x)
+                if n_w:
+                    say('  收尾校验 %d 处报错 -> 把 %d 个窗口各扩 3s 重拼一次'
+                        % (bads, n_w))
+                    return splice_repair(path, w2, log=log, tick=tick, dry=dry,
+                                         _retry=True)
+            return {'ok': False, 'error': '拼接点抽窗仍有 %d 处报错（t=%s）%s'
+                    % (bads, bad_at[:8], '（已重试）' if _retry else '')}
         if _stop_req():
             return {'ok': False, 'error': '已请求停止（未替换）', 'stage': stage}
         orig = path + '.orig'
