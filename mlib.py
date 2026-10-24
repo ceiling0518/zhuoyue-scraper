@@ -2717,7 +2717,7 @@ def _keyframe_times(vpath, start=0.0, span=30.0):
         return []
 
 
-def _try_copy_cut(vpath, t_in, t_out, tmp, log=None, max_shift=2.0):
+def _try_copy_cut(vpath, t_in, t_out, tmp, log=None, max_shift=5.0):
     """头/尾广告：只重封装，不重编码（画质零损失、秒级完成）。
 
     起点必须落在关键帧：优先取「>= t_in」的最近关键帧（宁可少留一点正片，
@@ -2758,15 +2758,39 @@ def _try_copy_cut(vpath, t_in, t_out, tmp, log=None, max_shift=2.0):
     if t_out - start < 1.0:
         return None
 
-    cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-y',
-           '-ss', '%.3f' % start, '-i', vpath,
-           '-t', '%.3f' % (t_out - start),
-           '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy',
-           '-avoid_negative_ts', 'make_zero', '-dn', '-sn', tmp]
-    r = subprocess.run(cmd, capture_output=True, timeout=1800)
-    if r.returncode != 0 or not os.path.exists(tmp):
-        _log('    重封装失败: %s' % (r.stderr or b'')[-160:].decode('utf-8', 'replace'))
-        return None
+    want = t_out - start
+    # copy 模式下 -ss/-t 一次只能切到 GOP 边界（实测会多出约一个 GOP，
+    # 例如要 330.7s 实际出来 339.3s），所以：先粗切到本地盘（不占 NAS 写），
+    # 再用第二遍 -t 精裁。两遍都是 -c copy，零重编码。
+    import tempfile as _tf
+    loc = os.path.join(_tf.gettempdir(),
+                       'adcopy_%d_%d.mp4' % (os.getpid(), int(time.time())))
+    try:
+        c1 = [FFMPEG, '-hide_banner', '-v', 'error', '-y',
+              '-ss', '%.3f' % start, '-i', vpath,
+              '-t', '%.3f' % (want + 14.0),
+              '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy',
+              '-avoid_negative_ts', 'make_zero', '-dn', '-sn', loc]
+        r1 = subprocess.run(c1, capture_output=True, timeout=3600)
+        if r1.returncode != 0 or not os.path.exists(loc):
+            _log('    第一遍重封装失败: %s'
+                 % (r1.stderr or b'')[-160:].decode('utf-8', 'replace'))
+            return None
+        c2 = [FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', loc,
+              '-t', '%.3f' % want,
+              '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy',
+              '-avoid_negative_ts', 'make_zero', '-dn', '-sn', tmp]
+        r2 = subprocess.run(c2, capture_output=True, timeout=3600)
+        if r2.returncode != 0 or not os.path.exists(tmp):
+            _log('    第二遍精裁失败: %s'
+                 % (r2.stderr or b'')[-160:].decode('utf-8', 'replace'))
+            return None
+    finally:
+        try:
+            if os.path.exists(loc):
+                os.remove(loc)
+        except Exception:
+            pass
 
     got = video_duration(tmp)
     want = t_out - start
