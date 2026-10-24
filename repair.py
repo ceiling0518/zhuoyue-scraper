@@ -1172,6 +1172,39 @@ def _probe_at(path, t, sec=2.0):
         return True, -1
 
 
+def _copy_probe(path, a, b, tmp):
+    """只判断 [a,b] 能否原样搬运，不保留产物。"""
+    o = os.path.join(tmp, '_probe.ts')
+    ok = _ts_seg(path, a, b, o, 'copy')
+    try:
+        os.remove(o)
+    except Exception:
+        pass
+    return ok
+
+
+def _split_failed_copy(path, a, b, tmp, say, min_len=40.0, depth=0, budget=None):
+    """整段 copy 失败 -> 二分定位真正坏的子段，只把那一小块改重编码。
+
+    budget 控制探测次数（每次探测 = 切一小段试 copy），避免在 NAS 上无限读。
+    """
+    if budget is None:
+        budget = [20]
+    if b - a <= min_len or depth >= 5 or budget[0] <= 0:
+        return [(a, b, 'tol')]
+    mid = round((a + b) / 2.0, 3)
+    out = []
+    for (x, y) in ((a, mid), (mid, b)):
+        if y - x < 1e-3:
+            continue
+        budget[0] -= 1
+        if _copy_probe(path, x, y, tmp):
+            out.append((x, y, 'copy'))
+        else:
+            out.extend(_split_failed_copy(path, x, y, tmp, say, min_len, depth + 1, budget))
+    return out
+
+
 def splice_repair(path, windows, log=None, tick=None, dry=False):
     """分段修复：未损坏段 -c copy（**零损失**），只重编码损坏窗口，再拼接。
 
@@ -1199,7 +1232,7 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
             has_clip = True
             ws.append((max(0.0, a), min(dur, b), clip))      # 过渡段已带让边，不再扩
         else:
-            ws.append((max(0.0, a - 0.3), min(dur, b + 0.3), None))
+            ws.append((max(0.0, a - 1.0), min(dur, b + 1.0), None))
     ws.sort(key=lambda z: z[0])
     if has_clip:
         merged = ws                                          # 过渡段是现成的，逐段使用
@@ -1273,12 +1306,23 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
             out = os.path.join(tmp, 'seg%03d.ts' % i)
             if not _ts_seg(path, a, b, out, m, log=say):
                 if m == 'copy':
-                    # 字节->时间映射有误差：紧邻窗口的这一小段可能仍有坏数据。
-                    # 自愈：就地改成容错重编码这一段（只影响这一小段，时间轴仍保持）。
-                    say('    搬运失败（%.1f-%.1fs 附近仍有损坏）-> 这一段改容错重编码' % (a, b))
-                    if not _ts_seg(path, a, b, out, 'tol', log=say):
-                        return {'ok': False,
-                                'error': '切段失败（第 %d 段 %.1f-%.1f，copy/tol 都不行）' % (i + 1, a, b)}
+                    # 整段 copy 失败：不要整段重编码（这一段可能有 15 分钟长）
+                    # 只重编码两端，中间继续原样搬运；中间仍失败则递归细化。
+                    say('    搬运失败（%.1f-%.1fs）-> 细化：两端重编码，中间仍原样搬运' % (a, b))
+                    subs = _split_failed_copy(path, a, b, tmp, say)
+                    _nc = [z for z in subs if z[2] == 'copy']
+                    _nt = [z for z in subs if z[2] == 'tol']
+                    say('      -> 细化 %d 段：原样搬运 %d 段(%.0fs) / 重编码 %d 段(%.0fs)'
+                        % (len(subs), len(_nc), sum(y - x for x, y, m in _nc),
+                           len(_nt), sum(y - x for x, y, m in _nt)))
+                    for j, (sa, sb, sm) in enumerate(subs):
+                        so = os.path.join(tmp, 'seg%03d_%d.ts' % (i, j))
+                        if not _ts_seg(path, sa, sb, so, sm, log=say):
+                            return {'ok': False,
+                                    'error': '切段失败（第 %d 段子段 %.1f-%.1f %s）'
+                                             % (i + 1, sa, sb, sm)}
+                        names.append(so)
+                    continue
                 else:
                     return {'ok': False, 'error': '切段失败（第 %d 段 %.1f-%.1f %s）' % (i + 1, a, b, m)}
             names.append(out)
@@ -1315,14 +1359,16 @@ def splice_repair(path, windows, log=None, tick=None, dry=False):
         elif d2 < dur - total_tol - 5.0 or d2 > dur + 5.0:
             return {'ok': False, 'error': '产物时长异常（%.1fs vs 源 %.1fs，损坏段共 %.1fs）'
                     % (d2, dur, total_tol)}
-        bads = 0
+        bads, bad_at = 0, []
         for a, b, _c in merged[:6]:
             for t in (max(0.0, a - 1.0), min(max(0.0, d2 - 2.5), b + 1.0)):
                 bad, nb = _probe_at(stage, t, 2.0)
                 if bad:
                     bads += 1
+                    bad_at.append(round(t, 1))
         if bads:
-            return {'ok': False, 'error': '拼接点抽窗仍有 %d 处报错' % bads}
+            return {'ok': False, 'error': '拼接点抽窗仍有 %d 处报错（t=%s）'
+                    % (bads, bad_at[:8])}
         if _stop_req():
             return {'ok': False, 'error': '已请求停止（未替换）', 'stage': stage}
         orig = path + '.orig'
