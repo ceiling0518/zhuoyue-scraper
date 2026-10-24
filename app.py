@@ -2124,7 +2124,14 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/fetch':
                 ok = start_job(_job_fetch, mode, lim, int(q.get('ai_group') or 0))
             elif p == '/api/fill':
-                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                _rid = q.get('ids') or ''
+                if '?' in _rid:          # 兼容旧前端误拼：?ids=2005?deep=1
+                    _rid, _tail = _rid.split('?', 1)
+                    for _kv in _tail.split('&'):
+                        if '=' in _kv:
+                            _k2, _v2 = _kv.split('=', 1)
+                            q.setdefault(_k2, _v2)
+                ids = [int(x) for x in _rid.split(',') if x.strip().isdigit()]
                 ok = start_job(_job_fill, lim, int(q.get('ai_group') or 0), ids)
             elif p == '/api/vscan':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
@@ -2566,7 +2573,7 @@ $('#a-deep').onclick=async()=>{
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做数据级深检（要扫整个文件，很慢；不写媒体文件），继续？')))return;
   if(!confirm(T('深检会逐个读取视频文件找数据洞（NAS 上约 11MB/s）。继续？')))return;
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
-  await post('/api/health'+(ids?'?ids='+ids:'')+fq+(fq?'&':'?')+'deep=1');};
+  await post('/api/health'+(ids?'?ids='+ids:'')+fq+((fq||ids)?'&':'?')+'deep=1');};
 $('#a-health').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做只读体检（逐文件探测，较慢；不写任何文件），继续？')))return;
