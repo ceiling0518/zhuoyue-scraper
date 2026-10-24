@@ -1778,13 +1778,18 @@ def start_job(fn, *a, lane='light', exclusive=False):
     exclusive=True（修复）：把 light 车道也挡住，避免读到替换中的半成品。"""
     _s = LANES[lane]
     with _LOCK:
+        # 注意：作业线程里 _cur() 返回的是 LANES[lane]，_begin 也写在这里，
+        # 所以互斥必须看 LANES[lane]['running']；只看 STATE 会漏（曾导致两个
+        # ffmpeg 同时写同一个 .adnew 临时文件）。
         if lane == 'heavy':
-            if STATE['running']:
+            if LANES['heavy']['running'] or STATE['running']:
                 return False
             if exclusive and LANES['light']['running']:
                 return False          # 修复：等 light 车道收尾（不能读替换中的半成品）
         else:
             if LANES['light']['running']:
+                return False
+            if LANES['heavy']['running'] and LANES['heavy'].get('exclusive'):
                 return False
             if STATE['running'] and STATE.get('exclusive'):
                 return False

@@ -2884,7 +2884,8 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
     stem, ext = os.path.splitext(base)
     d = os.path.dirname(vpath)
     if replace:
-        tmp = os.path.join(d, '.%s.adnew%s' % (stem, ext or '.mp4'))
+        # 临时名带 pid：即使两个作业意外并发，也不会互相覆盖同一个文件
+        tmp = os.path.join(d, '.%s.adnew.%d%s' % (stem, os.getpid(), ext or '.mp4'))
     else:
         tmp = out or (os.path.splitext(vpath)[0] + '.adfree.mp4')
 
