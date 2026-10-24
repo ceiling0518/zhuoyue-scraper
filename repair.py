@@ -796,6 +796,20 @@ def probe_windows(path, n=6, sec=10, log=None):
         dur = 0.0
     if dur <= 0:
         return {'dur': 0, 'bad': [], 'windows': 0, 'sec': sec, 'note': '读不到时长'}
+    if dur <= 120:
+        # 短视频：一次整段解码（覆盖 100%，成本与 4 次抽窗相当甚至更低）
+        rc, so, se = _run([FFMPEG, '-hide_banner', '-v', 'error', '-nostdin',
+                           '-err_detect', 'ignore_err', '-i', path,
+                           '-f', 'null', '-'], 600)
+        marks = [x for x in (se or '').splitlines()
+                 if ('concealing' in x.lower() or 'error while decoding' in x.lower()
+                     or 'Invalid NAL' in x or 'corrupt' in x.lower())]
+        if marks and log:
+            log('  整段解码（%.0fs）%d 条解码错误' % (dur, len(marks)))
+        return {'dur': round(dur, 1),
+                'bad': ([{'t': 0.0, 'n': len(marks), 'sample': marks[0][:90]}]
+                        if marks else []),
+                'windows': 1, 'sec': int(dur), 'mode': 'full'}
     for k in range(n):
         t = dur * (k + 0.5) / n
         rc, so, se = _run([FFMPEG, '-hide_banner', '-v', 'error', '-err_detect', 'ignore_err',

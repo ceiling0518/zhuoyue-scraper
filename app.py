@@ -949,6 +949,14 @@ def _job_health(ids=None, force=False, deep=False):
             _pp = {}
             if deep and len(to_scan) > 1:
                 _w = repair._deep_workers()
+                # 小文件是 CPU/固定开销密集（解码占大头），可以多开；
+                # 大文件是 NAS 读带宽受限，2 流封顶
+                try:
+                    _avg = sum(_t[3] for _t in to_scan) / max(1, len(to_scan))
+                except Exception:
+                    _avg = 0.0
+                if _avg and _avg < 60 * 1024 * 1024:
+                    _w = max(_w, min(4, os.cpu_count() or 4))
                 if _w > 1:
                     from concurrent.futures import ThreadPoolExecutor
                     _log('  深检并发 %d 流（本条目待检 %d 个文件）' % (_w, len(to_scan)))
@@ -1005,8 +1013,9 @@ def _job_health(ids=None, force=False, deep=False):
                     _log('  id=%s %s [%s] %s' % (it['id'], base[:42], cls, (p.get('reason') or '')[:58]))
                 elif len(vids) > 1:
                     # 多视频条目：逐个文件都报一行，避免看起来「只检了第一个」
-                    _log('  id=%s %s [ok] 深检 %d/%d'
-                         % (it['id'], base[:42], _fi, len(vids)))
+                    _log('  id=%s %s [ok] %s %d/%d'
+                         % (it['id'], base[:42], '深检' if deep else '体检',
+                            _fi, len(vids)))
                 if cls not in ('ok',):
                     bad.setdefault(cls, []).append(it['id'])
                 _tag = 'id=%d %s' % (it['id'], base)
