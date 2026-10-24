@@ -36,6 +36,18 @@ _LOCK = threading.Lock()
 _DLOK = threading.Lock()
 STATE = {'running': False, 'name': '', 'done': 0, 'total': 0,
          'stop': False, 'started': 0, 'log': []}
+# 两条车道：heavy=吃 NAS/CPU 的重活（体检/深检/扫描/vscan/修复），light=外网/轻量（抓取/AI/语义/填标签）
+# STATE 就是 heavy 车道的状态对象（保持向后兼容）；light 单独一份。
+LANES = {'heavy': STATE,
+         'light': {'running': False, 'name': '', 'done': 0, 'total': 0,
+                   'stop': False, 'started': 0}}
+_LANE = threading.local()
+
+
+def _cur():
+    """当前线程所属车道的状态对象（不在作业线程里时返回 heavy/STATE）。"""
+    n = getattr(_LANE, 'name', None)
+    return LANES.get(n, STATE)
 QUEUE = []                                    # [(item_id, mode)]  -- persisted in `queue`
 _LOGDB = None
 _LOGBUF = []
@@ -209,29 +221,31 @@ def _log(msg):
 
 
 def _begin(name, total=0):
+    _s = _cur()
     with _LOCK:
-        STATE.update(running=True, name=name, done=0, total=total, stop=False,
-                     started=time.time())
+        _s.update(running=True, name=name, done=0, total=total, stop=False,
+                  started=time.time())
     _log('===== %s 开始 (total=%d) =====' % (name, total))
 
 
 def _end(msg):
     with _LOCK:
-        STATE.update(running=False)
+        _cur().update(running=False)
     _log('===== 结束: %s =====' % msg)
     _flush_log()
 
 
 def _stop_req():
     with _LOCK:
-        return STATE['stop']
+        return _cur()['stop']
 
 
 def _tick(n, total=None):
+    _s = _cur()
     with _LOCK:
-        STATE['done'] = n
+        _s['done'] = n
         if total:
-            STATE['total'] = total
+            _s['total'] = total
 
 
 # 让 repair.py 里的长任务也能感知「停止」
@@ -1460,19 +1474,34 @@ def _purge_backups(paths):
     return {'ok': True, 'removed': n, 'errors': err}
 
 
-def start_job(fn, *a):
+def start_job(fn, *a, lane='light', exclusive=False):
+    """启动作业。lane: 'heavy'（吃 NAS/CPU，互斥）| 'light'（外网，可与 heavy 并行）。
+    exclusive=True（修复）：把 light 车道也挡住，避免读到替换中的半成品。"""
+    _s = LANES[lane]
     with _LOCK:
-        if STATE['running']:
-            return False
-        STATE['running'] = True
+        if lane == 'heavy':
+            if STATE['running']:
+                return False
+            if exclusive and LANES['light']['running']:
+                return False          # 修复：等 light 车道收尾（不能读替换中的半成品）
+        else:
+            if LANES['light']['running']:
+                return False
+            if STATE['running'] and STATE.get('exclusive'):
+                return False
+        _s['exclusive'] = bool(exclusive)
+        _s['running'] = True
+        _s['stop'] = False
 
     def runner():
+        _LANE.name = lane
         try:
             fn(*a)
         except Exception:
             _log('ERR ' + traceback.format_exc()[:1600])
+        finally:
             with _LOCK:
-                STATE['running'] = False
+                _s['running'] = False
     threading.Thread(target=runner, daemon=True).start()
     return True
 
@@ -2087,7 +2116,13 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'removed': _log_purge()})
             if p == '/api/job':
                 with _LOCK:
-                    return self._json(dict(STATE, queue=len(QUEUE)))
+                    _act = STATE if STATE['running'] else LANES['light']
+                    _snap = dict(_act)
+                    _snap['log'] = STATE['log']
+                    _snap['queue'] = len(QUEUE)
+                    _snap['lanes'] = {'heavy': bool(STATE['running']),
+                                      'light': bool(LANES['light']['running'])}
+                    return self._json(_snap)
             if p == '/api/ollama':
                 return self._json(_ollama())
             return self._json({'error': 'bad path'}, 404)
@@ -2118,7 +2153,8 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': True, 'root': mlib.scan_root(), 'model': mlib.ai_model()})
             if p == '/api/scan':
                 ok = start_job(_job_scan, q.get('mode') or 'incr',
-                               (q.get('sem') or '') in ('1', 'true', 'yes'))
+                               (q.get('sem') or '') in ('1', 'true', 'yes'),
+                               lane='heavy')
             elif p == '/api/sem':
                 ok = start_job(_job_sem, lim, force, int(q.get('group') or 0))
             elif p == '/api/fetch':
@@ -2135,14 +2171,15 @@ class H(BaseHTTPRequestHandler):
                 ok = start_job(_job_fill, lim, int(q.get('ai_group') or 0), ids)
             elif p == '/api/vscan':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                ok = start_job(_job_vscan, lim, ids)
+                ok = start_job(_job_vscan, lim, ids, lane='heavy')
             elif p == '/api/pipeline':
                 ok = start_job(_job_pipeline, lim, int(q.get('group') or 0),
                                int(q.get('ai_group') or 0))
             elif p == '/api/health':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_health, ids, (q.get('force') or '') in ('1', 'true', 'yes'),
-                                (q.get('deep') or '') in ('1', 'true', 'yes'))
+                                (q.get('deep') or '') in ('1', 'true', 'yes'),
+                                lane='heavy')
             elif p == '/api/repair/plan':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 return self._json(_repair_plan(ids, refresh=(q.get('refresh') or '') in ('1', 'true', 'yes')))
@@ -2155,14 +2192,15 @@ class H(BaseHTTPRequestHandler):
                 if not ids:
                     return self._json({'ok': False, 'error': 'ids 为空'}, 400)
                 ok = start_job(_job_repair, ids, q.get('mode') or 'index',
-                               (q.get('go') or '') in ('1', 'true', 'yes'))
+                               (q.get('go') or '') in ('1', 'true', 'yes'),
+                               lane='heavy', exclusive=True)
             elif p == '/api/runset':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 if not ids:
                     return self._json({'ok': False, 'error': 'ids 为空'}, 400)
                 ok = start_job(_job_runset, ids, mode)
             elif p == '/api/queue/run':
-                ok = start_job(_job_queue)
+                ok = start_job(_job_queue, lane='heavy')
             elif p == '/api/queue/clear':
                 q_clear()
                 return self._json({'ok': True, 'queue': 0})
@@ -2174,7 +2212,7 @@ class H(BaseHTTPRequestHandler):
                 return self._json(_flatten_plan(ids, int(q.get('limit') or 0) or None))
             elif p == '/api/flatten/run':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                ok = start_job(_job_flatten, ids)
+                ok = start_job(_job_flatten, ids, lane='heavy')
             elif p == '/api/flatten/undo':
                 f = q.get('file') or ''
                 if not f and q.get('last'):
@@ -2272,6 +2310,7 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/stop':
                 with _LOCK:
                     STATE['stop'] = True
+                    LANES['light']['stop'] = True
                 return self._json({'ok': True})
             else:
                 return self._json({'error': 'bad path'}, 404)
