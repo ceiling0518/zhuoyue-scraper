@@ -2,7 +2,8 @@
 rem ----- MediaScraper launcher -----
 cd /d "%~dp0"
 set "MS_PORT=8800"
-set "MS_HOST=127.0.0.1"
+rem MS_HOST is intentionally NOT set here: app.py decides from cfg 'lan'
+rem (lan=1 -> 0.0.0.0, otherwise 127.0.0.1). Override with: set MS_HOST=...
 
 rem use the interpreter that has requests / opencv / numpy / zhconv installed
 set "PY=C:\Users\Administrator\AppData\Local\Programs\Python\Python314\python.exe"
