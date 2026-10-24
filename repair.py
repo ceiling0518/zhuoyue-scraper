@@ -1162,7 +1162,9 @@ def _ts_seg(path, start, end, out, mode='copy', log=None):
     rc, so, se = _run(cmd, 7200)
     ok = (rc == 0 and os.path.isfile(out) and os.path.getsize(out) > 4096)
     if not ok and log:
-        log('    切段失败 [%.1f-%.1f] %s: %s' % (start, end, mode, (se or '')[-160:]))
+        _why = 'copy' if mode == 'copy' else '重编码'
+        log('    %s 试探失败 [%.1f-%.1f]（该段仍有损坏，进入细化）：%s'
+            % (_why, start, end, (se or '')[-120:]))
     return ok
 
 
@@ -1266,6 +1268,8 @@ def splice_repair(path, windows, log=None, tick=None, dry=False, _retry=False):
     # 关键帧吸附：copy 段必须从关键帧起、到关键帧止，否则会从损坏中途开始拷
     # （有过渡段时不吸附：过渡段是独立的完整片段，边界不需要落在关键帧上）
     kfs = [] if has_clip else kf_times(path)
+    if not kfs and not has_clip:
+        say('  ! 关键帧信息不可用：copy 段会各多带 <=1 GOP 重复帧，产物时长可能略增')
     if kfs:
         snapped = []
         for a, b, _c in merged:
@@ -1349,6 +1353,9 @@ def splice_repair(path, windows, log=None, tick=None, dry=False, _retry=False):
         segsum = sum(max(0.0, _ts_dur(n)) for n in names)
         say('  分段实测合计 %.1fs（%d 段；源声明 %.1fs，差 %+.1fs）'
             % (segsum, len(names), dur, segsum - dur))
+        if dur > 0 and segsum > dur * 1.005:
+            say('  ! 分段合计比源长 %.1f%%（关键帧不可用时 copy 段各多带 <=1 GOP '
+                '重复帧；不影响播放与音画同步）' % (100.0 * (segsum - dur) / dur))
         lst = os.path.join(tmp, 'list.txt')
         with io.open(lst, 'w', encoding='utf-8', newline='\n') as f:
             for n in names:
