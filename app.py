@@ -1031,7 +1031,27 @@ def _save_ads(dbc, item_id, file, segs, main=False):
     dbc.commit()
 
 
-# ---------------------------------------------------------------- 降画质 / 画质修复
+# ---------------------------------------------------------------- 降分辨率 / 画质修复
+def _staged_repair(f, fn):
+    """在 backup/work 的本地副本上跑修复/编码，成功后回拷替换 NAS 原片。"""
+    loc = mlib.stage_local(f, _log)
+    try:
+        r = fn(loc)
+    except Exception as e:
+        mlib.drop_work(loc)
+        return {'ok': False, 'error': '%s: %s' % (type(e).__name__, str(e)[:90])}
+    if not isinstance(r, dict) or not r.get('ok'):
+        mlib.drop_work(loc)
+        return r if isinstance(r, dict) else {'ok': False, 'error': '未知'}
+    if not mlib.commit_back(loc, f, _log):
+        _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
+        return {'ok': False, 'error': '回拷失败', 'stage': loc}
+    if os.path.exists(loc + '.orig'):
+        mlib.stage_backup(loc + '.orig', _log)
+    mlib.drop_work(loc)
+    return r
+
+
 def _vinfo(path):
     """(w, h, fps, kbps, dur)；读不到返回 0。"""
     try:
@@ -1099,7 +1119,7 @@ def _verify_out(path, expect, log=_log, tol=6.0, ends=True):
 
 
 def _job_down(ids=None, target='auto'):
-    """降画质：按 bpp/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
+    """降分辨率：按 bpp/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
     _begin('downscale', 1)
     dbc = mlib.db()
     try:
@@ -1148,15 +1168,15 @@ def _job_down(ids=None, target='auto'):
                 vf += ':flags=lanczos'
                 if fps > 45:
                     vf += ',fps=30'
-                tmp = os.path.join(it['path'], '.%s.down.%d.mp4'
-                                   % (os.path.splitext(v)[0], os.getpid()))
+                loc = mlib.stage_local(vp, _log)
+                tmp = os.path.splitext(loc)[0] + '.down' + os.path.splitext(loc)[1]
                 _log('  %s  %dx%d@%.0f %.0fkbps bpp=%.4f -> %s%s'
                      % (v[:46], w, h, fps, kbps, bpp,
                         ('%dx%d' % (tw, th)) if not portrait else ('%dx%d' % (th, tw)),
                         ' @30fps' if fps > 45 else ''))
-                cmd = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', vp,
-                       '-vf', vf] + _gpu_enc(vp) + ['-c:a', 'copy',
-                                                    '-movflags', '+faststart', tmp]
+                cmd = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', loc,
+                       '-vf', vf] + _gpu_enc(loc) + ['-c:a', 'copy',
+                                                     '-movflags', '+faststart', tmp]
                 t0 = time.time()
                 r = subprocess.run(cmd, capture_output=True, timeout=14400)
                 if r.returncode != 0 or not os.path.exists(tmp):
@@ -1170,14 +1190,16 @@ def _job_down(ids=None, target='auto'):
                 _log('    编码完成 %.1f 秒 / %.1f MB（%.0fs）'
                      % (nd, os.path.getsize(tmp) / 1048576.0, time.time() - t0))
                 if not _verify_out(tmp, dur):
-                    try:
-                        os.remove(tmp)
-                    except Exception:
-                        pass
+                    mlib.drop_work(tmp)
+                    mlib.drop_work(loc)
                     continue
                 try:
-                    bk = _swap_in(vp, tmp)
-                    _log('    已替换（回滚点 %s）' % os.path.basename(bk or ''))
+                    bk = _swap_in(loc, tmp)
+                    _log('    本地成品 OK（回滚点 %s）' % os.path.basename(bk or ''))
+                    if not mlib.commit_back(loc, vp, _log):
+                        _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
+                        continue
+                    mlib.drop_work(loc)
                 except Exception as e:
                     _log('    ! 替换失败: %s' % str(e)[:120])
                     try:
@@ -1237,10 +1259,10 @@ def _job_proteus(ids=None):
                 dec = 'hevc_cuvid' if (so or '').strip() in ('hevc', 'h265') else 'h264_cuvid'
             except Exception:
                 pass
-            tmp = os.path.join(it['path'], '.%s.prob.%d.mp4'
-                               % (os.path.splitext(v)[0], os.getpid()))
-            cmd = [topaz, '-hide_banner', '-v', 'error', '-y', '-c:v', dec, '-i', vp,
-                   '-vf', 'tvai_up=model=prob-4:scale=1:device=0'] + _gpu_enc(vp) + \
+            loc = mlib.stage_local(vp, _log)
+            tmp = os.path.splitext(loc)[0] + '.prob' + os.path.splitext(loc)[1]
+            cmd = [topaz, '-hide_banner', '-v', 'error', '-y', '-c:v', dec, '-i', loc,
+                   '-vf', 'tvai_up=model=prob-4:scale=1:device=0'] + _gpu_enc(loc) + \
                   ['-c:a', 'copy', '-movflags', '+faststart', tmp]
             t0 = time.time()
             r = subprocess.run(cmd, capture_output=True, timeout=86400,
@@ -1274,8 +1296,13 @@ def _job_proteus(ids=None):
                     pass
                 _tick(i + 1); continue
             try:
-                bk = _swap_in(vp, tmp)
-                _log('    已替换（回滚点 %s）' % os.path.basename(bk or ''))
+                bk = _swap_in(loc, tmp)
+                _log('    本地成品 OK（回滚点 %s）' % os.path.basename(bk or ''))
+                if not mlib.commit_back(loc, vp, _log):
+                    _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
+                    _tick(i + 1)
+                    continue
+                mlib.drop_work(loc)
             except Exception as e:
                 _log('    ! 替换失败: %s' % str(e)[:120])
                 _tick(i + 1); continue
@@ -1403,11 +1430,17 @@ def _job_addel(ids=None):
                 if not os.path.isfile(vp):
                     _log('  跳过（文件不存在）: %s' % v[:60])
                     continue
-                _log('  切 %s（%d 段）' % (v[:60], len(segs)))
-                r = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
+                _log('  切 %s（%d 段）—— 本地工作区处理' % (v[:60], len(segs)))
+                loc = mlib.stage_local(vp, _log)
+                r = mlib.cut_ads(loc, segs, log=lambda m: _log(m))
                 if not r.get('ok'):
                     _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
+                    mlib.drop_work(loc)
                     continue
+                if not mlib.commit_back(loc, vp, _log):
+                    _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
+                    continue
+                mlib.drop_work(loc)
                 _log('    完成: 时长 %.1f -> %.1f 秒，体积 %.1f -> %.1f MB（回滚点 %s）'
                      % (r.get('old_dur') or 0, r.get('new_dur') or 0,
                         (r.get('old_size') or 0) / 1048576.0,
@@ -1848,7 +1881,7 @@ def _job_repair(ids=None, mode='index', go=False):
                         n_fail += 1
                         _log('  id=%s %s 索引重建失败：%s' % (it['id'], base, r.get('error')))
                 elif t == 'remux' and go and mode in ('safe', 'all'):
-                    r = repair.remux_copy(f, log=_log)
+                    r = _staged_repair(f, lambda p: repair.remux_copy(p, log=_log))
                     if r.get('ok'):
                         n_remux += 1
                         lists['remux'].append('id=%s %s' % (it['id'], base))
@@ -1896,7 +1929,8 @@ def _job_repair(ids=None, mode='index', go=False):
                         _log('  id=%s %s 小洞 %d 处（合计 %.1fs）—— 洞太多，改走分段修复'
                              % (it['id'], base[:34], len(_gaps), sum(g['dur'] for g in _gaps)))
                         try:
-                            r = repair.splice_repair(f, _gaps, log=_log, tick=_pk2)
+                            r = _staged_repair(
+                                f, lambda p: repair.splice_repair(p, _gaps, log=_log, tick=_pk2))
                         except Exception as e:
                             r = {'ok': False, 'error': 'splice 异常: %s: %s'
                                  % (type(e).__name__, str(e)[:60])}
@@ -1913,14 +1947,16 @@ def _job_repair(ids=None, mode='index', go=False):
                                      % (it['id'], base[:34], (r.get('error') or '')[:70]))
                                 r = None
                     else:
-                        r = repair.interp_gap(f, gaps=_gaps, log=_log, tick=_pk2)
+                        r = _staged_repair(
+                            f, lambda p: repair.interp_gap(p, gaps=_gaps, log=_log, tick=_pk2))
                         if not r.get('ok'):
                             _log('  id=%s %s 小洞过渡未采用（%s）-> 改走整段容错重编码'
                                  % (it['id'], base[:34], (r.get('error') or '')[:70]))
                             r = None
                     if r is None:
                         _log('  id=%s %s 整段容错重编码…' % (it['id'], base[:34]))
-                        r = repair.tolerant_reencode(f, log=_log, tick=_pk2)
+                        r = _staged_repair(
+                            f, lambda p: repair.tolerant_reencode(p, log=_log, tick=_pk2))
                     if r.get('ok'):
                         n_gap += 1
                         lists['gap'].append('id=%s %s' % (it['id'], base))
@@ -1958,7 +1994,8 @@ def _job_repair(ids=None, mode='index', go=False):
                         _log('  id=%s %s 分段修复：%d 处损坏窗口（其余原样搬运，零损失）'
                              % (it['id'], base[:34], len(_wins)))
                         try:
-                            r = repair.splice_repair(f, _wins, log=_log, tick=_pk)
+                            r = _staged_repair(
+                                f, lambda p: repair.splice_repair(p, _wins, log=_log, tick=_pk))
                         except Exception as e:
                             r = {'ok': False, 'error': 'splice 异常: %s: %s'
                                  % (type(e).__name__, str(e)[:60])}
@@ -1975,7 +2012,8 @@ def _job_repair(ids=None, mode='index', go=False):
                                      % (it['id'], base[:34], (r.get('error') or '')[:70]))
                                 r = None
                     if r is None:
-                        r = repair.tolerant_reencode(f, log=_log, tick=_pk)
+                        r = _staged_repair(
+                            f, lambda p: repair.tolerant_reencode(p, log=_log, tick=_pk))
                     if r.get('ok'):
                         n_re += 1
                         lists['recode'].append('id=%s %s' % (it['id'], base))
@@ -3078,8 +3116,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-adtect" title="抽帧判断广告：头尾模式只扫首尾各 4 分钟并 15 秒取样；全片模式 30 秒全网扫。结果写在列表「属性」列">广告检测</button>
      <button id="a-addel" title="按检测结果切掉广告区间（帧级精确重编码），【替换原片】；原文件留 .orig 回滚点，临时文件自动清理">删除广告</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
-    <select id="downtgt" style="min-width:74px" title="降画质目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
-    <button id="a-down" title="降画质：按设置的码率重编码到目标分辨率（60fps 自动降 30），校验后原子替换">降画质</button>
+    <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
+    <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
     <button id="a-proteus" title="Topaz Proteus(prob-4) 同尺寸修复；速度按输入分辨率，1080p 约 2.3 fps（1 小时片约 8 小时）">画质修复</button>
   </div>
   </div>
@@ -3306,7 +3344,7 @@ $('#a-addel').onclick=async()=>{
 $('#a-down').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
-  if(!confirm(T('降画质会重编码并【替换原片】（回滚点保留在 backup 目录）。继续？')))return;
+  if(!confirm(T('降分辨率会在 backup 本地工作区重编码，完成后回拷替换 NAS 原片（源文件保留在 backup）。继续？')))return;
   await post('/api/downscale?'+(ids?'ids='+ids+'&':'')+'target='+($('#downtgt').value));};
 $('#a-proteus').onclick=async()=>{
   const ids=[...SEL].join(',');

@@ -2867,6 +2867,95 @@ def _try_copy_cut(vpath, t_in, t_out, tmp, log=None, max_shift=5.0):
     return {'t0': start, 't1': t_out, 'dur': got}
 
 
+# ---------------------------------------------------------------- 本地工作区（backup/work）
+def stage_local(src, log=None):
+    """NAS 源 -> backup/work 本地副本；返回本地路径。
+
+    目的：把重活（重编码/拼接/修复）都放在本地盘，避免在 NAS 上产生
+    大量小写入；同时 NAS 源在回拷成功前始终不动。
+    """
+    import repair as _rp
+    wd = os.path.join(_rp.BAK_DIR or r'F:\MediaScraper\backup', 'work')
+    os.makedirs(wd, exist_ok=True)
+    stem, ext = os.path.splitext(os.path.basename(src))
+    dst = os.path.join(wd, '%s.%d%s' % (stem[:90], os.getpid(), ext))
+    t0 = time.time()
+    sz = os.path.getsize(src)
+    shutil.copy2(src, dst)
+    if log:
+        log('    源 -> 本地工作区 %.1f MB（%.0fs）' % (sz / 1048576.0, time.time() - t0))
+    return dst
+
+
+def commit_back(local, nas, log=None):
+    """本地成品 -> NAS：先写同目录临时名（一次大拷贝），再原子替换。"""
+    d = os.path.dirname(nas)
+    stem, ext = os.path.splitext(os.path.basename(nas))
+    tmp = os.path.join(d, '.%s.new.%d%s' % (stem, os.getpid(), ext))
+    t0 = time.time()
+    sz = os.path.getsize(local)
+    try:
+        shutil.copy2(local, tmp)
+    except Exception as e:
+        if log:
+            log('    ! 回拷写入失败: %s' % str(e)[:120])
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return False
+    try:
+        os.replace(tmp, nas)
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        if log:
+            log('    ! 回拷替换失败: %s' % str(e)[:120])
+        return False
+    if log:
+        log('    回拷完成 %.1f MB（%.0fs）' % (sz / 1048576.0, time.time() - t0))
+    return True
+
+
+def stage_backup(local_orig, log=None):
+    """处理成功后处理本地源副本：保留到 backup（按天数）或 0 天直接删。"""
+    import repair as _rp
+    if not local_orig or not os.path.exists(local_orig):
+        return None
+    if (_rp.BAK_DAYS or 0) <= 0:
+        try:
+            os.remove(local_orig)
+            if log:
+                log('    源副本已删除（保留 0 天）')
+        except Exception:
+            pass
+        return None
+    ts = time.strftime('%Y%m%d-%H%M%S')
+    dst = os.path.join(_rp.BAK_DIR, '%s.%s.orig' % (os.path.basename(local_orig), ts))
+    try:
+        os.replace(local_orig, dst)
+    except Exception:
+        try:
+            shutil.copy2(local_orig, dst)
+            os.remove(local_orig)
+        except Exception:
+            return None
+    if log:
+        log('    源已保留：%s（%d 天）' % (os.path.basename(dst), _rp.BAK_DAYS))
+    return dst
+
+
+def drop_work(path, log=None):
+    """删掉本地工作副本（成功/失败都能安全调用）。"""
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
 def _try_copy_cut_multi(vpath, keep, tmp, log=None, max_shift=5.0):
     """多段保留区间：每段零重编码精裁 -> concat -c copy（全程不重编码）。
 
