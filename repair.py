@@ -1113,6 +1113,75 @@ def _stss(buf, trak):
         return None
 
 
+_KF_CACHE = {}
+
+
+def _kf_probe(path):
+    """顺序解复用读包标志，返回关键帧时间点（秒）。慢但可靠，不依赖 stss。
+
+    结果按 (路径, 体积) 缓存，避免同一文件重复扫。
+    """
+    try:
+        key = (path, os.path.getsize(path))
+    except Exception:
+        key = (path, 0)
+    if key in _KF_CACHE:
+        return _KF_CACHE[key]
+    out = []
+    try:
+        rc, so, se = _run([FFPROBE, '-v', 'error', '-select_streams', 'v:0',
+                           '-show_entries', 'packet=pts_time,flags',
+                           '-of', 'compact=p=0:nk=0', path], 3600)
+        for line in (so or '').splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            t = None
+            flags = ''
+            for part in line.split('|'):
+                if part.startswith('pts_time='):
+                    try:
+                        t = float(part.split('=', 1)[1])
+                    except Exception:
+                        t = None
+                elif part.startswith('flags='):
+                    flags = part.split('=', 1)[1]
+            if t is not None and 'K' in flags:
+                out.append(t)
+    except Exception:
+        out = []
+    _KF_CACHE[key] = out
+    return out
+
+
+def _kf_snap(path, t, mode='before', span=12.0):
+    """在 t 附近找关键帧（只读小窗口）；before 取 <=t 最近，after 取 >=t 最近。
+
+    找不到或方向不对时返回 None，调用方保持原边界（宁可多带帧，也不丢内容）。
+    """
+    a = max(0.0, float(t) - span)
+    try:
+        rc, so, se = _run([FFPROBE, '-v', 'error', '-select_streams', 'v:0',
+                           '-skip_frame', 'nokey',
+                           '-read_intervals', '%.2f%%+%.2f' % (a, span * 2),
+                           '-show_entries', 'frame=pts_time', '-of', 'csv=p=0', path], 120)
+    except Exception:
+        return None
+    vals = []
+    for x in (so or '').replace('\r', '').split('\n'):
+        try:
+            vals.append(float(x.strip().strip(',')))
+        except Exception:
+            pass
+    if not vals:
+        return None
+    if mode == 'before':
+        c = [v for v in vals if v <= float(t) + 1e-6]
+        return max(c) if c else None
+    c = [v for v in vals if v >= float(t) - 1e-6]
+    return min(c) if c else None
+
+
 def kf_times(path):
     """视频轨关键帧时间点（秒）。返回 [] 表示无需/无法吸附。"""
     try:
@@ -1129,7 +1198,8 @@ def kf_times(path):
         return []
     st = _stss(buf, traks[0])
     if not st:
-        return []                       # 没有 stss（全关键帧）或读不到 -> 不吸附
+        # stss 读不到（索引损坏 / 全关键帧）-> 退化为顺序读包标志，仍能拿到关键帧
+        return _kf_probe(path)
     scale = _mdhd_timescale(buf, traks[0]) or 1000
     ts = []
     t = 0
@@ -1269,7 +1339,31 @@ def splice_repair(path, windows, log=None, tick=None, dry=False, _retry=False):
     # （有过渡段时不吸附：过渡段是独立的完整片段，边界不需要落在关键帧上）
     kfs = [] if has_clip else kf_times(path)
     if not kfs and not has_clip:
-        say('  ! 关键帧信息不可用：copy 段会各多带 <=1 GOP 重复帧，产物时长可能略增')
+        # 关键帧索引读不到：逐边界局部探测吸附（只读小窗口，每点约 1-3 秒）
+        say('  ! 关键帧索引不可用 -> 改用切点局部探测吸附（%d 个窗口）' % len(merged))
+        _m2, _hit = [], 0
+        for _a, _b, _c in merged:
+            _ka = _kf_snap(path, _a, 'before')
+            _kb = _kf_snap(path, _b, 'after')
+            if _ka is not None:
+                _a = _ka
+                _hit += 1
+            if _kb is not None:
+                _b = _kb
+                _hit += 1
+            _m2.append((max(0.0, _a), min(dur, _b), _c))
+        merged = _m2
+        say('    局部吸附完成：%d/%d 个边界落在关键帧上' % (_hit, 2 * len(merged)))
+        # 吸附后窗口可能重叠/倒退 -> 重新合并
+        _m4 = []
+        for a, b, _c in merged:
+            if _m4 and a <= _m4[-1][1] + 0.05:
+                _m4[-1] = (_m4[-1][0], max(_m4[-1][1], b), None)
+            else:
+                _m4.append((a, b, None))
+        if len(_m4) != len(merged):
+            say('  合并重叠窗口：%d 个 -> %d 个' % (len(merged), len(_m4)))
+        merged = _m4
     if kfs:
         snapped = []
         for a, b, _c in merged:
