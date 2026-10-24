@@ -1273,10 +1273,13 @@ def _copy_probe(path, a, b, tmp):
     return ok
 
 
-def _split_failed_copy(path, a, b, tmp, say, min_len=40.0, depth=0, budget=None):
+def _split_failed_copy(path, a, b, tmp, say, min_len=40.0, depth=0, budget=None,
+                       snap=None):
     """整段 copy 失败 -> 二分定位真正坏的子段，只把那一小块改重编码。
 
     budget 控制探测次数（每次探测 = 切一小段试 copy），避免在 NAS 上无限读。
+    snap(x, mode): 把时间点吸到关键帧（有索引就查表，否则局部探测）。
+    子段命中 copy 时，用「小前缀/后缀重编码 + 中间从关键帧起」保证既不重复也不丢内容。
     """
     if budget is None:
         budget = [20]
@@ -1289,9 +1292,26 @@ def _split_failed_copy(path, a, b, tmp, say, min_len=40.0, depth=0, budget=None)
             continue
         budget[0] -= 1
         if _copy_probe(path, x, y, tmp):
+            if snap is not None:
+                _k1 = snap(x, 'after')       # 从 x 之后第一个关键帧开始 copy
+                _k2 = snap(y, 'before')      # copy 到 y 之前最后一个关键帧
+                if _k1 is not None and _k1 < y - 0.5:
+                    if _k2 is not None and _k2 > _k1 + 0.5:
+                        out.append((x, _k1, 'tol'))
+                        out.append((_k1, _k2, 'copy'))
+                        out.append((_k2, y, 'tol'))
+                        continue
+                    out.append((x, _k1, 'tol'))
+                    out.append((_k1, y, 'copy'))
+                    continue
+                if _k2 is not None and _k2 > x + 0.5 and _k2 < y - 0.5:
+                    out.append((x, _k2, 'copy'))
+                    out.append((_k2, y, 'tol'))
+                    continue
             out.append((x, y, 'copy'))
         else:
-            out.extend(_split_failed_copy(path, x, y, tmp, say, min_len, depth + 1, budget))
+            out.extend(_split_failed_copy(path, x, y, tmp, say, min_len,
+                                          depth + 1, budget, snap))
     return out
 
 
@@ -1425,7 +1445,16 @@ def splice_repair(path, windows, log=None, tick=None, dry=False, _retry=False):
                     # 整段 copy 失败：不要整段重编码（这一段可能有 15 分钟长）
                     # 只重编码两端，中间继续原样搬运；中间仍失败则递归细化。
                     say('    搬运失败（%.1f-%.1fs）-> 细化：两端重编码，中间仍原样搬运' % (a, b))
-                    subs = _split_failed_copy(path, a, b, tmp, say)
+                    def _snap(_x, _mode='before'):
+                        if kfs:
+                            if _mode == 'before':
+                                _c = [k for k in kfs if k <= _x + 1e-3]
+                                return max(_c) if _c else None
+                            _c = [k for k in kfs if k >= _x - 1e-3]
+                            return min(_c) if _c else None
+                        return _kf_snap(path, _x, _mode)
+
+                    subs = _split_failed_copy(path, a, b, tmp, say, snap=_snap)
                     _nc = [z for z in subs if z[2] == 'copy']
                     _nt = [z for z in subs if z[2] == 'tol']
                     say('      -> 细化 %d 段：原样搬运 %d 段(%.0fs) / 重编码 %d 段(%.0fs)'
