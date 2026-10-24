@@ -2693,6 +2693,94 @@ def _has_audio(path):
         return False
 
 
+def _keyframe_times(vpath, start=0.0, span=30.0):
+    """列出 [start, start+span] 内的关键帧时间。只读索引，不解码整片。"""
+    try:
+        r = subprocess.run([FFPROBE, '-v', 'error', '-select_streams', 'v:0',
+                            '-skip_frame', 'nokey',
+                            '-show_entries', 'frame=pts_time', '-of', 'csv=p=0',
+                            '-read_intervals',
+                            '%.3f%%+%.3f' % (max(0.0, start), max(0.5, span)),
+                            vpath],
+                           capture_output=True, timeout=180)
+        out = []
+        for x in (r.stdout or b'').decode('utf-8', 'ignore').replace('\r', '\n').split('\n'):
+            x = x.strip().rstrip(',')
+            if not x:
+                continue
+            try:
+                out.append(float(x))
+            except ValueError:
+                pass
+        return sorted(out)
+    except Exception:
+        return []
+
+
+def _try_copy_cut(vpath, t_in, t_out, tmp, log=None, max_shift=2.0):
+    """头/尾广告：只重封装，不重编码（画质零损失、秒级完成）。
+
+    起点必须落在关键帧：优先取「>= t_in」的最近关键帧（宁可少留一点正片，
+    也不留广告）；差距超 max_shift 时退而取「<= t_in 且 <=0.5s」的关键帧；
+    都不行返回 None，交给重编码。
+    终点用 -t 在包级截断（copy 模式下可精确到帧）。
+    """
+    def _log(m):
+        if log:
+            try:
+                log(m)
+            except Exception:
+                pass
+
+    lo = max(0.0, t_in - 20.0)
+    kfs = _keyframe_times(vpath, lo, (t_in - lo) + 40.0)
+    if not kfs:
+        _log('    取不到关键帧列表 -> 走重编码')
+        return None
+
+    start = None
+    after = [k for k in kfs if k >= t_in - 0.02]
+    if after:
+        k = min(after)
+        if k - t_in <= max_shift:
+            start = k
+            _log('    起点取关键帧 %.2fs（正片少 %.2fs）' % (k, k - t_in))
+    if start is None:
+        before = [k for k in kfs if k <= t_in + 0.02]
+        if before:
+            k = max(before)
+            if t_in - k <= 0.5:
+                start = k
+                _log('    起点取关键帧 %.2fs（残留广告 %.2fs）' % (k, t_in - k))
+    if start is None:
+        _log('    附近关键帧跨度 > %.1fs -> 走重编码' % max_shift)
+        return None
+    if t_out - start < 1.0:
+        return None
+
+    cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-y',
+           '-ss', '%.3f' % start, '-i', vpath,
+           '-t', '%.3f' % (t_out - start),
+           '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy',
+           '-avoid_negative_ts', 'make_zero', '-dn', '-sn', tmp]
+    r = subprocess.run(cmd, capture_output=True, timeout=1800)
+    if r.returncode != 0 or not os.path.exists(tmp):
+        _log('    重封装失败: %s' % (r.stderr or b'')[-160:].decode('utf-8', 'replace'))
+        return None
+
+    got = video_duration(tmp)
+    want = t_out - start
+    if not got or abs(got - want) > max(3.0, want * 0.02):
+        _log('    重封装时长异常 %.1fs（期望 %.1fs）-> 走重编码' % (got, want))
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return None
+    _log('    ★ 只重封装（未重编码）: 起 %.2fs / 时长 %.1fs' % (start, got))
+    return {'t0': start, 't1': t_out, 'dur': got}
+
+
 def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
     """按广告区间切掉、其余内容原样保留（帧级精确重编码）。
 
@@ -2746,6 +2834,13 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
     else:
         tmp = out or (os.path.splitext(vpath)[0] + '.adfree.mp4')
 
+    # 头尾广告：先试零重编码的「只重封装」
+    cop = None
+    if replace and len(keep) == 1:
+        cop = _try_copy_cut(vpath, keep[0][0], keep[0][1], tmp, _log)
+    elif len(keep) == 1 and not replace:
+        cop = _try_copy_cut(vpath, keep[0][0], keep[0][1], tmp, _log)
+
     has_a = _has_audio(vpath)
     parts, labels = [], []
     for i, (a, b) in enumerate(keep):
@@ -2766,7 +2861,8 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
     # 切掉广告后体积反而变大（源本身是低码率时尤其明显）。
     vbr = video_bitrate(vpath)
     if vbr:
-        _log('    源视频码率 %.0f kbps -> 同码率重编码（体积随裁剪时长下降）' % (vbr / 1000.0))
+        if cop is None:
+            _log('    源视频码率 %.0f kbps -> 同码率重编码（体积随裁剪时长下降）' % (vbr / 1000.0))
         cmd += ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-rc', 'vbr',
                 '-b:v', str(vbr), '-maxrate', str(int(vbr * 1.15)),
                 '-bufsize', str(int(vbr * 2)), '-pix_fmt', 'yuv420p']
@@ -2778,10 +2874,11 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
 
     ok = False
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=36000)
-        if r.returncode != 0 or not os.path.exists(tmp):
-            _log('    编码失败: %s' % (r.stderr or b'')[-200:].decode('utf-8', 'replace'))
-            return {'ok': False, 'error': '编码失败'}
+        if cop is None:
+            r = subprocess.run(cmd, capture_output=True, timeout=36000)
+            if r.returncode != 0 or not os.path.exists(tmp):
+                _log('    编码失败: %s' % (r.stderr or b'')[-200:].decode('utf-8', 'replace'))
+                return {'ok': False, 'error': '编码失败'}
 
         new_dur = video_duration(tmp)
         new_size = os.path.getsize(tmp)
@@ -2803,7 +2900,7 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
 
         old_size = os.path.getsize(vpath)
         ratio = expect / dur
-        if new_size > old_size * 0.98 and ratio < 0.9:
+        if new_size > old_size * ratio * 1.35 and ratio < 0.9:
             _log('    ! 体积反而变大：%.1f -> %.1f MB（保留 %.0f%% 时长）'
                  % (old_size / 1048576.0, new_size / 1048576.0, ratio * 100))
         if not replace:
