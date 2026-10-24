@@ -1031,6 +1031,272 @@ def _save_ads(dbc, item_id, file, segs, main=False):
     dbc.commit()
 
 
+# ---------------------------------------------------------------- 降画质 / 画质修复
+def _vinfo(path):
+    """(w, h, fps, kbps, dur)；读不到返回 0。"""
+    try:
+        rc, so, se = repair._run(
+            [repair.FFPROBE, '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=width,height,r_frame_rate,bit_rate:format=duration',
+             '-of', 'json', path], 120)
+        j = json.loads(so or '{}')
+        st = (j.get('streams') or [{}])[0]
+        w = int(st.get('width') or 0)
+        h = int(st.get('height') or 0)
+        num, den = (st.get('r_frame_rate') or '25/1').split('/')
+        fps = float(num) / float(den or 1)
+        kbps = int(st.get('bit_rate') or 0) / 1000.0
+        dur = float((j.get('format') or {}).get('duration') or 0)
+        if not kbps and dur:
+            kbps = os.path.getsize(path) * 8 / dur / 1000.0
+        return w, h, fps, kbps, dur
+    except Exception:
+        return 0, 0, 0, 0, 0
+
+
+def _gpu_enc(path):
+    """按设置里的码率策略生成 nvenc 参数。CRF 模式映射为 cq。"""
+    if repair.ENC_MODE == 'kbps' and repair.ENC_KBPS > 0:
+        k = int(repair.ENC_KBPS)
+    elif repair.ENC_MODE == 'scale':
+        k = int((repair.video_kbps(path) or 0) * repair.ENC_SCALE)
+    else:
+        k = 0
+    if k > 0:
+        return ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-rc', 'vbr',
+                '-b:v', '%dk' % k, '-maxrate', '%dk' % int(k * 1.4),
+                '-bufsize', '%dk' % int(k * 2), '-pix_fmt', 'yuv420p']
+    return ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-rc', 'vbr',
+            '-cq', str(repair.ENC_CRF), '-pix_fmt', 'yuv420p']
+
+
+def _swap_in(vp, tmp, log=_log):
+    """tmp -> vp，原片进回滚点（与 cut_ads 同一套）。返回备份路径。"""
+    orig = vp + '.orig'
+    k = 1
+    while os.path.exists(orig):
+        orig = '%s.orig%d' % (vp, k)
+        k += 1
+    os.replace(vp, orig)
+    os.replace(tmp, vp)
+    try:
+        return repair.stash_orig(orig, log) or orig
+    except Exception:
+        return orig
+
+
+def _verify_out(path, expect, log=_log, tol=6.0, ends=True):
+    d = repair.video_duration(path) or 0
+    if not d or abs(d - expect) > max(tol, expect * 0.02):
+        log('    ! 时长校验失败：期望 %.1f，实际 %.1f' % (expect, d))
+        return False
+    if ends:
+        for t in (1.0, max(1.0, d - 3)):
+            if not mlib.frame_at(path, t, width=320):
+                log('    ! 抽帧失败 t=%.1f' % t)
+                return False
+    return True
+
+
+def _job_down(ids=None, target='auto'):
+    """降画质：按 bpp/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
+    _begin('downscale', 1)
+    dbc = mlib.db()
+    try:
+        _ensure_media(dbc)
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok = 0
+        for i, it in enumerate(its):
+            if _stop_req():
+                _log('! 已请求停止'); break
+            vids = _video_files(it['path'] or '')
+            if not vids:
+                _log('[%d/%d] id=%s 没有视频' % (i + 1, len(its), it['id']))
+                _tick(i + 1); continue
+            for vp in vids:
+                if _stop_req():
+                    break
+                v = os.path.basename(vp)
+                w, h, fps, kbps, dur = _vinfo(vp)
+                if not (w and h and dur):
+                    _log('  %s 读不到媒体信息，跳过' % v[:50]); continue
+                bpp = (kbps * 1000.0) / (w * h * fps) if fps else 0
+                if target == 'auto':
+                    if h >= 2000:
+                        tw, th = 1920, 1080
+                    elif h >= 1200:
+                        tw, th = 1280, 720
+                    elif h >= 900:
+                        tw, th = 1280, 720
+                    elif h >= 620:
+                        tw, th = 854, 480
+                    else:
+                        _log('  %s 已经 %dx%d，无需降' % (v[:40], w, h)); continue
+                elif target == '1080':
+                    tw, th = 1920, 1080
+                elif target == '720':
+                    tw, th = 1280, 720
+                else:
+                    tw, th = 854, 480
+                if min(w, h) <= min(tw, th):
+                    _log('  %s 已经 %dx%d，目标 %dx%d 更大，跳过' % (v[:40], w, h, tw, th))
+                    continue
+                fps_out = 30.0 if fps > 45 else fps
+                portrait = h > w
+                vf = ('scale=-2:%d' % th) if portrait else ('scale=%d:-2' % tw)
+                vf += ':flags=lanczos'
+                if fps > 45:
+                    vf += ',fps=30'
+                tmp = os.path.join(it['path'], '.%s.down.%d.mp4'
+                                   % (os.path.splitext(v)[0], os.getpid()))
+                _log('  %s  %dx%d@%.0f %.0fkbps bpp=%.4f -> %s%s'
+                     % (v[:46], w, h, fps, kbps, bpp,
+                        ('%dx%d' % (tw, th)) if not portrait else ('%dx%d' % (th, tw)),
+                        ' @30fps' if fps > 45 else ''))
+                cmd = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', vp,
+                       '-vf', vf] + _gpu_enc(vp) + ['-c:a', 'copy',
+                                                    '-movflags', '+faststart', tmp]
+                t0 = time.time()
+                r = subprocess.run(cmd, capture_output=True, timeout=14400)
+                if r.returncode != 0 or not os.path.exists(tmp):
+                    _log('    编码失败: %s' % (r.stderr or b'')[-160:].decode('utf-8', 'replace'))
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+                    continue
+                nd = repair.video_duration(tmp) or 0
+                _log('    编码完成 %.1f 秒 / %.1f MB（%.0fs）'
+                     % (nd, os.path.getsize(tmp) / 1048576.0, time.time() - t0))
+                if not _verify_out(tmp, dur):
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+                    continue
+                try:
+                    bk = _swap_in(vp, tmp)
+                    _log('    已替换（回滚点 %s）' % os.path.basename(bk or ''))
+                except Exception as e:
+                    _log('    ! 替换失败: %s' % str(e)[:120])
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+                    continue
+                nw, nh, nfps, nkbps, ndur = _vinfo(vp)
+                try:
+                    dbc.execute('UPDATE media SET w=?, h=?, fps=?, vbr=?, size=?, dur=?, '
+                                'ts=? WHERE item_id=?',
+                                (nw, nh, nfps, int(nkbps * 1000), os.path.getsize(vp),
+                                 ndur or dur, mlib.now(), it['id']))
+                    dbc.execute('DELETE FROM health WHERE item_id=? AND file=?', (it['id'], v))
+                    dbc.execute('DELETE FROM deepscan WHERE item_id=? AND file=?', (it['id'], v))
+                    dbc.commit()
+                except Exception as e:
+                    _log('    库更新失败: %s' % str(e)[:90])
+                ok += 1
+            _tick(i + 1)
+        _end('downscale %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200]); _end('downscale 失败')
+
+
+def _job_proteus(ids=None):
+    """画质修复：Topaz Proteus(prob-4) scale=1，同尺寸修复，按设置的码率重编码。"""
+    _begin('proteus', 1)
+    dbc = mlib.db()
+    topaz = r'F:\Topaz Video\ffmpeg.exe'
+    try:
+        _ensure_media(dbc)
+        if not os.path.exists(topaz):
+            _log('! 找不到 %s' % topaz); _end('proteus 失败'); return
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok = 0
+        for i, it in enumerate(its):
+            if _stop_req():
+                _log('! 已请求停止'); break
+            v = mlib.biggest_video(it['path'] or '')
+            if not v:
+                _log('[%d/%d] id=%s 没有视频' % (i + 1, len(its), it['id']))
+                _tick(i + 1); continue
+            vp = os.path.join(it['path'], v)
+            w, h, fps, kbps, dur = _vinfo(vp)
+            if not (w and h and dur):
+                _log('  %s 读不到媒体信息，跳过' % v[:50]); _tick(i + 1); continue
+            _log('[%d/%d] id=%s %s  %dx%d@%.0f  %.0fkbps  预计 %.1f 小时'
+                 % (i + 1, len(its), it['id'], v[:44], w, h, fps, kbps,
+                    (dur * fps / max(0.5, 2.34 * 1920 * 1080 / float(w * h))) / 3600.0))
+            dec = 'hevc_cuvid' if 'hevc' in str(_vinfo(vp)) else 'h264_cuvid'
+            try:
+                rc, so, se = repair._run([repair.FFPROBE, '-v', 'error', '-select_streams',
+                                          'v:0', '-show_entries', 'stream=codec_name',
+                                          '-of', 'default=nw=1:nk=1', vp], 60)
+                dec = 'hevc_cuvid' if (so or '').strip() in ('hevc', 'h265') else 'h264_cuvid'
+            except Exception:
+                pass
+            tmp = os.path.join(it['path'], '.%s.prob.%d.mp4'
+                               % (os.path.splitext(v)[0], os.getpid()))
+            cmd = [topaz, '-hide_banner', '-v', 'error', '-y', '-c:v', dec, '-i', vp,
+                   '-vf', 'tvai_up=model=prob-4:scale=1:device=0'] + _gpu_enc(vp) + \
+                  ['-c:a', 'copy', '-movflags', '+faststart', tmp]
+            t0 = time.time()
+            r = subprocess.run(cmd, capture_output=True, timeout=86400,
+                               cwd=r'F:\Topaz Video')
+            if r.returncode != 0 or not os.path.exists(tmp):
+                _log('    Topaz 失败: %s' % (r.stderr or b'')[-200:].decode('utf-8', 'replace'))
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                _tick(i + 1); continue
+            nd = repair.video_duration(tmp) or 0
+            _log('    完成 %.1f 秒 / %.1f MB（%.0f 分钟，%.2f fps）'
+                 % (nd, os.path.getsize(tmp) / 1048576.0,
+                    (time.time() - t0) / 60.0, (dur * fps) / max(1e-6, time.time() - t0)))
+            # Topaz 导出可能头部正常但尾部截断：必须两端解码验证
+            bad = 0
+            for t in (1.0, max(1.0, nd - 10)):
+                try:
+                    rr = subprocess.run([mlib.FFMPEG, '-v', 'error', '-ss', '%.1f' % t,
+                                         '-i', tmp, '-t', '8', '-f', 'null', '-'],
+                                        capture_output=True, timeout=600)
+                    bad += len([x for x in (rr.stderr or b'').decode('utf-8', 'replace').splitlines() if x.strip()])
+                except Exception:
+                    bad += 1
+            if not nd or abs(nd - dur) > max(3.0, dur * 0.01) or bad > 5:
+                _log('    ! 校验失败（时长 %.1f/%.1f，尾端错误行 %d）' % (nd, dur, bad))
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                _tick(i + 1); continue
+            try:
+                bk = _swap_in(vp, tmp)
+                _log('    已替换（回滚点 %s）' % os.path.basename(bk or ''))
+            except Exception as e:
+                _log('    ! 替换失败: %s' % str(e)[:120])
+                _tick(i + 1); continue
+            nw, nh, nfps, nkbps, ndur = _vinfo(vp)
+            try:
+                dbc.execute('UPDATE media SET w=?, h=?, fps=?, vbr=?, size=?, dur=?, '
+                            'ts=? WHERE item_id=?',
+                            (nw, nh, nfps, int(nkbps * 1000), os.path.getsize(vp),
+                             ndur or dur, mlib.now(), it['id']))
+                dbc.execute('DELETE FROM health WHERE item_id=? AND file=?', (it['id'], v))
+                dbc.execute('DELETE FROM deepscan WHERE item_id=? AND file=?', (it['id'], v))
+                dbc.commit()
+            except Exception as e:
+                _log('    库更新失败: %s' % str(e)[:90])
+            ok += 1
+            _tick(i + 1)
+        _end('proteus %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200]); _end('proteus 失败')
+
+
 def _job_adtect(ids=None, mode='headtail'):
     """广告检测：30s 粗扫 + 精修 -> ads_file（逐文件）/ media（最大文件）。
 
@@ -2516,6 +2782,12 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/addel':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_addel, ids, lane='heavy')
+            elif p == '/api/downscale':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_down, ids, (q.get('target') or 'auto'), lane='heavy')
+            elif p == '/api/proteus':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_proteus, ids, lane='heavy')
             elif p == '/api/health':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_health, ids, (q.get('force') or '') in ('1', 'true', 'yes'),
@@ -2806,6 +3078,9 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-adtect" title="抽帧判断广告：头尾模式只扫首尾各 4 分钟并 15 秒取样；全片模式 30 秒全网扫。结果写在列表「属性」列">广告检测</button>
      <button id="a-addel" title="按检测结果切掉广告区间（帧级精确重编码），【替换原片】；原文件留 .orig 回滚点，临时文件自动清理">删除广告</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
+    <select id="downtgt" style="min-width:74px" title="降画质目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
+    <button id="a-down" title="降画质：按设置的码率重编码到目标分辨率（60fps 自动降 30），校验后原子替换">降画质</button>
+    <button id="a-proteus" title="Topaz Proteus(prob-4) 同尺寸修复；速度按输入分辨率，1080p 约 2.3 fps（1 小时片约 8 小时）">画质修复</button>
   </div>
   </div>
   <table><thead><tr>
@@ -3028,6 +3303,16 @@ $('#a-addel').onclick=async()=>{
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('删除选中条目的广告区间？会【替换原片】：先校验时长/抽帧，再原子换名，原文件备份为 .orig 回滚点，临时文件自动清理')))return;
   await post('/api/addel?ids='+ids);};
+$('#a-down').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size)return alert(T('先选条目'));
+  if(!confirm(T('降画质会重编码并【替换原片】（回滚点保留在 backup 目录）。继续？')))return;
+  await post('/api/downscale?'+(ids?'ids='+ids+'&':'')+'target='+($('#downtgt').value));};
+$('#a-proteus').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size)return alert(T('先选条目'));
+  if(!confirm(T('Topaz Proteus 修复非常慢（1080p 约 2.3 fps，1 小时片约 8 小时），且会【替换原片】。继续？')))return;
+  await post('/api/proteus'+(ids?'?ids='+ids:''));};
 $('#a-media').onclick=async()=>{
   const ids=[...SEL].join(',');
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
