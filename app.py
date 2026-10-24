@@ -765,6 +765,101 @@ def _items_by_ids(ids=None):
         'SELECT id,name,path,kind,quality FROM items WHERE present=1 ORDER BY id')]
 
 
+def _ensure_media(dbc):
+    dbc.execute("CREATE TABLE IF NOT EXISTS media("
+                "item_id INTEGER PRIMARY KEY, file TEXT, size INTEGER, dur REAL, "
+                "w INTEGER, h INTEGER, fps REAL, vbr INTEGER, ts TEXT)")
+    dbc.commit()
+
+
+def _media_probe(path):
+    """只读头部：时长/宽高/帧率/视频码率（不读 mdat，快）。"""
+    try:
+        rc, so, se = repair._run(
+            [repair.FFPROBE, '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=width,height,avg_frame_rate,bit_rate:format=duration,bit_rate',
+             '-of', 'json', path], 90)
+        d = json.loads(so or '{}')
+    except Exception:
+        return None
+    st = (d.get('streams') or [{}])[0]
+    fm = d.get('format') or {}
+    try:
+        vbr = int(st.get('bit_rate') or fm.get('bit_rate') or 0)
+    except Exception:
+        vbr = 0
+    try:
+        dur = float(fm.get('duration') or 0)
+    except Exception:
+        dur = 0.0
+    fps = 0.0
+    try:
+        afr = str(st.get('avg_frame_rate') or '')
+        if '/' in afr:
+            a, b = afr.split('/', 1)
+            fps = float(a) / max(1e-6, float(b))
+        elif afr:
+            fps = float(afr)
+    except Exception:
+        fps = 0.0
+    return {'dur': dur, 'w': int(st.get('width') or 0), 'h': int(st.get('height') or 0),
+            'fps': fps, 'vbr': vbr}
+
+
+def _job_media(ids=None, force=False):
+    """媒体信息扫描：主视频的时长/宽高/帧率/码率 -> media 表（heavy 车道）。"""
+    _begin('media', 1)
+    dbc = mlib.db()
+    try:
+        _ensure_media(dbc)
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        n_new = n_skip = n_err = 0
+        _vid_ext = ('.mp4', '.m4v', '.mov')
+        for i, it in enumerate(its, 1):
+            if _stop_req():
+                _log('! 已请求停止')
+                break
+            try:
+                vids = [v for v in _video_files(it['path'])
+                        if os.path.splitext(v)[1].lower() in _vid_ext]
+                if not vids:
+                    _tick(i)
+                    continue
+                f = max(vids, key=lambda x: os.path.getsize(x))
+                base = os.path.basename(f)
+                sz = os.path.getsize(f)
+            except Exception:
+                n_err += 1
+                _tick(i)
+                continue
+            _r = dbc.execute('SELECT size FROM media WHERE item_id=?', (it['id'],)).fetchone()
+            if _r and int(_r['size'] or 0) == sz and not force:
+                n_skip += 1
+                _tick(i)
+                continue
+            m = _media_probe(f)
+            if not m or not m.get('vbr'):
+                n_err += 1
+                _log('  id=%s %s 码率读取失败' % (it['id'], base[:36]))
+                _tick(i)
+                continue
+            dbc.execute('INSERT OR REPLACE INTO media VALUES(?,?,?,?,?,?,?,?,?)',
+                        (it['id'], base, sz, m['dur'], m['w'], m['h'], m['fps'],
+                         m['vbr'], mlib.now()))
+            n_new += 1
+            if n_new % 10 == 0:
+                dbc.commit()
+            _tick(i)
+        dbc.commit()
+        _log('媒体信息：新增/更新 %d，跳过 %d，读取失败 %d' % (n_new, n_skip, n_err))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200])
+    finally:
+        dbc.close()
+        _end('media 完成')
+
+
 def _ensure_health(dbc):
     dbc.execute("CREATE TABLE IF NOT EXISTS health(item_id INTEGER, file TEXT, cls TEXT, reason TEXT,"
                 " tier TEXT, size INTEGER, checked_at TEXT, deep INTEGER DEFAULT 0,"
@@ -1580,22 +1675,39 @@ def items(params):
         args += ['%' + q + '%'] * 4
     ws = ' AND '.join(where)
     _sort = (params.get('sort') or 'id').strip()
-    if _sort not in ('id', 'first_seen', 'last_update'):
-        _sort = 'id'                              # 白名单，防注入
     _desc = (params.get('order') or '').lower() in ('desc', 'descending', 'down', '-1')
-    order_by = '%s %s, id %s' % (_sort, 'DESC' if _desc else 'ASC', 'DESC' if _desc else 'ASC')
+    if _sort == 'bitrate':
+        order_by = 'COALESCE(m.vbr,0) %s, items.id %s' % (
+            'DESC' if _desc else 'ASC', 'DESC' if _desc else 'ASC')
+    else:
+        if _sort not in ('id', 'first_seen', 'last_update'):
+            _sort = 'id'                          # 白名单，防注入
+        order_by = '%s %s, id %s' % (_sort, 'DESC' if _desc else 'ASC',
+                                     'DESC' if _desc else 'ASC')
     total = dbc.execute('SELECT COUNT(*) c FROM items WHERE ' + ws, args).fetchone()['c']
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
-    rows = dbc.execute('SELECT id,name,code,sem_kind,sem_code,sem_manual,status,site,path,'
+    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,status,site,path,'
+                       'm.vbr AS vbr, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT CASE WHEN COUNT(*)=0 THEN 0 "
                        "WHEN SUM(CASE WHEN cls<>'ok' THEN 1 ELSE 0 END)>0 THEN 2 "
                        "WHEN MIN(deep)=1 THEN 3 ELSE 1 END "
                        "FROM health h WHERE h.item_id=items.id) AS hstate "
-                       'FROM items WHERE ' + ws + ' ORDER BY ' + order_by + ' LIMIT ? OFFSET ?',
+                       'FROM items LEFT JOIN media m ON m.item_id=items.id WHERE ' + ws +
+                       ' ORDER BY ' + order_by + ' LIMIT ? OFFSET ?',
                        args + [limit, offset]).fetchall()
     out = [dict(r) for r in rows]
+    for o in out:
+        v = int(o.get('vbr') or 0)
+        o['kbps'] = round(v / 1000.0, 1) if v else 0
+        try:
+            w = int(o.get('mw') or 0)
+            h = int(o.get('mh') or 0)
+            fps = float(o.get('mfps') or 0)
+            o['bpp'] = round(v / (w * h * fps), 4) if (v and w and h and fps) else 0
+        except Exception:
+            o['bpp'] = 0
     # 记录过期检查：文件体积变了（例如刚修过）就不能再算「已检」-> hstate=4
     for d in out:
         if not d.get('hstate'):
@@ -2191,6 +2303,10 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/pipeline':
                 ok = start_job(_job_pipeline, lim, int(q.get('group') or 0),
                                int(q.get('ai_group') or 0))
+            elif p == '/api/media':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_media, ids, (q.get('force') or '') in ('1', 'true', 'yes'),
+                               lane='heavy')
             elif p == '/api/health':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_health, ids, (q.get('force') or '') in ('1', 'true', 'yes'),
@@ -2445,6 +2561,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-coverdel">删除封面图</button>
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
     <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button>
+     <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
   </div>
   </div>
@@ -2452,7 +2569,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th style="width:74px">缩略图</th><th style="width:48px">id</th>
     <th style="width:58px">质量</th><th style="width:66px">来源</th>
     <th style="width:96px">番号</th><th style="width:92px">语义</th>
-    <th>标题 / 元信息</th><th style="width:70px">选择</th>
+    <th style="width:100px">码率</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><span id="page" class="muted"></span><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
@@ -2538,6 +2655,8 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     +'<td class="s-'+(r.source||'')+' ed" data-f="source" data-id="'+r.id+'" data-v="'+(r.source||'')+'" title="双击修改">'+(r.source||'—')+'</td>'
     +'<td class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改">'+esc(r.sem_code||r.code||'')+'</td>'
     +'<td class="ed" data-f="sem_kind" data-id="'+r.id+'" data-v="'+(r.sem_kind||'')+'" title="双击修改">'+(r.sem_kind||'—')+(r.sem_manual?' <span class="muted">(人工)</span>':'')+'</td>'
+    +'<td class="muted">'+(r.kbps?(r.kbps>=1000?(r.kbps/1000).toFixed(1)+' Mbps':r.kbps+' kbps')
+      +'<div class="meta" style="color:'+((r.bpp&&r.bpp<0.04)?'var(--bad)':(r.bpp&&r.bpp<0.08)?'var(--warn)':'var(--ok)')     +'">'+(r.bpp?'bpp '+r.bpp.toFixed(3):'')+'</div>':'—')+'</td>'
     +'<td><a href="#" data-id="'+r.id+'" class="lk" style="color:var(--fg)">'+esc(r.title||r.name)+'</a>'
     +'<div class="meta">简介: '+esc((r.plot||'').slice(0,70))+'</div>'
     +'<div class="meta">标签: <span class="tags">'+esc(tagsOf(r.tags))+'</span></div>'
@@ -2629,6 +2748,10 @@ $('#a-deep').onclick=async()=>{
   if(!confirm(T('深检会逐个读取视频文件找数据洞（NAS 上约 11MB/s）。继续？')))return;
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
   await post('/api/health'+(ids?'?ids='+ids:'')+fq+((fq||ids)?'&':'?')+'deep=1');};
+$('#a-media').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
+  await post('/api/media'+(ids?'?ids='+ids:'')+fq);};
 $('#a-health').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做只读体检（逐文件探测，较慢；不写任何文件），继续？')))return;
