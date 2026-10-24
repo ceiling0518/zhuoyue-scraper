@@ -1969,7 +1969,9 @@ def live_kind(item):
 def nfo_bytes(item):
     def esc(s):
         return str(s or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    title = item['title'] or item['name']
+    # title 为空时不要再拿目录名兜底：之前会把 bydda.cc@STAR395 这种目录名写进 nfo，
+    # 被 Jellyfin 当成正式标题。空就干脆不写 <title>，让 Jellyfin 自己决定。
+    title = (item['title'] or '').strip()
     tags = split_list(item['tags'])
     actors = split_list(item['actors'])
     # a real year only -- '(\d{4})' used to grab '4716' out of an FC2 code
