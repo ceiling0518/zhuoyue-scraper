@@ -1786,7 +1786,7 @@ def items(params):
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
     rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,status,site,path,'
-                       'm.vbr AS vbr, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads,'
+                       'm.vbr AS vbr, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads, m.ads_ts AS ads_ts,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT CASE WHEN COUNT(*)=0 THEN 0 "
                        "WHEN SUM(CASE WHEN cls<>'ok' THEN 1 ELSE 0 END)>0 THEN 2 "
@@ -2590,7 +2590,7 @@ th,td{padding:6px 8px;border-bottom:1px solid #232a36;text-align:left;vertical-a
 th{color:var(--dim);background:#171c25;font-weight:600}
 tr:hover td{background:#1f2531}
 .q-有{color:var(--ok);font-weight:600}.q-有误{color:var(--bad);font-weight:600}.q-无{color:var(--dim)}
-.s-code{color:var(--ok)}.s-Uncen{color:var(--pur)}.s-AI{color:var(--warn)}
+.s-Web{color:var(--ok)}.s-AI{color:var(--warn)}
 .thumb{width:66px;height:38px;object-fit:cover;border-radius:5px;background:#0b0e13}
 tr.sel td{background:#22314a}
 .selbtn{background:#26303f;color:var(--fg);border:1px solid #39455a;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px}
@@ -2647,7 +2647,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="bar">
     <span class="muted">筛选</span>
     <select id="f-quality"><option value="">质量:全部</option><option value="有">有</option><option value="缺">缺</option><option value="有误">有误</option><option value="无">无</option><option value="删除">删除</option></select>
-    <select id="f-source"><option value="">来源:全部</option><option value="code">code</option><option value="Uncen">Uncen</option><option value="AI">AI</option></select>
+    <select id="f-source"><option value="">来源:全部</option><option value="Web">Web</option><option value="AI">AI</option></select>
     <select id="f-kind"><option value="">语义:全部</option><option>coded</option><option>uncensored</option><option>none</option><option>(未跑)</option></select>
     <input id="f-q" placeholder="搜索 名字/标题/番号" style="width:200px">
     <select id="f-sort" title="排序字段"><option value="id">排序:编号</option><option value="first_seen">排序:入库时间</option><option value="last_update">排序:最后编辑</option><option value="bitrate">排序:码率</option></select>
@@ -2666,7 +2666,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
     <button id="a-queue" title="把选中条目加入队列（用右侧 qmode 的模式），之后点「跑队列」才执行">加入队列</button>
     <button id="a-open">打开目录</button>
-<span id="hb-legend" style="margin-left:10px;font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 体检+深检（深） · <b style="color:#1565c0">✓</b> 仅体检（浅） · <b style="color:var(--bad)">⚠</b> 有问题 · <b style="color:var(--muted)">↻</b> 需重测</span>
+<span id="hb-legend" style="margin-left:10px;font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 深检 · <b style="color:#1565c0">✓</b> 浅检 · <b style="color:var(--bad)">⚠</b> 有问题 · <b style="color:var(--muted)">↻</b> 需重测　｜　属性：<b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--muted)">○</b>无 <b style="color:var(--bad)">✕</b>有误 <b style="color:#777">–</b>删除　<b>🌐</b>网站 <b>🤖</b>AI　<b style="color:var(--warn)">📢n</b>广告段数</span>
     <button id="a-flatten" title="把嵌套子目录平铺成 app 可自动刮削的结构：图片 P_、视频 V_，具名目录 序号_名字_；子目录移入 trash 可回滚">整理嵌套目录</button>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
@@ -2685,10 +2685,10 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   </div>
   <table><thead><tr>
-    <th style="width:104px">缩略图</th><th style="width:48px">id</th>
-    <th style="width:58px">质量</th><th style="width:66px">来源</th>
+    <th style="width:104px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
+    <th style="width:92px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数">属性</th>
     <th style="width:80px">番号</th><th style="width:74px">语义</th>
-    <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th style="width:96px" title="检测到的广告区间">广告</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
+    <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><span id="page" class="muted"></span><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
@@ -2738,7 +2738,7 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
   const o=s.ollama||{};$('#ollama').innerHTML=o.up?('ollama ✅ '+(o.model_ok?'':'<span style="color:var(--bad)">模型缺失</span>')):'<span style="color:var(--bad)">ollama ✗ '+(o.error||'')+'</span>';
   const q=s.by_quality||{},sr=s.by_source||{},sm=s.sem||{};
   $('#cards').innerHTML=[['总数',s.total],['质量·有',q['有']||0],['质量·缺',q['缺']||0],['质量·有误',q['有误']||0],['质量·无',q['无']||0],['质量·删除',q['删除']||0],
-     ['来源·code',sr.code||0],['来源·Uncen',sr.Uncen||0],['来源·AI',sr.AI||0],
+     ['来源·Web',(sr.Web||0)+(sr.code||0)+(sr.Uncen||0)],['来源·AI',sr.AI||0],
      ['语义未跑',sm['(未跑)']||0],['档案',s.archive]]
     .map(([k,v])=>'<div class="card"><b>'+v+'</b><span>'+k+'</span></div>').join('');
   $('#qcount').textContent=s.queue||0;}
@@ -2762,6 +2762,25 @@ function loadState(){try{const s=JSON.parse(localStorage.getItem('ms_state')||'{
   if(s.q!==undefined)$('#f-q').value=s.q;
   if(s.sort!==undefined)$('#f-sort').value=s.sort;
   if(s.order!==undefined)$('#f-order').value=s.order;}catch(e){}}
+const QICON={'有':['●','var(--ok)','质量：有（齐全）'],
+  '缺':['◐','var(--warn)','质量：缺（有标题、缺标签）'],
+  '无':['○','var(--muted)','质量：无（没抓到信息）'],
+  '有误':['✕','var(--bad)','质量：有误（抓取失败 / 体检不合格）'],
+  '删除':['–','#777','已标记删除']};
+function qIcon(q){const m=QICON[q]||['·','var(--muted)','质量：未定'];
+  return '<span style="color:'+m[1]+';font-weight:700" title="'+T(m[2])+'">'+m[0]+'</span>';}
+function srcIcon(s){return (s==='AI')
+  ? '<span title="'+T('来源：AI 线')+'">🤖</span>'
+  : '<span title="'+T('来源：网站线')+'">🌐</span>';}
+function fmtT(t){t=Math.max(0,Math.round(t||0));const m=Math.floor(t/60);
+  return m+':'+String(t%60).padStart(2,'0');}
+function kindLabel(k){const M={coded:'Code',uncensored:'Uncen',none:'unknown'};
+  return M[k]||(k||'—');}
+function adIcon(r,short){try{const a=JSON.parse(r.ads||'[]');
+  if(a&&a.length){let t='';for(const x of a){t+=(t?' · ':'')+fmtT(x[0])+'-'+fmtT(x[1]);}
+    return '<span style="color:var(--warn)" title="'+T('广告 ')+a.length+T(' 段：')+t+'">📢'+a.length+'</span>';}
+  if(r.ads_ts){return '<span style="color:var(--muted)" title="'+T('检测过：无广告')+'">📢</span>';}
+  return '';}catch(e){return '';}}
 function resLabel(w,h){const m=Math.min(w,h),M=Math.max(w,h);
   return (m>=2000)?'4K':(m>=1400?'1440p':(m>=1000?'1080p':(m>=700?'720p':M+'×'+m)));}
 async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
@@ -2772,17 +2791,15 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
-    +'<td class="q-'+q+' ed" data-f="quality" data-id="'+r.id+'" data-v="'+(q||'')+'" title="双击修改">'+(q||'无')+'</td>'
-    +'<td class="s-'+(r.source||'')+' ed" data-f="source" data-id="'+r.id+'" data-v="'+(r.source||'')+'" title="双击修改">'+(r.source||'—')+'</td>'
+    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+'</td>'
     +'<td class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改">'+esc(r.sem_code||r.code||'')+'</td>'
-    +'<td class="ed" data-f="sem_kind" data-id="'+r.id+'" data-v="'+(r.sem_kind||'')+'" title="双击修改">'+(r.sem_kind||'—')+(r.sem_manual?' <span class="muted">(人工)</span>':'')+'</td>'
+    +'<td class="ed" data-f="sem_kind" data-id="'+r.id+'" data-v="'+(r.sem_kind||'')+'" title="双击修改">'+kindLabel(r.sem_kind)+(r.sem_manual?' <span class="muted">(人工)</span>':'')+'</td>'
     +'<td class="muted">'+(r.mw&&r.mh
       ?resLabel(r.mw,r.mh)+' <span style="color:var(--fg)">'
        +(r.kbps?(r.kbps>=1000?(r.kbps/1000).toFixed(1)+'Mb':r.kbps+'k'):'')+'</span>'
       +'<div class="meta" style="color:'+((r.bpp&&r.bpp<0.04)?'var(--bad)':(r.bpp&&r.bpp<0.08)?'var(--warn)':'var(--ok)')     +'">'+(r.bpp?'bpp '+r.bpp.toFixed(3):'')+'</div>'
       +'<div class="meta">'+r.mw+'×'+r.mh+' @'+(Math.round((r.mfps||0)*10)/10)+'</div>'
       :'—')+'</td>'
-    +'<td class="muted" style="font-size:12px">'+(r.ads?adsText(r.ads):'')+'</td>'
     +'<td><a href="#" data-id="'+r.id+'" class="lk" style="color:var(--fg)">'+esc(r.title||r.name)+'</a>'
     +'<div class="meta">简介: '+esc((r.plot||'').slice(0,70))+'</div>'
     +'<div class="meta">标签: <span class="tags">'+esc(tagsOf(r.tags))+'</span></div>'
@@ -2944,7 +2961,7 @@ document.addEventListener('dblclick',e=>{
   const td=e.target.closest?e.target.closest('td.ed'):null;
   if(!td)return;
   const f=td.dataset.f,id=td.dataset.id,cur=td.dataset.v||'';
-  const OPTS={quality:['有','缺','有误','无','删除'],source:['code','Uncen','AI'],
+  const OPTS={quality:['有','缺','有误','无','删除'],source:['Web','AI'],
               sem_kind:['coded','uncensored','none']};
   let el;
   if(OPTS[f]){el=document.createElement('select');
@@ -2970,7 +2987,7 @@ document.addEventListener('click',async e=>{
   $('#md-body').innerHTML=
     '<div class="bar">'
     +'<span class="muted">质量</span><select id="ed-quality">'+sel(d.quality||'',['有','缺','有误','无','删除'])+'</select>'
-    +'<span class="muted">来源</span><select id="ed-source">'+sel(d.source||'',['code','Uncen','AI'])+'</select>'
+    +'<span class="muted">来源</span><select id="ed-source">'+sel(d.source||'',['Web','AI'])+'</select>'
     +'<span class="muted">语义</span><select id="ed-sem_kind">'+sel(d.sem_kind||'',['coded','uncensored','none'])+'</select>'
     +'<span class="muted">番号</span><input id="ed-sem_code" value="'+esc(d.sem_code||d.code||'')+'" style="width:180px">'
     +'<button class="primary" id="ed-save" data-id="'+d.id+'">保存</button>'

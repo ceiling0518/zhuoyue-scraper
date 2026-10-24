@@ -226,7 +226,7 @@ def read_nfo(folder):
     else:
         m = re.search(r'<uniqueid type="([^"]*)"', x)
         t = (m.group(1) if m else '').lower()
-        d['source'] = {'javbus': 'code', 'javdb': 'code', 'missav': 'Uncen'}.get(t, 'AI')
+        d['source'] = {'javbus': 'Web', 'javdb': 'Web', 'missav': 'Web'}.get(t, 'AI')
     return d
 
 
@@ -267,7 +267,7 @@ def nfo_state(nfo, raw_name=''):
     if tags:
         return '有', src
     # 没 tag：网站线(code/Uncen)抓到了 -> 缺（默认完成，后期人工/AI 补 tag）
-    return ('缺' if src in ('code', 'Uncen') else '无'), src
+    return ('缺' if src in ('Web', 'code', 'Uncen') else '无'), src
 
 
 def folder_kind(path):
@@ -1981,8 +1981,8 @@ def nfo_bytes(item):
     year = m.group(0) if m else ''
     site = item['site'] if item['site'] in ('javbus', 'javdb') else 'local'
     studio = (item['studio'] or '').strip() if item.get('studio') else ''
-    src = item.get('source') or ('code' if item['site'] in ('javbus', 'javdb')
-                                 else ('Uncen' if item['site'] == 'missav' else 'AI'))
+    src = item.get('source') or ('Web' if item['site'] in ('javbus', 'javdb', 'missav')
+                                 else 'AI')
     series = (live_kind(item) == 'series')
     root = 'tvshow' if series else 'movie'
     L = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', '<%s>' % root,
@@ -2068,7 +2068,7 @@ def apply_result(dbc, iid, d, status):
         return re.sub(r'[^0-9A-Za-z\u3040-\u30ff\u4e00-\u9fff]+', '', s or '')
 
     not_cleaned = bool(_nm) and (_sq(title) == _sq(_nm) or _sq(plot) == _sq(_nm))
-    source = {'javbus': 'code', 'javdb': 'code', 'missav': 'Uncen', 'ai': 'AI'}.get(
+    source = {'javbus': 'Web', 'javdb': 'Web', 'missav': 'Web', 'ai': 'AI'}.get(
         d.get('source'), 'AI')
     if name_is_useless(_nm):
         quality = '缺'          # 名字没信息 -> 只能等 AI 看视频
