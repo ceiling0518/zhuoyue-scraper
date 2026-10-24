@@ -9,6 +9,7 @@ cache/
 thumbs/
 nfo_out/
 models/
+reports/
 app.out.log
 app.err.log
 
