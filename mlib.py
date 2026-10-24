@@ -2344,6 +2344,131 @@ if __name__ == '__main__':
 
 
 # ------------------------------------------------------------------ 广告检测
+# ---------------- 广告快照库 + dhash 快路 ----------------
+AD_LIB_TOL = 6          # 汉明距 <= 6 视为同一张广告卡
+AD_FINE = 0.25          # 边界精定位步长（秒）
+
+
+def _dh9x8(buf):
+    """72 字节 9x8 灰度 -> 64bit 差分哈希"""
+    h = 0
+    for y in range(8):
+        row = buf[y * 9:y * 9 + 9]
+        for x in range(8):
+            h = (h << 1) | (1 if row[x] < row[x + 1] else 0)
+    return h
+
+
+def _ham(a, b):
+    return bin((int(a) ^ int(b)) & 0xFFFFFFFFFFFFFFFF).count('1')
+
+
+def _dhash_jpeg(jpg):
+    """jpeg bytes -> dhash（一次微型 ffmpeg，约 30-60ms）"""
+    if not jpg:
+        return None
+    try:
+        r = subprocess.run([FFMPEG, '-hide_banner', '-v', 'error', '-i', 'pipe:0',
+                            '-vf', 'scale=9:8,format=gray', '-f', 'rawvideo',
+                            '-pix_fmt', 'gray', 'pipe:1'],
+                           input=jpg, capture_output=True, timeout=60)
+        if r.stdout and len(r.stdout) >= 72:
+            return _dh9x8(r.stdout[:72])
+    except Exception:
+        pass
+    return None
+
+
+def _adlib_ready(dbc):
+    dbc.execute('CREATE TABLE IF NOT EXISTS adlib(h INTEGER PRIMARY KEY,'
+                ' hits INTEGER DEFAULT 1, path TEXT, seen_at TEXT)')
+    dbc.commit()
+
+
+def _adlib_best(dbc, h):
+    """库中最接近的哈希 -> (h, 汉明距)；空库 (None, 64)"""
+    if h is None:
+        return None, 64
+    try:
+        _adlib_ready(dbc)
+        rows = dbc.execute('SELECT h FROM adlib').fetchall()
+    except Exception:
+        return None, 64
+    best, bd = None, 64
+    for (x,) in rows:
+        d = _ham(h, x)
+        if d < bd:
+            best, bd = x, d
+    return best, bd
+
+
+def _adlib_add(dbc, h, path=''):
+    """收录一张广告快照；已存在（汉明距 <= 阈值）则只累加 hits"""
+    import datetime as _dt
+    if h is None:
+        return False
+    try:
+        _adlib_ready(dbc)
+        rows = dbc.execute('SELECT h FROM adlib').fetchall()
+        now = _dt.datetime.now().isoformat(' ', 'seconds')
+        for (x,) in rows:
+            if _ham(h, x) <= AD_LIB_TOL:
+                dbc.execute('UPDATE adlib SET hits=hits+1, seen_at=? WHERE h=?', (now, x))
+                dbc.commit()
+                return False
+        dbc.execute('INSERT OR IGNORE INTO adlib(h,hits,path,seen_at) VALUES(?,1,?,?)',
+                    (int(h), os.path.basename(path or ''), now))
+        dbc.commit()
+        return True
+    except Exception:
+        return False
+
+
+def dhash_window(vpath, start, dur, step=AD_FINE, max_frames=8000):
+    """流式解码 [start, start+dur]，按 step 采样 -> [(绝对秒, h), ...]"""
+    cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-nostdin']
+    if start > 0.02:
+        cmd += ['-ss', '%.3f' % start]
+    cmd += ['-i', vpath, '-t', '%.3f' % max(0.1, dur),
+            '-vf', 'fps=1/%g,scale=9:8,format=gray' % step,
+            '-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1']
+    out = []
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    try:
+        k = 0
+        while k < max_frames:
+            buf = p.stdout.read(72)
+            if not buf or len(buf) < 72:
+                break
+            out.append((round(start + k * step, 2), _dh9x8(buf)))
+            k += 1
+    finally:
+        try:
+            p.stdout.close()
+        except Exception:
+            pass
+        try:
+            p.kill()
+        except Exception:
+            pass
+    return out
+
+
+def _edge_dhash(vpath, ref, t_from, t_to, want_start, model=None, log=None):
+    """在窗口内 0.25s 采样，找广告段边界（命中 ref 的首/末时刻）。
+    命中不到（动态广告）则退回模型二分。"""
+    lo, hi = sorted([float(t_from), float(t_to)])
+    lo = max(0.0, lo)
+    win = max(2.0, hi - lo)
+    got = dhash_window(vpath, lo, win, AD_FINE)
+    hit = [t for t, h in got if _ham(h, ref) <= AD_LIB_TOL]
+    if hit:
+        return (min(hit) if want_start else max(hit))
+    if log:
+        log('    dhash 边界未命中，退回模型二分 [%.0f, %.0f]' % (lo, hi))
+    return _refine(vpath, lo if want_start else hi, hi if want_start else lo, model)
+
+
 AD_PROMPT = (
     '下面是同一个视频在不同时间点截取的 {N} 张画面（按顺序编号 1..{N}）。\n'
     '请判断每张画面是否属于"广告/片头/片尾/宣传卡片/与正片无关的页面"，'
@@ -2427,7 +2552,10 @@ def _refine(vpath, t_ad, t_nonad, model=None):
 
 
 def detect_ads(vpath, dur=None, model=None, log=None):
-    """广告检测：预检 -> 30s 网格抽检 -> 二分细化边界到 1s。
+    """广告检测 v2：30s 网格 + 广告快照库(dhash) + 0.25s dhash 边界精定位。
+    - 网格帧先算 dhash 查快照库，命中直接判广告（0 次模型调用）
+    - 未命中才送模型（8 张/批）
+    - 边界用 dhash 精定位，不再逐次调模型
     返回 [[t0,t1], ...]（秒）。"""
     dur = dur or video_duration(vpath)
     if not dur or dur < 20:
@@ -2435,60 +2563,102 @@ def detect_ads(vpath, dur=None, model=None, log=None):
 
     def _log(m):
         if log:
-            log(m)
+            try:
+                log(m)
+            except Exception:
+                pass
 
-    # 1) 预检：随机一段 + 尾部（密集，抓尾部短片尾广告）
+    dbc = db()
+
+    # 1) 预检：随机 30s 段 3 帧 + 尾部 3 帧
     import random as _rnd
     r0 = _rnd.uniform(0.05, 0.8) * dur
-    probes = [r0, r0 + 10, r0 + 20, max(dur - 10, 0), max(dur - 5, 0), max(dur - 1, 0)]
-    probes = sorted(set(round(p, 1) for p in probes if 0 <= p < dur))
+    # 固定采片头（头部广告最常见）+ 中段随机 + 尾部
+    probes = sorted(set(round(p, 1) for p in
+                        [0.5, 2.0, r0, r0 + 10,
+                         max(dur - 8, 0), max(dur - 3, 0), max(dur - 1, 0)]
+                        if 0 <= p < dur))
     pf = ads_batch(vpath, probes, model=model, log=_log)
     _log('  预检 %d 张 -> 广告 %d 张' % (len(pf), sum(pf)))
     if not any(pf):
         return []
 
-    # 2) 30s 网格（t=0,30,60…）+ 末尾一帧
+    # 2) 30s 网格 + 末端；每点取帧算 dhash，先查快照库
     times = [float(t) for t in range(0, int(dur), 30)]
-    if dur - 0.5 not in times:
-        times.append(round(dur - 1, 1))
-    flags = ads_batch(vpath, times, model=model, log=_log)
-    _log('  网格 %d 点 -> 广告 %d 点' % (len(flags), sum(flags)))
-
-    # 3) 连续广告点 -> 粗区间，并记录相邻的非广告采样点用于细化
-    segs = []
-    cur = None
-    for t, f in zip(times, flags):
-        if f:
-            if cur is None:
-                cur = [t, t]
-            else:
-                cur[1] = t
+    tail = [round(dur - 1, 1)]
+    for t in (dur - 120, dur - 60, dur - 30):
+        if t > 1 and t < dur:
+            tail.append(round(t, 1))
+    times = sorted(set(times + tail))
+    hmap, ask = {}, []
+    for t in times:
+        h = _dhash_jpeg(frame_at(vpath, t))
+        hmap[t] = h
+        _, d = _adlib_best(dbc, h)
+        if d <= AD_LIB_TOL:
+            hmap[t] = ('LIB', h)
         else:
-            if cur is not None:
-                segs.append((cur[0], cur[1], t))     # (首广告点, 末广告点, 后一个非广告点)
-                cur = None
-    if cur is not None:
-        segs.append((cur[0], cur[1], None))
-    if not segs:
+            ask.append(t)
+    lib_n = len(times) - len(ask)
+    _log('  网格 %d 点：库命中 %d，需模型 %d' % (len(times), lib_n, len(ask)))
+
+    flags = {}
+    for t in times:
+        v = hmap.get(t)
+        flags[t] = True if (isinstance(v, tuple) and v[0] == 'LIB') else False
+    if ask:
+        got = ads_batch(vpath, ask, model=model, log=_log)
+        for t, f in zip(ask, got):
+            flags[t] = bool(f)
+            if f:
+                h = hmap.get(t)
+                if isinstance(h, tuple):
+                    h = h[1]
+                _adlib_add(dbc, h, vpath)
+    _log('  网格 %d 点 -> 广告 %d 点' % (len(times), sum(1 for t in times if flags[t])))
+    adt = [t for t in times if flags[t]]
+    if not adt:
         return []
 
-    # 4) 细化：起点向前找、终点向后找，二分到 1s
+    # 3) 连续广告点成段（间隔 <= 31s 视为同段）
+    segs, cur = [], [adt[0], adt[0]]
+    for t in adt[1:]:
+        if t - cur[1] <= 31:
+            cur[1] = t
+        else:
+            segs.append(cur)
+            cur = [t, t]
+    segs.append(cur)
+
+    # 4) 边界：0.25s dhash 精定位（零模型调用）
+    def _ref_of(t):
+        for tt in (t, min(times, key=lambda x: abs(x - t))):
+            v = hmap.get(tt)
+            if isinstance(v, tuple):
+                return v[1]
+            if v is not None:
+                return v
+        return None
+
     out = []
-    for a, b, nxt in segs:
-        if a <= 0:
+    for a, b in segs:
+        ref = _ref_of(a) or _ref_of(b)
+        if ref is None:
+            out.append([round(a, 1), round(b, 1)])
+            continue
+        if a <= 1:
             t0 = 0.0
         else:
-            t0 = _refine(vpath, a, max(0.0, a - 30), model)
-        if b >= dur - 1:
+            t0 = _edge_dhash(vpath, ref, max(0.0, a - 32), a + 1, True, model, _log)
+        if b >= dur - 40:
             t1 = float(dur)
-        elif nxt is None:
-            t1 = float(min(dur, b + 30))
         else:
-            t1 = _refine(vpath, b, nxt, model)
+            t1 = _edge_dhash(vpath, ref, b - 1, min(dur, b + 32), False, model, _log)
+        if t1 - t0 < 0.8:
+            t0, t1 = float(a), float(b)
         out.append([round(t0, 1), round(t1, 1)])
-        _log('  区间 %s -> 精修 [%.1f, %.1f]' % ([a, b], t0, t1))
+        _log('  区间 粗[%.0f-%.0f] -> 精[%.1f-%.1f]' % (a, b, t0, t1))
     return out
-
 
 def cut_ads(vpath, segs, out=None, log=None):
     """删掉广告区间（帧级精确），重新编码输出 <name>.adfree.mp4。返回输出路径。"""
