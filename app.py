@@ -788,13 +788,19 @@ def _deep_save(dbc, item_id, base, sz, st):
         pass
 
 
-def _deep_scan_file(dbc, item_id, f, base, sz, log=None, chunk=None):
+def _deep_scan_file(dbc, item_id, f, base, sz, log=None, chunk=None, progress=None):
     """断点续扫：每轮扫 chunk 字节并落库；被停止/中断后下次从 off 继续。"""
     st = _deep_state(dbc, item_id, base, sz)
     if st['done']:
         return st
     chunk = chunk or repair.DEEP_CHUNK
     guard = 0
+    _last10 = -1
+    if progress:
+        try:
+            progress(int(st['off'] or 0), sz)
+        except Exception:
+            pass
     while not st['done'] and guard < 500:
         guard += 1
         r = repair.scan_holes_chunk(f, st['off'], chunk)
@@ -808,6 +814,18 @@ def _deep_scan_file(dbc, item_id, f, base, sz, log=None, chunk=None):
         st['off'] = r['next_off']
         st['done'] = bool(r['done'])
         _deep_save(dbc, item_id, base, sz, st)
+        if progress:
+            try:
+                progress(int(st['off'] or 0), sz)
+            except Exception:
+                pass
+        if log and sz >= 200 * 1024 * 1024:
+            _pct = int(100.0 * (st['off'] or 0) / max(1, sz))
+            if _pct // 10 != _last10 // 10:
+                _last10 = _pct
+                log('  深检 %s：%.2f / %.2f GB（%d%%）'
+                    % (base[:34], (st['off'] or 0) / 1073741824.0,
+                       sz / 1073741824.0, _pct))
         if _stop_req():
             if log:
                 log('  ! 已请求停止：id=%s %s（深检进度已存，下次从这里续扫）'
@@ -818,13 +836,13 @@ def _deep_scan_file(dbc, item_id, f, base, sz, log=None, chunk=None):
     return st
 
 
-def _deep_plan(dbc, item_id, f, base, log=None):
+def _deep_plan(dbc, item_id, f, base, log=None, progress=None):
     """深检结论：洞（映射到时间）-> gap/reencode；无洞 -> 抽窗解码 -> reencode/ok。"""
     try:
         sz = os.path.getsize(f)
     except Exception:
         return {'cls': 'error', 'reason': 'stat 失败', 'tier': 'none'}
-    st = _deep_scan_file(dbc, item_id, f, base, sz, log=log)
+    st = _deep_scan_file(dbc, item_id, f, base, sz, log=log, progress=progress)
     if st.get('error'):
         return {'cls': 'error', 'reason': st['error'], 'tier': 'none'}
     if not st['done']:
@@ -898,9 +916,30 @@ def _job_health(ids=None, force=False, deep=False):
         bad, files, checked, skipped = {}, 0, 0, 0
         fixable, heavy, dead = set(), set(), set()
         lists = {'index': [], 'gap': [], 'reencode': [], 'dead': [], 'novideo': [], 'partial': []}
+        _bscan, _bskip = {}, [0]          # 深检进度：当前文件已扫字节 / 已跳过字节
         if deep:
             _log('深检：逐文件扫 mdat 找洞（NAS ~11MB/s，大文件较慢）')
-        _tick(0, len(items))
+            # 进度按【字节】走：先汇总待扫总量，大文件也能看到进度在动
+            _btot = 0
+            for _it0 in items:
+                try:
+                    for _f0 in _video_files(_it0['path']):
+                        try:
+                            _btot += os.path.getsize(_f0)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            _tick(0, max(1, _btot))
+        else:
+            _tick(0, len(items))
+
+        def _bprog(_b, _off):
+            """深检单文件进度（多线程回调）：累加已扫字节 -> 推进进度条。"""
+            with _LOCK:
+                _bscan[_b] = int(_off or 0)
+                _cur = _bskip[0] + sum(_bscan.values())
+            _tick(_cur)
         for n, it in enumerate(items, 1):
             if _stop_req():
                 _log('! 已请求停止')
@@ -939,6 +978,9 @@ def _job_health(ids=None, force=False, deep=False):
                     cls = k['cls']
                     tier = k.get('tier') or ''
                     skipped += 1
+                    if deep:                       # 跳过的文件也算已完成进度
+                        _bskip[0] += sz
+                        _tick(_bskip[0] + sum(_bscan.values()))
                     if cls not in ('ok',):
                         _log('  id=%s %s [%s]（跳过已测，沿用记录）' % (it['id'], base[:42], cls))
                     if cls not in ('ok',):
@@ -977,7 +1019,8 @@ def _job_health(ids=None, force=False, deep=False):
                         _i2, _f2, _b2, _s2 = _t
                         _d2 = mlib.db()
                         try:
-                            _r2 = _deep_plan(_d2, it['id'], _f2, _b2, log=_log)
+                            _r2 = _deep_plan(_d2, it['id'], _f2, _b2, log=_log,
+                                             progress=_bprog)
                         except Exception as e:
                             _r2 = {'cls': 'error', 'tier': 'none',
                                    'reason': '深检异常 %s: %s'
@@ -999,7 +1042,8 @@ def _job_health(ids=None, force=False, deep=False):
                     p = _pp.get(base)
                     if p is None:
                         try:
-                            p = _deep_plan(dbc, it['id'], f, base, log=_log)
+                            p = _deep_plan(dbc, it['id'], f, base, log=_log,
+                                           progress=_bprog)
                         except Exception as e:
                             p = {'cls': 'error', 'tier': 'none',
                                  'reason': '深检异常 %s: %s'
@@ -1043,7 +1087,8 @@ def _job_health(ids=None, force=False, deep=False):
                     dead.add(it['id']); lists['dead'].append(_tag + ' [%s]' % cls)
             if n % 20 == 0:
                 dbc.commit()
-            _tick(n)
+            if not deep:
+                _tick(n)                     # 深检按字节推进，别用条目数覆盖
         dbc.commit()
         _log('%s完成：%d 条 / %d 个视频（新测 %d、跳过已测 %d）；可修 %d / 需重编码 %d / 不可修 %d'
              % ('深检' if deep else '体检', len(items), files, checked, skipped,
