@@ -2962,9 +2962,16 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
             return {'ok': False, 'error': '文件被占用（重试 5 次）: %s' % str(err)[:90],
                     'stage': tmp}
         ok = True
-        _log('    已替换原片（回滚点 %s）' % os.path.basename(orig))
-        return {'ok': True, 'path': vpath, 'orig_backup': orig,
-                'undo': {'action': 'restore', 'path': vpath, 'backup': orig},
+        try:
+            import repair as _rp
+            _bk = _rp.stash_orig(orig, _log)
+        except Exception:
+            _bk = orig
+        _log('    已替换原片（回滚点 %s）'
+             % (os.path.basename(_bk) if _bk else '未保留（0 天）'))
+        return {'ok': True, 'path': vpath, 'orig_backup': _bk,
+                'undo': ({'action': 'restore', 'path': vpath, 'backup': _bk}
+                         if _bk else None),
                 'old_dur': dur, 'new_dur': new_dur, 'old_size': old_size,
                 'new_size': new_size, 'secs': round(_t.time() - t0, 1)}
     finally:

@@ -32,6 +32,92 @@ import time
 # app 可设置停止钩子：repair.STOP_HOOK = lambda: bool
 STOP_HOOK = None
 
+# ---------------- 回滚点（.orig）统一存放策略 ----------------
+# 不再把 .orig 留在媒体库里：替换成功后搬到 BAK_DIR，超过 BAK_DAYS 天自动删除；
+# BAK_DAYS=0 表示不留回滚点（替换完直接删掉 .orig）。
+BAK_DIR = os.environ.get('MS_BACKUP') or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'backup')
+BAK_DAYS = 7
+
+
+def set_backup_policy(d=None, days=None):
+    """由 app 在启动/保存设置时注入（配置存在 mlib 的 cfg 表里）。"""
+    global BAK_DIR, BAK_DAYS
+    if d:
+        BAK_DIR = d
+    if days is not None:
+        try:
+            BAK_DAYS = max(0, int(days))
+        except Exception:
+            BAK_DAYS = 7
+    try:
+        os.makedirs(BAK_DIR, exist_ok=True)
+    except Exception:
+        pass
+    return {'dir': BAK_DIR, 'days': BAK_DAYS}
+
+
+def stash_orig(p, log=None):
+    """把同目录的 .orig 搬到备份目录（带时间戳）。BAK_DAYS=0 时直接删除。
+
+    返回备份文件的新路径；已删除或不保留时返回 None；搬运失败返回原路径。
+    """
+    if not p or not os.path.exists(p):
+        return None
+    say = log or (lambda m: None)
+    if BAK_DAYS <= 0:
+        try:
+            os.remove(p)
+            say('    回滚点已按设置删除（保留 0 天）')
+        except Exception:
+            pass
+        return None
+    try:
+        os.makedirs(BAK_DIR, exist_ok=True)
+        base = os.path.basename(p)
+        if base.endswith('.orig'):
+            base = base[:-5]
+        ts = time.strftime('%Y%m%d-%H%M%S')
+        dst = os.path.join(BAK_DIR, '%s.%s.orig' % (base, ts))
+        k = 1
+        while os.path.exists(dst):
+            dst = os.path.join(BAK_DIR, '%s.%s-%d.orig' % (base, ts, k))
+            k += 1
+        shutil.move(p, dst)
+        if os.path.exists(dst) and not os.path.exists(p):
+            say('    回滚点已移出媒体库：%s（保留 %d 天）'
+                % (os.path.basename(dst), BAK_DAYS))
+            return dst
+        return p
+    except Exception as e:
+        say('    ! 回滚点搬运失败（仍留在原目录）: %s' % str(e)[:90])
+        return p
+
+
+def purge_backups(log=None):
+    """清理超过 BAK_DAYS 天的回滚点；BAK_DAYS=0 时清空。返回删除个数。"""
+    say = log or (lambda m: None)
+    n = 0
+    try:
+        if not os.path.isdir(BAK_DIR):
+            return 0
+        now = time.time()
+        for f in os.listdir(BAK_DIR):
+            p = os.path.join(BAK_DIR, f)
+            if not os.path.isfile(p):
+                continue
+            try:
+                if BAK_DAYS <= 0 or now - os.path.getmtime(p) > BAK_DAYS * 86400:
+                    os.remove(p)
+                    n += 1
+            except Exception:
+                pass
+        if n:
+            say('    已清理过期回滚点 %d 个' % n)
+    except Exception:
+        pass
+    return n
+
 
 def _stop_req():
     """是否已请求停止（由 app 通过 STOP_HOOK 注入；默认不停止）。"""
@@ -997,8 +1083,9 @@ def tolerant_reencode(path, out_dir=None, log=None, tick=None):
         os.remove(stage)
     except Exception:
         pass
-    return {'ok': True, 'kind': 'reencode', 'path': path, 'orig_backup': orig,
-            'undo': {'action': 'restore', 'path': path, 'backup': orig},
+    _bk = stash_orig(orig, log)
+    return {'ok': True, 'kind': 'reencode', 'path': path, 'orig_backup': _bk,
+            'undo': ({'action': 'restore', 'path': path, 'backup': _bk} if _bk else None),
             'secs': round(time.time() - t0, 1)}
 
 
@@ -1060,8 +1147,9 @@ def remux_copy(path, log=None, tick=None):
     except Exception:
         pass
     say('  已原地替换（回滚点 %s，耗时 %.0fs）' % (os.path.basename(orig), time.time() - t0))
-    return {'ok': True, 'kind': 'remux', 'path': path, 'orig_backup': orig,
-            'undo': {'action': 'restore', 'path': path, 'backup': orig},
+    _bk = stash_orig(orig, log)
+    return {'ok': True, 'kind': 'remux', 'path': path, 'orig_backup': _bk,
+            'undo': ({'action': 'restore', 'path': path, 'backup': _bk} if _bk else None),
             'secs': round(time.time() - t0, 1)}
 
 
@@ -1602,10 +1690,11 @@ def splice_repair(path, windows, log=None, tick=None, dry=False, _retry=False):
             os.remove(stage)
         except Exception:
             pass
-        return {'ok': True, 'kind': 'splice', 'path': path, 'orig_backup': orig,
+        _bk = stash_orig(orig, log)
+        return {'ok': True, 'kind': 'splice', 'path': path, 'orig_backup': _bk,
                 'windows': merged, 'segsum': round(segsum, 3),
                 'kept_ratio': kept / max(1e-6, dur),
-                'undo': {'action': 'restore', 'path': path, 'backup': orig},
+                'undo': ({'action': 'restore', 'path': path, 'backup': _bk} if _bk else None),
                 'secs': round(time.time() - t0, 1)}
     finally:
         try:
@@ -1895,8 +1984,9 @@ def interp_gap(path, gaps=None, log=None, tick=None, mi_mode='mci', verify=True,
     except Exception:
         pass
     say('  已原地替换（回滚点 %s，耗时 %.0fs）' % (os.path.basename(orig), time.time() - t_start))
-    return {'ok': True, 'kind': 'gap', 'path': path, 'orig_backup': orig, 'gaps': len(gs),
-            'undo': {'action': 'restore', 'path': path, 'backup': orig},
+    _bk = stash_orig(orig, log)
+    return {'ok': True, 'kind': 'gap', 'path': path, 'orig_backup': _bk, 'gaps': len(gs),
+            'undo': ({'action': 'restore', 'path': path, 'backup': _bk} if _bk else None),
             'secs': round(time.time() - t_start, 1)}
 
 
