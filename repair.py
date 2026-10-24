@@ -74,11 +74,15 @@ def _fthreads():
 
 
 def _deep_workers():
-    """深检并发流数。**实测结论：并发无收益** —— NAS 总带宽约 8MB/s：
-    单流 7.0~7.5MB/s，4 流并发时每流降到约 3.9MB/s（合计不变）。
-    瓶颈在存储/网络而不是 CPU，所以默认 1（顺序扫）；换存储后再用 MS_DEEP_WORKERS 实测。
-    （注：曾误测到“2 流 96MB/s”，复查发现是系统缓存假象。）"""
-    return max(1, min(8, DEEP_WORKERS)) if DEEP_WORKERS else 1
+    """深检并发流数。实测（2026-10-24，\\CeilingNAS）：
+    · 原始读：单流 9.05MB/s，2 流合计 15.55MB/s（1.7x）；3 流 14.2、4 流 9.9（无收益）
+    · 端到端深检：857MB / 20 个小文件，2 流 154s vs 1 流 169s（约 10%）
+      小文件的成本大头是 ffprobe + moov 解析 + 抽窗解码，纯读占比不高，并发收益被稀释
+    （曾误测到「2 流 96MB/s」，复查是系统缓存假象。）
+    默认 2 流；MS_DEEP_WORKERS 可覆盖。"""
+    if DEEP_WORKERS:
+        return max(1, min(8, DEEP_WORKERS))
+    return 2
 
 
 def _lines(p):

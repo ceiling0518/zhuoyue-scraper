@@ -904,6 +904,8 @@ def _job_health(ids=None, force=False, deep=False):
             if not force:
                 for r in dbc.execute('SELECT file,cls,tier,size,deep FROM health WHERE item_id=?', (it['id'],)):
                     known[r['file']] = dict(r)
+            # ---- 先分拣：可跳过 / 待检测 ----
+            to_scan = []
             for _fi, f in enumerate(vids, 1):
                 base = os.path.basename(f)
                 files += 1
@@ -922,43 +924,89 @@ def _job_health(ids=None, force=False, deep=False):
                     usable = (k and k.get('cls') and int(k.get('size') or 0) == sz
                               and int(k.get('deep') or 0) >= 0)
                 if usable and not force:
-                    cls, tier = k['cls'], k.get('tier') or ''
+                    cls = k['cls']
+                    tier = k.get('tier') or ''
                     skipped += 1
                     if cls not in ('ok',):
                         _log('  id=%s %s [%s]（跳过已测，沿用记录）' % (it['id'], base[:42], cls))
+                    if cls not in ('ok',):
+                        bad.setdefault(cls, []).append(it['id'])
+                    _tag = 'id=%d %s' % (it['id'], base)
+                    if tier == 'index':
+                        fixable.add(it['id']); lists['index'].append(_tag)
+                    elif tier == 'gap':
+                        fixable.add(it['id']); lists['gap'].append(_tag)
+                    elif tier == 'reencode':
+                        heavy.add(it['id']); lists['reencode'].append(_tag)
+                    elif cls == 'deep-partial':
+                        lists['partial'].append(_tag + '（深检未完成，可续扫）')
+                    elif cls not in ('ok',):
+                        dead.add(it['id']); lists['dead'].append(_tag + ' [%s]' % cls)
                 else:
-                    if deep:
+                    to_scan.append((_fi, f, base, sz))
+
+            # ---- 深检：多文件并发（NAS 实测 2 流 ~1.7x；每流独立 DB 连接）----
+            _pp = {}
+            if deep and len(to_scan) > 1:
+                _w = repair._deep_workers()
+                if _w > 1:
+                    from concurrent.futures import ThreadPoolExecutor
+                    _log('  深检并发 %d 流（本条目待检 %d 个文件）' % (_w, len(to_scan)))
+
+                    def _one(_t):
+                        _i2, _f2, _b2, _s2 = _t
+                        _d2 = mlib.db()
+                        try:
+                            _r2 = _deep_plan(_d2, it['id'], _f2, _b2, log=_log)
+                        except Exception as e:
+                            _r2 = {'cls': 'error', 'tier': 'none',
+                                   'reason': '深检异常 %s: %s'
+                                             % (type(e).__name__, str(e)[:60])}
+                        finally:
+                            try:
+                                _d2.close()
+                            except Exception:
+                                pass
+                        return _b2, _r2
+
+                    with ThreadPoolExecutor(max_workers=_w) as _ex:
+                        for _b3, _r3 in _ex.map(_one, to_scan):
+                            _pp[_b3] = _r3
+
+            # ---- 逐个文件落库 / 记日志 ----
+            for _fi, f, base, sz in to_scan:
+                if deep:
+                    p = _pp.get(base)
+                    if p is None:
                         try:
                             p = _deep_plan(dbc, it['id'], f, base, log=_log)
                         except Exception as e:
-                            # 单个文件异常不该终结整个深检作业
-                            # （否则表现就是「第一条检完就自动结束」）
                             p = {'cls': 'error', 'tier': 'none',
                                  'reason': '深检异常 %s: %s'
                                            % (type(e).__name__, str(e)[:60])}
-                    else:
-                        try:
-                            p = repair.plan_repair(f)
-                        except Exception as e:
-                            p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
-                    cls, tier = p.get('cls'), p.get('tier') or ''
-                    _old = known.get(base) or {}
-                    _same = int(_old.get('size') or 0) == sz
-                    if (not deep) and int(_old.get('deep') or 0) and _same:
-                        skipped += 1
-                        _log('  id=%s %s 保留深检记录（浅检不覆盖；文件未变）' % (it['id'], base[:40]))
-                    else:
-                        dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)',
-                                    (it['id'], base, cls,
-                                     (p.get('reason') or ' / '.join(p.get('plan') or []))[:170],
-                                     tier, sz, mlib.now(), 1 if deep else 0))
-                    checked += 1
-                    if cls not in ('ok',):
-                        _log('  id=%s %s [%s] %s' % (it['id'], base[:42], cls, (p.get('reason') or '')[:58]))
-                    elif len(vids) > 1:
-                        # 多视频条目：逐个文件都报一行，避免看起来「只检了第一个」
-                        _log('  id=%s %s [ok] 深检 %d/%d'
-                             % (it['id'], base[:42], _fi, len(vids)))
+                else:
+                    try:
+                        p = repair.plan_repair(f)
+                    except Exception as e:
+                        p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
+                cls, tier = p.get('cls'), p.get('tier') or ''
+                _old = known.get(base) or {}
+                _same = int(_old.get('size') or 0) == sz
+                if (not deep) and int(_old.get('deep') or 0) and _same:
+                    skipped += 1
+                    _log('  id=%s %s 保留深检记录（浅检不覆盖；文件未变）' % (it['id'], base[:40]))
+                else:
+                    dbc.execute('INSERT OR REPLACE INTO health VALUES(?,?,?,?,?,?,?,?)',
+                                (it['id'], base, cls,
+                                 (p.get('reason') or ' / '.join(p.get('plan') or []))[:170],
+                                 tier, sz, mlib.now(), 1 if deep else 0))
+                checked += 1
+                if cls not in ('ok',):
+                    _log('  id=%s %s [%s] %s' % (it['id'], base[:42], cls, (p.get('reason') or '')[:58]))
+                elif len(vids) > 1:
+                    # 多视频条目：逐个文件都报一行，避免看起来「只检了第一个」
+                    _log('  id=%s %s [ok] 深检 %d/%d'
+                         % (it['id'], base[:42], _fi, len(vids)))
                 if cls not in ('ok',):
                     bad.setdefault(cls, []).append(it['id'])
                 _tag = 'id=%d %s' % (it['id'], base)
