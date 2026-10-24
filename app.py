@@ -2533,7 +2533,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="f-source"><option value="">来源:全部</option><option value="code">code</option><option value="Uncen">Uncen</option><option value="AI">AI</option></select>
     <select id="f-kind"><option value="">语义:全部</option><option>coded</option><option>uncensored</option><option>none</option><option>(未跑)</option></select>
     <input id="f-q" placeholder="搜索 名字/标题/番号" style="width:200px">
-    <select id="f-sort" title="排序字段"><option value="id">排序:编号</option><option value="first_seen">排序:入库时间</option><option value="last_update">排序:最后编辑</option></select>
+    <select id="f-sort" title="排序字段"><option value="id">排序:编号</option><option value="first_seen">排序:入库时间</option><option value="last_update">排序:最后编辑</option><option value="bitrate">排序:码率</option></select>
     <select id="f-order" title="正序 / 倒序"><option value="asc">正序 ↑</option><option value="desc">倒序 ↓</option></select>
     <button id="b-refresh">刷新</button>
     <button id="b-archive">档案</button>
