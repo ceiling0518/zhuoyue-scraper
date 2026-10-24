@@ -1053,7 +1053,7 @@ def _job_adtect(ids=None):
 
 
 def _job_addel(ids=None):
-    """删除广告：按 media.ads 切掉广告区间，输出 <原名>.adfree.mp4（保留原片）。"""
+    """删除广告：按 media.ads 切掉广告区间，校验后原子替换原片（回滚点 .orig，临时文件清理）。"""
     _begin('addel', 1)
     dbc = mlib.db()
     try:
@@ -1081,10 +1081,27 @@ def _job_addel(ids=None):
                 continue
             vp = os.path.join(it['path'], v)
             _log('[%d/%d] id=%s 删除 %d 段广告' % (i + 1, len(its), it['id'], len(segs)))
-            out = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
-            if out:
+            r = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
+            if r.get('ok'):
                 ok += 1
-                _log('    完成: %s' % os.path.basename(out))
+                _log('    完成: 时长 %.1f -> %.1f 秒，体积 %.1f -> %.1f MB（回滚点 %s）'
+                     % (r.get('old_dur') or 0, r.get('new_dur') or 0,
+                        (r.get('old_size') or 0) / 1048576.0,
+                        (r.get('new_size') or 0) / 1048576.0,
+                        os.path.basename(r.get('orig_backup') or '')))
+                try:
+                    dbc.execute('UPDATE media SET ads=?, dur=?, size=? WHERE item_id=?',
+                                ('[]', r.get('new_dur') or 0,
+                                 r.get('new_size') or 0, it['id']))
+                    dbc.execute('DELETE FROM health WHERE item_id=? AND file=?',
+                                (it['id'], v))
+                    dbc.execute('DELETE FROM deepscan WHERE item_id=? AND file=?',
+                                (it['id'], v))
+                    dbc.commit()
+                except Exception as _e:
+                    _log('    库更新失败: %s' % str(_e)[:90])
+            else:
+                _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
             _tick(i + 1)
         _end('addel %d/%d' % (ok, len(its)))
     except Exception:
@@ -2650,7 +2667,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button>
      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
      <button id="a-adtect" title="抽帧判断广告/片头片尾：先随机 30s + 末尾 30s 预检，有广告再按 30s 粗扫，最后 10/5/1s 精修边界；结果显示在列表「广告」列">广告检测</button>
-     <button id="a-addel" title="按检测结果删除广告区间（帧级精确重编码），输出 <原名>.adfree.mp4，保留原片">删除广告</button>
+     <button id="a-addel" title="按检测结果切掉广告区间（帧级精确重编码），【替换原片】；原文件留 .orig 回滚点，临时文件自动清理">删除广告</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
   </div>
   </div>
@@ -2855,7 +2872,7 @@ $('#a-adtect').onclick=async()=>{
 $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
-  if(!confirm(T('删除选中条目的广告区间？（会输出 <原名>.adfree.mp4，保留原片，帧级精确重编码）')))return;
+  if(!confirm(T('删除选中条目的广告区间？会【替换原片】：先校验时长/抽帧，再原子换名，原文件备份为 .orig 回滚点，临时文件自动清理')))return;
   await post('/api/addel?ids='+ids);};
 $('#a-media').onclick=async()=>{
   const ids=[...SEL].join(',');

@@ -2660,37 +2660,165 @@ def detect_ads(vpath, dur=None, model=None, log=None):
         _log('  区间 粗[%.0f-%.0f] -> 精[%.1f-%.1f]' % (a, b, t0, t1))
     return out
 
-def cut_ads(vpath, segs, out=None, log=None):
-    """删掉广告区间（帧级精确），重新编码输出 <name>.adfree.mp4。返回输出路径。"""
+def _has_audio(path):
+    """是否有音频轨。"""
+    try:
+        r = subprocess.run([FFPROBE, '-v', 'error', '-select_streams', 'a:0',
+                            '-show_entries', 'stream=index', '-of', 'csv=p=0', path],
+                           capture_output=True, timeout=90)
+        return bool((r.stdout or b'').strip())
+    except Exception:
+        return False
+
+
+def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
+    """按广告区间切掉、其余内容原样保留（帧级精确重编码）。
+
+    replace=True（默认）—— 与 repair 完全同一套替换逻辑：
+        编码到同目录临时文件 -> 校验时长 -> path 换名 .orig，临时文件换名回 path
+                                 -> 删除临时文件（失败也删） -> 返回回滚点
+    replace=False —— 老行为：只产出 <name>.adfree.mp4，原片不动。
+
+    返回 dict：{'ok','path','orig_backup','undo','old_dur','new_dur',
+                'old_size','new_size','secs'}；失败 {'ok':False,'error':...}
+    """
+    import time as _t
+
+    def _log(m):
+        if log:
+            try:
+                log(m)
+            except Exception:
+                pass
+
     if not segs:
-        return None
+        return {'ok': False, 'error': '没有广告区间'}
+
+    t0 = _t.time()
     dur = video_duration(vpath)
+    if not dur or dur < 1:
+        return {'ok': False, 'error': '读不到源时长'}
+
     keep, cur = [], 0.0
     for a, b in sorted(segs):
-        a = max(cur, min(a, dur)); b = max(a, min(b, dur))
+        a = max(cur, min(float(a), dur))
+        b = max(a, min(float(b), dur))
         if a - cur > 0.15:
             keep.append((cur, a))
         cur = max(cur, b)
     if dur - cur > 0.15:
         keep.append((cur, dur))
     if not keep:
-        return None
-    out = out or (os.path.splitext(vpath)[0] + '.adfree.mp4')
+        return {'ok': False, 'error': '全部时长都在广告区间内，拒绝清空'}
+
+    gone = sum(b - a for a, b in keep)
+    expect = gone
+    _log('    保留 %d 段，预计 %.1f 秒（源 %.1f 秒，切掉 %.1f 秒）'
+         % (len(keep), expect, dur, dur - expect))
+
+    base = os.path.basename(vpath)
+    stem, ext = os.path.splitext(base)
+    d = os.path.dirname(vpath)
+    if replace:
+        tmp = os.path.join(d, '.%s.adnew%s' % (stem, ext or '.mp4'))
+    else:
+        tmp = out or (os.path.splitext(vpath)[0] + '.adfree.mp4')
+
+    has_a = _has_audio(vpath)
     parts, labels = [], []
     for i, (a, b) in enumerate(keep):
         parts.append('[0:v]trim=start=%.3f:end=%.3f,setpts=PTS-STARTPTS[v%d]' % (a, b, i))
-        parts.append('[0:a]atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS[a%d]' % (a, b, i))
-        labels.append('[v%d][a%d]' % (i, i))
-    filt = ';'.join(parts) + ';' + ''.join(labels) + 'concat=n=%d:v=1:a=1[vo][ao]' % len(keep)
+        if has_a:
+            parts.append('[0:a]atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS[a%d]' % (a, b, i))
+            labels.append('[v%d][a%d]' % (i, i))
+        else:
+            labels.append('[v%d]' % i)
+    filt = ';'.join(parts) + ';' + ''.join(labels) + \
+        'concat=n=%d:v=1:a=%d[vo]%s' % (len(keep), 1 if has_a else 0, '[ao]' if has_a else '')
+
     cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', vpath,
-           '-filter_complex', filt, '-map', '[vo]', '-map', '[ao]',
-           '-c:v', 'hevc_nvenc', '-preset', 'p5', '-cq', '20',
-           '-c:a', 'aac', '-b:a', '160k', out]
-    r = subprocess.run(cmd, capture_output=True, timeout=7200)
-    if r.returncode != 0 or not os.path.exists(out):
-        if log:
-            log('    cut_ads 失败: %s' % (r.stderr or b'')[:200])
-        return None
-    if log:
-        log('    输出 %s (%.1f MB)' % (os.path.basename(out), os.path.getsize(out) / 1048576))
-    return out
+           '-filter_complex', filt, '-map', '[vo]']
+    if has_a:
+        cmd += ['-map', '[ao]']
+    cmd += ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-cq', '20', '-pix_fmt', 'yuv420p']
+    if has_a:
+        cmd += ['-c:a', 'aac', '-b:a', '160k']
+    cmd += ['-movflags', '+faststart', tmp]
+
+    ok = False
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=36000)
+        if r.returncode != 0 or not os.path.exists(tmp):
+            _log('    编码失败: %s' % (r.stderr or b'')[-200:].decode('utf-8', 'replace'))
+            return {'ok': False, 'error': '编码失败'}
+
+        new_dur = video_duration(tmp)
+        new_size = os.path.getsize(tmp)
+        _log('    编码完成 %.1f 秒 / %.1f MB' % (new_dur, new_size / 1048576.0))
+
+        if verify:
+            tol = max(3.0, expect * 0.02)
+            if not new_dur or abs(new_dur - expect) > tol:
+                _log('    ! 时长校验失败：期望 %.1f±%.1f 秒，实际 %.1f 秒'
+                     % (expect, tol, new_dur))
+                return {'ok': False, 'error': '时长校验失败（期望 %.1f，实际 %.1f）'
+                        % (expect, new_dur)}
+            for _t_ in (1.0, max(1.0, new_dur - 2.0)):
+                _b = frame_at(tmp, _t_, width=320)
+                if not _b:
+                    _log('    ! 抽帧校验失败 t=%.1f，成片可能损坏' % _t_)
+                    return {'ok': False, 'error': '抽帧校验失败 t=%.1f' % _t_}
+            _log('    校验通过（时长 / 抽帧）')
+
+        old_size = os.path.getsize(vpath)
+        if not replace:
+            ok = True
+            _log('    输出 %s（原片未动）' % base)
+            return {'ok': True, 'path': tmp, 'orig_backup': None, 'undo': None,
+                    'old_dur': dur, 'new_dur': new_dur, 'old_size': old_size,
+                    'new_size': new_size, 'secs': round(_t.time() - t0, 1)}
+
+        # ---- 与 repair 相同的原子替换：path -> path.orig, tmp -> path ----
+        orig = vpath + '.orig'
+        k = 1
+        while os.path.exists(orig):
+            orig = '%s.orig%d' % (vpath, k)
+            k += 1
+        err = None
+        for n in range(5):
+            try:
+                os.replace(vpath, orig)
+                os.replace(tmp, vpath)
+                err = None
+                break
+            except Exception as e:
+                err = e
+                try:
+                    if os.path.exists(orig) and not os.path.exists(vpath):
+                        os.replace(orig, vpath)      # 别两头空
+                except Exception:
+                    pass
+                _log('    ! 换名失败（第 %d 次，可能被播放器/同步软件占用）：%s'
+                     % (n + 1, str(e)[:90]))
+                _t.sleep(2)
+        if err is not None:
+            _log('    ! 替换失败，原片未动；成片保留在临时文件：%s' % tmp)
+            return {'ok': False, 'error': '文件被占用（重试 5 次）: %s' % str(err)[:90],
+                    'stage': tmp}
+        ok = True
+        _log('    已替换原片（回滚点 %s）' % os.path.basename(orig))
+        return {'ok': True, 'path': vpath, 'orig_backup': orig,
+                'undo': {'action': 'restore', 'path': vpath, 'backup': orig},
+                'old_dur': dur, 'new_dur': new_dur, 'old_size': old_size,
+                'new_size': new_size, 'secs': round(_t.time() - t0, 1)}
+    finally:
+        try:
+            if not ok and replace and os.path.isfile(tmp):
+                os.remove(tmp)          # 失败路径也要清掉临时文件
+        except Exception:
+            pass
+        try:
+            if ok and replace and os.path.isfile(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
