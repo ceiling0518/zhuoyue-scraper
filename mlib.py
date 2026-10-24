@@ -2341,3 +2341,186 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+# ------------------------------------------------------------------ 广告检测
+AD_PROMPT = (
+    '下面是同一个视频在不同时间点截取的 {N} 张画面（按顺序编号 1..{N}）。\n'
+    '请判断每张画面是否属于"广告/片头/片尾/宣传卡片/与正片无关的页面"，'
+    '例如：网站宣传页、盗版站/发片站水印页、二维码、纯文字台标页、试看提示、订阅引导、'
+    '片尾感谢/招募/合集宣传、黑底白字告示等。\n'
+    '只要画面是正常视频内容（人物/场景/动作），就算"非广告"。\n'
+    '只输出 JSON：{"ad":[是广告的编号...]}；没有广告输出 {"ad":[]}。不要输出其它文字。'
+)
+
+
+def frame_at(vpath, t, width=480):
+    """取某一时刻的一帧（jpeg bytes），失败返回 None。"""
+    try:
+        r = subprocess.run([FFMPEG, '-v', 'error', '-ss', '%.2f' % max(0.0, t), '-i', vpath,
+                            '-frames:v', '1', '-vf', 'scale=%d:-1' % width,
+                            '-f', 'image2', '-vcodec', 'mjpeg', '-'],
+                           capture_output=True, timeout=120)
+        if r.stdout and len(r.stdout) > 800:
+            return r.stdout
+    except Exception:
+        pass
+    return None
+
+
+def ads_batch(vpath, times, model=None, log=None):
+    """一次请求多张截图，返回与 times 等长的 bool 列表。每批最多 8 张。"""
+    model = model or ai_model()
+    out = [False] * len(times)
+    chunk = 8
+    for s in range(0, len(times), chunk):
+        ts = times[s:s + chunk]
+        imgs, keep = [], []
+        for i, t in enumerate(ts):
+            b = frame_at(vpath, t)
+            if b:
+                imgs.append(base64.b64encode(b).decode('ascii'))
+                keep.append(i)
+        if not imgs:
+            continue
+        prompt = AD_PROMPT.replace('{N}', str(len(imgs)))
+        try:
+            r = requests.post(OLLAMA + '/api/chat', timeout=900,
+                              json={'model': model, 'stream': False,
+                                    'keep_alive': AI_KEEP_ALIVE, 'think': False,
+                                    'options': {'temperature': 0.1, 'num_predict': 120},
+                                    'messages': [{'role': 'user', 'content': prompt,
+                                                  'images': imgs}]})
+            txt = ((r.json().get('message') or {}).get('content') or '') if r.status_code == 200 else ''
+            j = extract_json(txt) or {}
+            ad = j.get('ad') or []
+            for x in ad:
+                try:
+                    idx = int(x) - 1
+                except Exception:
+                    continue
+                if 0 <= idx < len(imgs):
+                    out[s + keep[idx]] = True
+            if log:
+                log('    批次 %d 张 -> 广告 %d 张' % (len(imgs), len([x for x in ad])))
+        except Exception as e:
+            if log:
+                log('    ads_batch err %s' % str(e)[:80])
+    return out
+
+
+def _is_ad(vpath, t, model=None):
+    return ads_batch(vpath, [t], model=model)[0]
+
+
+def _refine(vpath, t_ad, t_nonad, model=None):
+    """在 [min,max] 之间二分，找到最后一个广告时刻（精度 1s）。"""
+    lo, hi = sorted([float(t_ad), float(t_nonad)])
+    is_ad_lo = _is_ad(vpath, lo, model)
+    while hi - lo > 1.0:
+        mid = (lo + hi) / 2.0
+        if _is_ad(vpath, mid, model) == is_ad_lo:
+            lo = mid
+        else:
+            hi = mid
+    return lo if is_ad_lo else hi
+
+
+def detect_ads(vpath, dur=None, model=None, log=None):
+    """广告检测：预检 -> 30s 网格抽检 -> 二分细化边界到 1s。
+    返回 [[t0,t1], ...]（秒）。"""
+    dur = dur or video_duration(vpath)
+    if not dur or dur < 20:
+        return []
+
+    def _log(m):
+        if log:
+            log(m)
+
+    # 1) 预检：随机一段 + 尾部（密集，抓尾部短片尾广告）
+    import random as _rnd
+    r0 = _rnd.uniform(0.05, 0.8) * dur
+    probes = [r0, r0 + 10, r0 + 20, max(dur - 10, 0), max(dur - 5, 0), max(dur - 1, 0)]
+    probes = sorted(set(round(p, 1) for p in probes if 0 <= p < dur))
+    pf = ads_batch(vpath, probes, model=model, log=_log)
+    _log('  预检 %d 张 -> 广告 %d 张' % (len(pf), sum(pf)))
+    if not any(pf):
+        return []
+
+    # 2) 30s 网格（t=0,30,60…）+ 末尾一帧
+    times = [float(t) for t in range(0, int(dur), 30)]
+    if dur - 0.5 not in times:
+        times.append(round(dur - 1, 1))
+    flags = ads_batch(vpath, times, model=model, log=_log)
+    _log('  网格 %d 点 -> 广告 %d 点' % (len(flags), sum(flags)))
+
+    # 3) 连续广告点 -> 粗区间，并记录相邻的非广告采样点用于细化
+    segs = []
+    cur = None
+    for t, f in zip(times, flags):
+        if f:
+            if cur is None:
+                cur = [t, t]
+            else:
+                cur[1] = t
+        else:
+            if cur is not None:
+                segs.append((cur[0], cur[1], t))     # (首广告点, 末广告点, 后一个非广告点)
+                cur = None
+    if cur is not None:
+        segs.append((cur[0], cur[1], None))
+    if not segs:
+        return []
+
+    # 4) 细化：起点向前找、终点向后找，二分到 1s
+    out = []
+    for a, b, nxt in segs:
+        if a <= 0:
+            t0 = 0.0
+        else:
+            t0 = _refine(vpath, a, max(0.0, a - 30), model)
+        if b >= dur - 1:
+            t1 = float(dur)
+        elif nxt is None:
+            t1 = float(min(dur, b + 30))
+        else:
+            t1 = _refine(vpath, b, nxt, model)
+        out.append([round(t0, 1), round(t1, 1)])
+        _log('  区间 %s -> 精修 [%.1f, %.1f]' % ([a, b], t0, t1))
+    return out
+
+
+def cut_ads(vpath, segs, out=None, log=None):
+    """删掉广告区间（帧级精确），重新编码输出 <name>.adfree.mp4。返回输出路径。"""
+    if not segs:
+        return None
+    dur = video_duration(vpath)
+    keep, cur = [], 0.0
+    for a, b in sorted(segs):
+        a = max(cur, min(a, dur)); b = max(a, min(b, dur))
+        if a - cur > 0.15:
+            keep.append((cur, a))
+        cur = max(cur, b)
+    if dur - cur > 0.15:
+        keep.append((cur, dur))
+    if not keep:
+        return None
+    out = out or (os.path.splitext(vpath)[0] + '.adfree.mp4')
+    parts, labels = [], []
+    for i, (a, b) in enumerate(keep):
+        parts.append('[0:v]trim=start=%.3f:end=%.3f,setpts=PTS-STARTPTS[v%d]' % (a, b, i))
+        parts.append('[0:a]atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS[a%d]' % (a, b, i))
+        labels.append('[v%d][a%d]' % (i, i))
+    filt = ';'.join(parts) + ';' + ''.join(labels) + 'concat=n=%d:v=1:a=1[vo][ao]' % len(keep)
+    cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', vpath,
+           '-filter_complex', filt, '-map', '[vo]', '-map', '[ao]',
+           '-c:v', 'hevc_nvenc', '-preset', 'p5', '-cq', '20',
+           '-c:a', 'aac', '-b:a', '160k', out]
+    r = subprocess.run(cmd, capture_output=True, timeout=7200)
+    if r.returncode != 0 or not os.path.exists(out):
+        if log:
+            log('    cut_ads 失败: %s' % (r.stderr or b'')[:200])
+        return None
+    if log:
+        log('    输出 %s (%.1f MB)' % (os.path.basename(out), os.path.getsize(out) / 1048576))
+    return out

@@ -768,7 +768,12 @@ def _items_by_ids(ids=None):
 def _ensure_media(dbc):
     dbc.execute("CREATE TABLE IF NOT EXISTS media("
                 "item_id INTEGER PRIMARY KEY, file TEXT, size INTEGER, dur REAL, "
-                "w INTEGER, h INTEGER, fps REAL, vbr INTEGER, ts TEXT)")
+                "w INTEGER, h INTEGER, fps REAL, vbr INTEGER, ts TEXT, ads TEXT, ads_ts TEXT)")
+    for _c in ('ads', 'ads_ts'):
+        try:
+            dbc.execute('ALTER TABLE media ADD COLUMN %s TEXT' % _c)
+        except Exception:
+            pass
     dbc.commit()
 
 
@@ -1008,6 +1013,82 @@ def _prune_health(dbc, item_id, dirpath, log=None):
         log('  id=%s 清理失效记录 %d 条（文件已不在）：%s'
             % (item_id, len(dead), '、'.join(x[:26] for x in dead[:4])))
     return len(dead)
+
+
+def _job_adtect(ids=None):
+    """广告检测：30s 粗扫 + 10/5/1s 精修 -> media.ads（[[t0,t1],...]）。"""
+    _begin('adtect', 1)
+    dbc = mlib.db()
+    try:
+        _ensure_media(dbc)
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok = 0
+        for i, it in enumerate(its):
+            if _stop_req():
+                _log('! 已请求停止'); break
+            v = mlib.biggest_video(it['path'] or '')
+            if not v:
+                _log('[%d/%d] id=%s 没有视频' % (i + 1, len(its), it['id']))
+                _tick(i + 1)
+                continue
+            vp = os.path.join(it['path'], v)
+            try:
+                dur = mlib.video_duration(vp)
+                _log('[%d/%d] id=%s 检测 %s (%.0fs)' % (i + 1, len(its), it['id'], v, dur or 0))
+                segs = mlib.detect_ads(vp, dur, log=lambda m: _log(m))
+                dbc.execute('INSERT INTO media(item_id,file,ads,ads_ts) VALUES(?,?,?,?) '
+                            'ON CONFLICT(item_id) DO UPDATE SET file=excluded.file, '
+                            'ads=excluded.ads, ads_ts=excluded.ads_ts',
+                            (it['id'], v, json.dumps(segs), mlib.now()))
+                dbc.commit()
+                _log('    -> %d 段广告 %s' % (len(segs), segs))
+                ok += 1
+            except Exception as e:
+                _log('    ERR %s' % str(e)[:180])
+            _tick(i + 1)
+        _end('adtect %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200]); _end('adtect 失败')
+
+
+def _job_addel(ids=None):
+    """删除广告：按 media.ads 切掉广告区间，输出 <原名>.adfree.mp4（保留原片）。"""
+    _begin('addel', 1)
+    dbc = mlib.db()
+    try:
+        _ensure_media(dbc)
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok = 0
+        for i, it in enumerate(its):
+            if _stop_req():
+                _log('! 已请求停止'); break
+            row = dbc.execute('SELECT ads FROM media WHERE item_id=?', (it['id'],)).fetchone()
+            segs = []
+            if row and row['ads']:
+                try:
+                    segs = json.loads(row['ads'])
+                except Exception:
+                    segs = []
+            if not segs:
+                _log('[%d/%d] id=%s 没有广告区间（先跑广告检测）' % (i + 1, len(its), it['id']))
+                _tick(i + 1)
+                continue
+            v = mlib.biggest_video(it['path'] or '')
+            if not v:
+                _tick(i + 1)
+                continue
+            vp = os.path.join(it['path'], v)
+            _log('[%d/%d] id=%s 删除 %d 段广告' % (i + 1, len(its), it['id'], len(segs)))
+            out = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
+            if out:
+                ok += 1
+                _log('    完成: %s' % os.path.basename(out))
+            _tick(i + 1)
+        _end('addel %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200]); _end('addel 失败')
 
 
 def _job_health(ids=None, force=False, deep=False):
@@ -1688,7 +1769,7 @@ def items(params):
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
     rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,status,site,path,'
-                       'm.vbr AS vbr, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur,'
+                       'm.vbr AS vbr, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT CASE WHEN COUNT(*)=0 THEN 0 "
                        "WHEN SUM(CASE WHEN cls<>'ok' THEN 1 ELSE 0 END)>0 THEN 2 "
@@ -2307,6 +2388,12 @@ class H(BaseHTTPRequestHandler):
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_media, ids, (q.get('force') or '') in ('1', 'true', 'yes'),
                                lane='heavy')
+            elif p == '/api/adtect':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_adtect, ids, lane='heavy')
+            elif p == '/api/addel':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_addel, ids, lane='heavy')
             elif p == '/api/health':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_health, ids, (q.get('force') or '') in ('1', 'true', 'yes'),
@@ -2562,6 +2649,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
     <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button>
      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
+     <button id="a-adtect" title="抽帧判断广告/片头片尾：先随机 30s + 末尾 30s 预检，有广告再按 30s 粗扫，最后 10/5/1s 精修边界；结果显示在列表「广告」列">广告检测</button>
+     <button id="a-addel" title="按检测结果删除广告区间（帧级精确重编码），输出 <原名>.adfree.mp4，保留原片">删除广告</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
   </div>
   </div>
@@ -2569,7 +2658,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th style="width:104px">缩略图</th><th style="width:48px">id</th>
     <th style="width:58px">质量</th><th style="width:66px">来源</th>
     <th style="width:80px">番号</th><th style="width:74px">语义</th>
-    <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
+    <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th style="width:96px" title="检测到的广告区间">广告</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><span id="page" class="muted"></span><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
@@ -2663,6 +2752,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
       +'<div class="meta" style="color:'+((r.bpp&&r.bpp<0.04)?'var(--bad)':(r.bpp&&r.bpp<0.08)?'var(--warn)':'var(--ok)')     +'">'+(r.bpp?'bpp '+r.bpp.toFixed(3):'')+'</div>'
       +'<div class="meta">'+r.mw+'×'+r.mh+' @'+(Math.round((r.mfps||0)*10)/10)+'</div>'
       :'—')+'</td>'
+    +'<td class="muted" style="font-size:12px">'+(r.ads?adsText(r.ads):'')+'</td>'
     +'<td><a href="#" data-id="'+r.id+'" class="lk" style="color:var(--fg)">'+esc(r.title||r.name)+'</a>'
     +'<div class="meta">简介: '+esc((r.plot||'').slice(0,70))+'</div>'
     +'<div class="meta">标签: <span class="tags">'+esc(tagsOf(r.tags))+'</span></div>'
@@ -2678,6 +2768,10 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     o.value=(i-1)*lim;o.textContent='第 '+i+' / '+pages+' 页';if(i===cur)o.selected=true;pj.appendChild(o);}
   $('#page').textContent=(off+1)+'–'+Math.min(off+lim,d.total);
   saveState();}
+function adsText(s){try{const a=JSON.parse(s||'[]');if(!a||!a.length)return '';
+  const f=t=>{t=Math.max(0,Math.round(t));const m=Math.floor(t/60),ss=t%60;
+    return m+':'+String(ss).padStart(2,'0');};
+  return a.map(x=>f(x[0])+'-'+f(x[1])).join(' ');}catch(e){return '';}}
 const SEL=new Set();
 function selinfo(){$('#seln').textContent=SEL.size;}
 function selSet(b,on){const id=b.dataset.id,tr=b.closest('tr');
@@ -2754,6 +2848,17 @@ $('#a-deep').onclick=async()=>{
   if(!confirm(T('深检会逐个读取视频文件找数据洞（NAS 上约 11MB/s）。继续？')))return;
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
   await post('/api/health'+(ids?'?ids='+ids:'')+fq+((fq||ids)?'&':'?')+'deep=1');};
+$('#a-adtect').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
+  await post('/api/adtect'+(ids?'?ids='+ids:''));};
+$('#a-addel').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size)return alert(T('先选条目'));
+  if(!confirm(T('删除选中条目的广告区间？
+
+会输出 <原名>.adfree.mp4（保留原片，帧级精确重编码）。')))return;
+  await post('/api/addel?ids='+ids);};
 $('#a-media').onclick=async()=>{
   const ids=[...SEL].join(',');
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
