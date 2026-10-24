@@ -50,8 +50,12 @@ def _logdb():
         import sqlite3
         _LOGDB = sqlite3.connect(mlib.DB_PATH, timeout=30, check_same_thread=False)
         _LOGDB.execute('PRAGMA journal_mode=WAL')
-        _LOGDB.execute('PRAGMA busy_timeout=30000')
+        _LOGDB.execute('PRAGMA busy_timeout=800')      # 撞锁快速失败，
+        # 绝不能在作业线程上死等（作业握着未提交的写事务时，30s 超时会把作业拖死）
     return _LOGDB
+
+
+_LOGFLUSH_N = [0]
 
 
 def _flush_log():
@@ -75,12 +79,20 @@ def _flush_log():
             if new_err:
                 c.execute('DELETE FROM joblog WHERE line LIKE ?', ('%' + _ERRTAG + '%',))
                 c.execute('INSERT INTO joblog(ts,line) VALUES(?,?)', (mlib.now(), new_err))
-                STATE['err_db'] = new_err
-            c.execute('DELETE FROM joblog WHERE id NOT IN '
-                      '(SELECT id FROM joblog ORDER BY id DESC LIMIT 3000)')
+            _LOGFLUSH_N[0] += 1
+            if _LOGFLUSH_N[0] % 200 == 0:      # 别每次都全表扫（每次 flush 都扫会抢写锁）
+                c.execute('DELETE FROM joblog WHERE id NOT IN '
+                          '(SELECT id FROM joblog ORDER BY id DESC LIMIT 3000)')
             c.commit()
+            if new_err:
+                STATE['err_db'] = new_err     # 提交成功后才记，失败下次重写
     except Exception:
-        pass
+        # 被作业自己的写事务锁住：把这些行放回缓冲，下次再写（无损、不阻塞）
+        if rows:
+            with _LOCK:
+                _LOGBUF[:0] = rows
+                if len(_LOGBUF) > 4000:
+                    del _LOGBUF[:len(_LOGBUF) - 4000]
 
 
 def q_load():
