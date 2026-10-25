@@ -671,7 +671,7 @@ def _check_mp4(path):
             md0, mdl = tops['mdat']
             mde = md0 + mdl
             fp.seek(mo)
-            buf = fp.read(sz - mo)
+            buf = fp.read(ml)   # 只读 moov（之前读到文件尾，faststart 时会读整个文件）
             for t, o, l, hl in _boxes(_MemFile(buf), 8, min(ml, len(buf)), limit=512):
                 if o + l > len(buf):
                     issues.append('moov 内 box %s 越界 %d 字节' % (t, o + l - len(buf)))
