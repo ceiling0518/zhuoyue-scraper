@@ -535,6 +535,26 @@ def series_build(dbc=None, log=None):
     return n, len(rows)
 
 
+def avfan_publisher(series):
+    """avfan.com：系列页 -> 任一影片页 -> JSON-LD 面包屑第 2 项 = 制作商。"""
+    code = (series or '').strip().upper()
+    if not code:
+        return ''
+    try:
+        h = _http_get('https://avfan.com/en/number_letters/%s' % code)
+        m = re.search(r'href="(/en/movies/[^"]+)"', h or '')
+        if not m:
+            return ''
+        d = _http_get('https://avfan.com' + m.group(1))
+        m2 = re.search(r'\{"@type":"ListItem","position":2,"name":"([^"]+)"', d or '')
+        if not m2:
+            return ''
+        pub = strip_noise(m2.group(1))
+        return clean_publisher(pub)
+    except Exception:
+        return ''
+
+
 def series_enrich(one, model=None, log=None, dbc=None):
     """联网查一个系列的公司/备注/语义。返回 True/False。"""
     def _log(x):
@@ -546,6 +566,13 @@ def series_enrich(one, model=None, log=None, dbc=None):
     one = (one or '').strip()
     if not one:
         return False
+    _av = avfan_publisher(one)
+    if _av:
+        _cur = series_get(one, dbc) or {}
+        series_upsert(one, _cur.get('has_code') or 0, _cur.get('sem_kind') or '',
+                      _cur.get('note') or '', _av, dbc=dbc)
+        _log('    avfan 制作商: %s' % _av)
+        return True
     hits = web_search(one + ' 作品 制作公司 发行', 5)
     _log('  搜索「%s」-> %d 条' % (one, len(hits)))
     if not hits:
