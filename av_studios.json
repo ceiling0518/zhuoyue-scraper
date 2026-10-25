@@ -1683,5 +1683,10 @@
   "publisher": "PSYCHEDERIC PUPPET",
   "group": "未归类",
   "desc": "Cos题材"
+ },
+ "300MIUM": {
+  "publisher": "PRESTIGE",
+  "group": "プレステージ",
+  "desc": "300MIUM 系列"
  }
 }

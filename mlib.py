@@ -666,7 +666,9 @@ def studio_by_series(k):
     """按 AvNumber 映射查片商：先全大写去分隔符，再试原样。"""
     if not k:
         return ''
-    for key in (k.upper().replace('-', '').replace('_', ''), k.upper()):
+    for key in (k.upper().replace('-', '').replace('_', ''),
+                '300' + k.upper().replace('-', '').replace('_', ''),
+                k.upper()):
         info = AV_STUDIOS.get(key)
         if info and info.get('publisher'):
             return info['publisher']
@@ -706,12 +708,14 @@ SERIES_ALIAS = {
     'FC2PPV': 'FC2', 'FC2-PPV': 'FC2', 'FC2PPV-': 'FC2',
     'CARIBBEANCOM': 'CARIB', 'CARIBBEAN': 'CARIB',
     '1PON': '1PONDO', '1PONDO': '1PONDO',
+    '300MIUM': 'Mium', 'MIUM': 'Mium',
 }
 # 规范名 -> 索引词（没有就不写）
 SERIES_INDEXWORD = {
     'FC2': 'FC2PPV',
     'CARIB': 'CARIBBEANCOM,加勒比',
     '1PONDO': '1Pon,一本道',
+    'Mium': '300MIUM',
 }
 
 
