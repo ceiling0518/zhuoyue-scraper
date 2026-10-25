@@ -2158,10 +2158,25 @@ def _job_addel(ids=None, nested=False):
                 if _stop_req():
                     break
                 vp = os.path.join(it['path'], v)
+                # 段记录可能写成 nfo/图片（手工加段时选错文件）：映射到真实视频
+                if os.path.splitext(v)[1].lower() not in repair.VIDEO_EXT:
+                    _vs = [x for x in _video_files(it['path'] or '')
+                           if os.path.splitext(x)[1].lower() in repair.VIDEO_EXT]
+                    if len(_vs) == 1:
+                        _nv = os.path.basename(_vs[0])
+                        _log('  段记录写的是 %s（不是视频），按实际视频 %s 处理'
+                             % (v[:28], _nv[:28]))
+                        v, vp = _nv, _vs[0]
+                    else:
+                        _log('  跳过：%s 不是视频文件，请到「无效段编辑」改成视频名' % v[:50])
+                        continue
                 if not os.path.isfile(vp):
                     _log('  跳过（文件不存在）: %s' % v[:60])
                     continue
                 _dur0 = repair.video_duration(vp) or 0
+                if not _dur0:
+                    _log('  跳过（读不到时长，可能不是视频）: %s' % v[:50])
+                    continue
                 _keep = []
                 _cur = 0.0
                 for _a, _b in sorted(segs):
@@ -3069,7 +3084,11 @@ def item_detail(iid):
     except Exception:
         d['nfo'] = ''
     try:
-        d['files'] = sorted(os.listdir(d['path']))[:80]
+        _all = os.listdir(d['path'])
+        # 视频排前面：无效段编辑「添加一段」默认取第一个文件，之前会取到 .nfo
+        _all.sort(key=lambda _n: (0 if os.path.splitext(_n)[1].lower() in repair.VIDEO_EXT else 1,
+                                  _n.lower()))
+        d['files'] = _all[:80]
     except Exception:
         d['files'] = []
     return d
@@ -4464,7 +4483,8 @@ $('#a-segs').onclick=async()=>{
   window.SEGFIRST=(d.rows&&d.rows[0]&&d.rows[0].file)||'';
   if(!window.SEGFIRST){
     try{const _it=await(await fetch('/api/item/'+iid)).json();
-      window.SEGFIRST=(_it.files||[])[0]||'';}catch(_e){}
+      const _vs=(_it.files||[]).filter(function(x){return /\.(avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|mts|rm|rmvb|ts|webm|wmv)$/i.test(x);});
+      window.SEGFIRST=_vs[0]||(_it.files||[])[0]||'';}catch(_e){}
   }
   segRender(d.rows||[]);
   $('#modalseg').classList.add('on');
