@@ -261,33 +261,68 @@ def _http_get(url, timeout=20):
     return ''
 
 
+def _blank(t):
+    return strip_noise(re.sub(r'<[^>]+>', ' ', t or ''))
+
+
+def _parse_yandex(html, n):
+    out = []
+    for m in re.finditer(r'<li[^>]+class="[^"]*serp-item[^"]*"[^>]*>(.*?)</li>', html or '', re.S):
+        blk = m.group(1)
+        a = re.search(r'<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>', blk, re.S)
+        if not a:
+            continue
+        title = _blank(a.group(2))
+        snips = re.findall(r'<(?:div|span)[^>]*class="[^"]*(?:TextContainer|OrganicText|Text)[^"]*"[^>]*>(.*?)</(?:div|span)>',
+                           blk, re.S)
+        snip = _blank(max(snips, key=len)) if snips else ''
+        if title:
+            out.append({'title': title, 'snippet': snip, 'url': a.group(1)})
+        if len(out) >= n:
+            break
+    return out
+
+
+def _parse_google(html, n):
+    out = []
+    for m in re.finditer(r'<div[^>]+class="[^"]*\bMjjYud\b[^"]*"[^>]*>(.*?)</div>\s*</div>', html or '', re.S):
+        blk = m.group(1)
+        a = re.search(r'<a[^>]+href="(/url\?q=|https?://)([^"&]+)[^"]*"[^>]*>(.*?)</a>', blk, re.S)
+        if not a:
+            continue
+        url = a.group(2) if a.group(1).startswith('http') else 'https://' + a.group(2)
+        title = _blank(a.group(3))
+        snip = ''
+        for sm in re.finditer(r'<div[^>]*>(.*?)</div>', blk, re.S):
+            txt = _blank(sm.group(1))
+            if len(txt) > len(snip):
+                snip = txt
+        if title:
+            out.append({'title': title, 'snippet': snip, 'url': url})
+        if len(out) >= n:
+            break
+    return out
+
+
 def web_search(q, n=5):
-    """Bing -> DuckDuckGo 兜底；返回 [{title,snippet,url}]。"""
+    """Yandex -> Google 兜底；返回 [{title,snippet,url}]。"""
     q = (q or '').strip()
     if not q:
         return []
     from urllib.parse import quote_plus
-    out = []
-    html = _http_get('https://www.bing.com/search?q=%s&setlang=zh-CN' % quote_plus(q))
-    for m in re.finditer(r'<li class="b_algo".*?</li>', html or '', re.S):
-        blk = m.group(0)
-        t = re.search(r'<h2[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', blk, re.S)
-        s2 = re.search(r'<p[^>]*>(.*?)</p>', blk, re.S)
-        if not t:
-            continue
-        title = strip_noise(re.sub(r'<[^>]+>', '', t.group(2)))
-        snip = strip_noise(re.sub(r'<[^>]+>', '', s2.group(1))) if s2 else ''
-        if title:
-            out.append({'title': title, 'snippet': snip, 'url': t.group(1)})
-        if len(out) >= n:
-            return out
+    out = _parse_yandex(
+        _http_get('https://yandex.com/search/?text=%s&lr=87' % quote_plus(q)), n)
     if out:
         return out
+    out = _parse_google(
+        _http_get('https://www.google.com/search?q=%s&hl=zh-CN&num=10' % quote_plus(q)), n)
+    if out:
+        return out
+    # 最后兜底：DuckDuckGo
     html = _http_get('https://html.duckduckgo.com/html/?q=%s' % quote_plus(q))
     for m in re.finditer(r'<a rel="nofollow" class="result__a" href="([^"]+)">(.*?)</a>'
                          r'.*?<a class="result__snippet"[^>]*>(.*?)</a>', html or '', re.S):
-        out.append({'title': strip_noise(re.sub(r'<[^>]+>', '', m.group(2))),
-                    'snippet': strip_noise(re.sub(r'<[^>]+>', '', m.group(3))),
+        out.append({'title': _blank(m.group(2)), 'snippet': _blank(m.group(3)),
                     'url': m.group(1)})
         if len(out) >= n:
             break
