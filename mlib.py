@@ -476,6 +476,24 @@ def ensure_series(dbc=None):
     except Exception:
         pass
     d.commit()
+    try:
+        rows = [dict(x) for x in d.execute('SELECT * FROM series').fetchall()]
+        for r in rows:
+            k = series_key(r['series'])
+            if k and k != r['series']:
+                d.execute("""INSERT INTO series(series,has_code,sem_kind,note,publisher,updated)
+                             VALUES(?,?,?,?,?,?)
+                             ON CONFLICT(series) DO UPDATE SET
+                               sem_kind=CASE WHEN excluded.sem_kind<>'' THEN excluded.sem_kind ELSE series.sem_kind END,
+                               note=CASE WHEN excluded.note<>'' THEN excluded.note ELSE series.note END,
+                               publisher=CASE WHEN excluded.publisher<>'' THEN excluded.publisher ELSE series.publisher END,
+                               updated=excluded.updated""",
+                          (k, r['has_code'], r['sem_kind'] or '', r['note'] or '',
+                           r['publisher'] or '', now()))
+                d.execute('DELETE FROM series WHERE series=?', (r['series'],))
+        d.commit()
+    except Exception:
+        pass
     return d
 
 
@@ -512,20 +530,24 @@ def series_get(name, dbc=None):
         return None
 
 
-def series_of_item(item, dbc=None):
-    """从条目推断系列：优先番号，其次公司/中文名前缀。"""
-    code = (item.get('sem_code') or item.get('code') or '').strip()
-    if code:
-        return code
-    name = (item.get('name') or '').strip()
-    t = strip_noise(name)
-    head = re.split(r'[\s\-_—|:：]+', t)[0] if t else ''
+def series_key(raw):
+    """番号 -> 系列：JUR-212 -> JUR；FC2-PPV-4544125 -> FC2。"""
+    t = strip_noise(raw or '')
+    t = re.sub(r'\.(mp4|mkv|avi|wmv|mov|ts|m2ts)$', '', t, flags=re.I)
+    head = re.split(r'[\s\-_—.:：|/\\]+', t)[0] if t else ''
+    head = head.strip(' .-_')
     return head[:20]
 
 
-# ---------------------------------------------------------------- 改名
-_RENAME_BAD = re.compile(r'[\\/:*?"<>|\r\n\t]+')
-
+def series_of_item(item, dbc=None):
+    """从条目推断系列：番号前缀（JUR），没有番号再看名字首段。"""
+    code = (item.get('sem_code') or item.get('code') or '').strip()
+    if code:
+        k = series_key(code)
+        if k:
+            return k
+    name = (item.get('name') or '').strip()
+    return series_key(name)
 
 def safe_name(s, maxlen=60):
     """去掉非法字符与控制符，压缩空格，限长。"""
