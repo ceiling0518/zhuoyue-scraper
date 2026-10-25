@@ -44,6 +44,7 @@ CACHE_DIR = os.path.join(DB_DIR, 'cache')
 NFO_DIR = os.path.join(DB_DIR, 'nfo_out')
 COOKIE_FILE = os.path.join(DB_DIR, 'javdb_cookie.txt')
 TMDB_KEY_FILE = os.path.join(DB_DIR, 'tmdb_key.txt')
+DOUBAN_COOKIE_FILE = os.path.join(DB_DIR, 'douban_cookie.txt')
 # Ollama：容器里指向宿主 host.docker.internal
 OLLAMA = (os.environ.get('MS_OLLAMA') or 'http://127.0.0.1:11434').rstrip('/')
 FFMPEG = os.environ.get('FFMPEG', 'ffmpeg')
@@ -1475,6 +1476,54 @@ def scan(root=None, mode='incr', dbc=None, kind_hint=''):
 
 
 # ------------------------------------------------------------------ website scrape
+def douban_cookie():
+    """豆瓣登录 cookie（整串 Cookie header），没登录时返回 None。"""
+    if os.path.exists(DOUBAN_COOKIE_FILE):
+        try:
+            t = io.open(DOUBAN_COOKIE_FILE, encoding='utf-8').read().strip()
+            return t or None
+        except Exception:
+            return None
+    return None
+
+
+def set_douban_cookie(txt):
+    txt = (txt or '').strip()
+    if txt.lower().startswith('cookie:'):
+        txt = txt.split(':', 1)[1].strip()
+    try:
+        if txt:
+            io.open(DOUBAN_COOKIE_FILE, 'w', encoding='utf-8').write(txt)
+        elif os.path.exists(DOUBAN_COOKIE_FILE):
+            os.remove(DOUBAN_COOKIE_FILE)
+        return True
+    except Exception:
+        return False
+
+
+_DOUBAN_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+              '(KHTML, like Gecko) Chrome/131.0 Safari/537.36')
+
+
+def douban_headers(extra=None):
+    h = {'User-Agent': _DOUBAN_UA, 'Accept-Language': 'zh-CN,zh;q=0.9'}
+    c = douban_cookie()
+    if c:
+        h['Cookie'] = c
+    if extra:
+        h.update(extra)
+    return h
+
+
+def douban_get(url, params=None, timeout=25):
+    """带登录 cookie 的豆瓣 GET；返回 requests.Response 或 None。"""
+    try:
+        return requests.get(url, params=params, headers=douban_headers(),
+                            timeout=timeout, allow_redirects=True)
+    except Exception:
+        return None
+
+
 def tmdb_key():
     """TMDB 凭据：API Key(v3) 或 Read Access Token(v4 JWT) 均可。"""
     if os.path.exists(TMDB_KEY_FILE):

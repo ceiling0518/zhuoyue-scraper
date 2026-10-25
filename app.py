@@ -3951,6 +3951,7 @@ def stats():
            'root_tv': mlib.root_tv(), 'libs': len(mlib.libraries()),
            'model': mlib.ai_model(), 'db': mlib.DB_PATH,
            'cookie': bool(mlib.javdb_cookie()), 'tmdb': bool(mlib.tmdb_key()),
+           'douban': bool(mlib.douban_cookie()),
            'queue': len(QUEUE)}
     try:
         out['hbad'] = dbc.execute("SELECT COUNT(DISTINCT item_id) c FROM health "
@@ -4894,6 +4895,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, PAGE, 'text/html; charset=utf-8')
             if p.startswith('/doc/'):
                 return self._send(200, doc_page(p.rsplit('/', 1)[1]), 'text/html; charset=utf-8')
+            if p == '/api/douban':
+                return self._json({'has': bool(mlib.douban_cookie())})
             if p == '/api/tmdb':
                 k = mlib.tmdb_key()
                 return self._json({'has': bool(k), 'mode': ('token' if k.startswith('eyJ') else ('key' if k else ''))})
@@ -5225,6 +5228,9 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/covers/drop':
                 tids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 return self._json({'ok': True, 'n': drop_covers(tids) if tids else 0})
+            elif p == '/api/douban':
+                ok = mlib.set_douban_cookie(self._body() if not q.get('clear') else '')
+                return self._json({'ok': ok, 'has': bool(mlib.douban_cookie())})
             elif p == '/api/tmdb':
                 ok = mlib.set_tmdb_key(q.get('key') or '')
                 k = mlib.tmdb_key()
@@ -5641,6 +5647,10 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="bar"><b>站点设置</b><span class="muted" id="st-info"></span><button class="right" id="md4-close">关闭</button></div>
   <p class="muted">勾选要使用的站点（抓取时按此顺序尝试）。javbus / javdb / MissAV 已有专属解析器，其余为待接入站点。</p>
   <table id="st-tbl"></table>
+  <div class="bar" style="margin-top:14px"><b>豆瓣</b><span class="muted" id="db-state"></span></div>
+  <p class="muted">电影/剧集的简体中文元数据兜底（TMDB 缺中文时用）。粘贴整串 Cookie 即可，登录后带上 dbcl2 才有效。</p>
+  <textarea id="db-cookie" style="width:100%;height:64px" placeholder="bid=...; dbcl2=...; ck=..."></textarea>
+  <div class="bar"><button class="primary" id="db-save">保存</button><button id="db-clear">清空</button></div>
   <div class="bar" style="margin-top:14px"><b>TMDB</b><span class="muted" id="tm-state"></span></div>
   <p class="muted">电影/剧集元数据。填 API Key（v3）或 Read Access Token（v4，eyJ 开头）都行，保存后立即生效。</p>
   <div class="bar"><input id="tm-key" style="flex:1" placeholder="API Key 或 Read Access Token"><button class="primary" id="tm-save">保存</button><button id="tm-clear">清空</button></div>
@@ -6204,6 +6214,14 @@ $('#ck-file').onchange=e=>{const f=e.target.files[0];if(!f)return;const rd=new F
   rd.onload=()=>{$('#ck-text').value=rd.result;};rd.readAsText(f);};
 $('#ck-save').onclick=async()=>{const r=await fetch('/api/cookie',{method:'POST',body:$('#ck-text').value});
   const j=await r.json();alert(j.set?T('已保存 (%d 字符)').replace('%d',j.len):T('已清空'));};
+$('#db-save').onclick=async()=>{
+  const v=($('#db-cookie').value||'').trim();
+  if(!v){alert(T('请先粘贴豆瓣 Cookie'));return;}
+  const d=await(await fetch('/api/douban',{method:'POST',body:v})).json();
+  $('#db-state').textContent=d.has?'当前：已登录':'当前：未设置';$('#db-cookie').value='';
+  alert(T('已保存'));};
+$('#db-clear').onclick=async()=>{await fetch('/api/douban?clear=1',{method:'POST'});
+  $('#db-state').textContent='当前：未设置';alert(T('已清空'));};
 $('#tm-save').onclick=async()=>{const v=($('#tm-key').value||'').trim();
   if(!v){alert(T('请先粘贴 TMDB 凭据'));return;}
   const d=await(await fetch('/api/tmdb?key='+encodeURIComponent(v),{method:'POST'})).json();
@@ -6327,7 +6345,9 @@ $('#b-sites').onclick=async()=>{await stLoad();
   try{const s=await(await fetch('/api/stats')).json();$('#ck-state').textContent=s.cookie?'当前：已设置':'当前：未设置';
     const t=await(await fetch('/api/tmdb')).json();
     $('#tm-state').textContent=t.has?('当前：已设置（'+t.mode+'）'):'当前：未设置';
-    $('#tm-key').value='';}catch(e){}
+    $('#tm-key').value='';
+    const db=await(await fetch('/api/douban')).json();
+    $('#db-state').textContent=db.has?'当前：已登录':'当前：未设置';}catch(e){}
   $('#st-info').textContent='';$('#modal4').classList.add('on');};
 $('#md4-close').onclick=()=>$('#modal4').classList.remove('on');
 async function stLoad(){

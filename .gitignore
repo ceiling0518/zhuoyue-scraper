@@ -30,3 +30,6 @@ build.log
 repair_out/
 tests/_fixture_*/
 searxng/
+douban_cookie.txt
+tmdb_key.txt
+backup/
