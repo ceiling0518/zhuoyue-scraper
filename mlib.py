@@ -535,6 +535,39 @@ def series_build(dbc=None, log=None):
     return n, len(rows)
 
 
+def avfan_info(code):
+    """avfan.com：番号 -> {released, maker, tags}（页面公开，无需登录）。"""
+    code = (code or '').strip().upper()
+    if not code:
+        return {}
+    try:
+        url = ''
+        for h in searxng_search('site:avfan.com "%s"' % code, 6):
+            u = h.get('url') or ''
+            if '/movies/' in u:
+                url = u
+                break
+        if not url:
+            return {}
+        d = _http_get(url)
+        if not d:
+            return {}
+        out = {}
+        m = re.search(r'<dt>\s*Released Date\s*</dt>\s*<dd>\s*(\d{2})/(\d{2})/(\d{4})', d)
+        if m:
+            out['released'] = '%s-%s-%s' % (m.group(3), m.group(1), m.group(2))
+        m = re.search(r'<dt>\s*Maker\s*</dt>\s*<dd>\s*(?:<a[^>]*>)?([^<]{2,60})', d)
+        if m:
+            out['maker'] = clean_publisher(strip_noise(m.group(1)))
+        m = re.search(r'<dt>\s*Tags\s*</dt>\s*<dd>(.*?)</dd>', d, re.S)
+        if m:
+            tags = [strip_noise(x) for x in re.split(r'[,、]', re.sub(r'<[^>]+>', ' ', m.group(1)))]
+            out['tags'] = [x for x in tags if x][:8]
+        return out
+    except Exception:
+        return {}
+
+
 def avfan_publisher(series):
     """avfan.com：系列页 -> 任一影片页 -> JSON-LD 面包屑第 2 项 = 制作商。"""
     code = (series or '').strip().upper()

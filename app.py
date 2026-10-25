@@ -602,6 +602,17 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
             _code = base.get('code') or ''
             if _code and not (r.get('sem_code') or r.get('code')):
                 dbc.execute('UPDATE items SET code=? WHERE id=?', (_code, r['id']))
+            # avfan：发行日期/制作商/标签（公开页，优先于模型抽取）
+            _av = mlib.avfan_info(_code) if _code else {}
+            if _av.get('maker'):
+                _studio = mlib.clean_publisher(_av['maker'])
+            if _av.get('released'):
+                _year = _av['released'][:4]
+            if _av.get('tags'):
+                tags = ','.join(_av['tags'])[:300]
+            if _av:
+                _log('    avfan: %s | 公司 %s | %s' % (_av.get('released') or '-',
+                                                      _av.get('maker') or '-', _code))
             dbc.execute("UPDATE items SET title=?, plot=?, tags=?, actors=?, studio=?, "
                         "year=?, quality=?, source=?, last_update=? WHERE id=?",
                         (_title, _plot, tags, _actors, _studio,
