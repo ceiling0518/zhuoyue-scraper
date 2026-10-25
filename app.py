@@ -5697,7 +5697,7 @@ $('#b-archive').onclick=async()=>{const d=await(await fetch('/api/archive?limit=
 $('#b-prev').onclick=()=>{off=Math.max(0,off-lim);list();};
 $('#b-next').onclick=()=>{off+=lim;list();};
 $('#pjump').onchange=e=>{off=parseInt(e.target.value,10)||0;list();};
-['f-quality','f-source','f-kind','f-sort','f-order'].forEach(i=>$('#'+i).onchange=()=>{off=0;list();});
+['f-quality','f-source','f-kind','f-health','f-bad','f-subs','f-pq','f-sort','f-order'].forEach(i=>$('#'+i).onchange=()=>{off=0;list();});
 $('#f-q').onkeydown=e=>{if(e.key==='Enter'){off=0;list();}};
 const rawList=v=>{if(v==null)return '';let a=v;try{a=JSON.parse(v)}catch(e){}
   if(Array.isArray(a))return a.join(',');return String(v);};
