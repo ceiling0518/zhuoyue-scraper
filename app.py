@@ -3157,6 +3157,8 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#08121f;font-
 button.danger{background:#3a2226;border-color:#5a3238}
 input,select,textarea{background:#0e1117;color:var(--fg);border:1px solid #39455a;border-radius:7px;padding:5px 7px;font-size:12px}
 table{width:100%;border-collapse:collapse;background:var(--card);border-radius:9px;overflow:hidden}
+#tbl{table-layout:fixed}
+#tbl th,#tbl td{overflow:hidden}
 th,td{padding:6px 8px;border-bottom:1px solid #232a36;text-align:left;vertical-align:top;font-size:12px}
 th{color:var(--dim);background:#171c25;font-weight:600}
 tr:hover td{background:#1f2531}
@@ -3164,6 +3166,7 @@ tr:hover td{background:#1f2531}
 .s-Web{color:var(--ok)}.s-AI{color:var(--warn)}
 .thumb{width:120px;height:68px;object-fit:cover;border-radius:5px;background:#0b0e13}
 #rows td{height:84px;vertical-align:middle}
+@media (max-width:1100px){#tbl th:nth-child(4),#tbl td:nth-child(4),#tbl th:nth-child(5),#tbl td:nth-child(5){display:none}}
 .cellclip{max-height:78px;overflow:hidden}
 .cellclip .lk{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cellclip .meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -3270,7 +3273,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-proteus" title="Topaz Proteus(prob-4) 同尺寸修复；速度按输入分辨率，1080p 约 2.3 fps（1 小时片约 8 小时）">画质修复</button>
   </div>
   </div>
-  <table><thead><tr>
+  <table id="tbl"><thead><tr>
     <th style="width:136px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
     <th style="width:92px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数">属性</th>
     <th style="width:80px">番号</th><th style="width:74px">语义</th>
