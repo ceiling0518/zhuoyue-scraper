@@ -2770,13 +2770,14 @@ def drop_covers(ids):
             n += drop_poster_files(iid)
         except Exception:
             pass
-        try:
-            p = os.path.join(THUMB_DIR, '%d.jpg' % iid)
-            if os.path.exists(p):
-                os.remove(p)
-                n += 1
-        except Exception:
-            pass
+        for _nm in ('%d.jpg' % iid, '%d@320.jpg' % iid):
+            try:
+                p = os.path.join(THUMB_DIR, _nm)
+                if os.path.exists(p):
+                    os.remove(p)
+                    n += 1
+            except Exception:
+                pass
     return n
 
 
@@ -2793,13 +2794,14 @@ def refresh_thumbs(ids=None, make=False):
                     make_poster(iid)
                 except Exception:
                     pass
-            p = os.path.join(THUMB_DIR, '%d.jpg' % iid)
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-                    n += 1
-            except Exception:
-                pass
+            for _nm in ('%d.jpg' % iid, '%d@320.jpg' % iid):
+                try:
+                    p = os.path.join(THUMB_DIR, _nm)
+                    if os.path.exists(p):
+                        os.remove(p)
+                        n += 1
+                except Exception:
+                    pass
         return n
     try:
         for f in os.listdir(THUMB_DIR):
