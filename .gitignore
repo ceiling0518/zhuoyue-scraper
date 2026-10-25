@@ -29,3 +29,4 @@ _dtest/
 build.log
 repair_out/
 tests/_fixture_*/
+searxng/
