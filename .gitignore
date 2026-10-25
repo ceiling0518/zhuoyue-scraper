@@ -33,3 +33,5 @@ searxng/
 douban_cookie.txt
 tmdb_key.txt
 backup/
+libs/
+app.json

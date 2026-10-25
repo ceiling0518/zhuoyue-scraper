@@ -61,8 +61,18 @@ for d in (DB_DIR, CACHE_DIR, NFO_DIR):
 
 
 # ------------------------------------------------------------------ db
+def active_db_path():
+    L = active_lib()
+    if not L:
+        return DB_PATH
+    p = lib_db_path(L)
+    if not os.path.exists(p):
+        _make_lib_db(p)
+    return p
+
+
 def db():
-    c = sqlite3.connect(DB_PATH, timeout=30)
+    c = sqlite3.connect(active_db_path(), timeout=30)
     c.row_factory = sqlite3.Row
     # WAL + busy_timeout so two waves can write concurrently without lock errors
     try:
@@ -105,16 +115,103 @@ def db():
     return c
 
 
+CFG_FILE = os.path.join(DB_DIR, 'app.json')
+_Cfg = {'d': None}
+
+
+def _cfg_migrate_from_db():
+    """把旧 mlib.db 里的 config / libraries / library_paths 搬进 app.json。"""
+    d = {}
+    libs = []
+    try:
+        con = sqlite3.connect('file:%s?mode=ro' % DB_PATH.replace('\\', '/').replace('?', '%3f'),
+                              uri=True, timeout=20)
+        con.row_factory = sqlite3.Row
+        try:
+            for r in con.execute('SELECT k,v FROM config'):
+                d[r['k']] = r['v']
+        except Exception:
+            pass
+        try:
+            rows = [dict(r) for r in con.execute('SELECT id,name,kind,enabled FROM libraries')]
+            pm = {}
+            try:
+                for r in con.execute('SELECT lib_id,path FROM library_paths ORDER BY id'):
+                    pm.setdefault(r['lib_id'], []).append(r['path'])
+            except Exception:
+                pass
+            for r in rows:
+                ps = pm.get(r['id']) or [(r.get('path') or '').strip()]
+                ps = [p for p in ps if p]
+                libs.append({'id': r['id'], 'name': r['name'] or ('库%d' % r['id']),
+                             'kind': r['kind'] or 'av', 'enabled': 1 if r['enabled'] else 0,
+                             'paths': ps})
+        except Exception:
+            pass
+        con.close()
+    except Exception:
+        pass
+    if not libs:
+        ps = [(d.get('root') or ROOT_DEFAULT or '').strip()]
+        for k, nm in (('root_movie', '电影库'), ('root_tv', '剧集库')):
+            p = (d.get(k) or '').strip()
+            if p:
+                ps.append(p)
+        ps = [p for p in ps if p]
+        if ps:
+            libs.append({'id': 1, 'name': '媒体库', 'kind': 'av', 'enabled': 1, 'paths': ps})
+    d['libs'] = libs
+    if libs:
+        d.setdefault('active_lib', libs[0]['id'])
+        # 第一个库承接旧库数据（整库复制，原 mlib.db 保留不动）
+        if os.path.exists(DB_PATH):
+            try:
+                p0 = os.path.join(DB_DIR, 'libs', 'lib%d.db' % int(libs[0]['id']))
+                _make_lib_db(p0, seed=True)
+                libs[0]['db'] = p0
+            except Exception:
+                pass
+    return d
+
+
+def _cfg_load():
+    if _Cfg['d'] is not None:
+        return _Cfg['d']
+    d = None
+    try:
+        d = json.loads(io.open(CFG_FILE, encoding='utf-8').read())
+        if not isinstance(d, dict):
+            d = None
+    except Exception:
+        d = None
+    if d is None:
+        d = _cfg_migrate_from_db()
+        _Cfg['d'] = d
+        _cfg_save()
+    _Cfg['d'] = d
+    return d
+
+
+def _cfg_save():
+    d = _Cfg['d'] or {}
+    try:
+        tmp = CFG_FILE + '.tmp'
+        io.open(tmp, 'w', encoding='utf-8', newline='\n').write(
+            json.dumps(d, ensure_ascii=False, indent=1))
+        os.replace(tmp, CFG_FILE)
+    except Exception:
+        pass
+
+
 def cfg_get(k, default=None):
-    r = db().execute('SELECT v FROM config WHERE k=?', (k,)).fetchone()
-    return r['v'] if r else default
+    v = _cfg_load().get(k)
+    return default if v is None else v
 
 
 def cfg_set(k, v):
-    c = db()
-    c.execute('INSERT INTO config(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v',
-              (k, str(v)))
-    c.commit()
+    d = _cfg_load()
+    d[k] = str(v)
+    _cfg_save()
 
 
 def scan_root():
@@ -131,66 +228,130 @@ def root_tv():
     return (cfg_get('root_tv') or '').strip()
 
 
-def ensure_libraries(dbc=None):
-    """媒体库表（一个库可含多个目录）；首次运行时迁入旧的单根配置。"""
-    d = dbc or db()
-    d.execute("""CREATE TABLE IF NOT EXISTS libraries(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, path TEXT, kind TEXT,
-        enabled INTEGER DEFAULT 1, ts TEXT)""")
-    d.execute("""CREATE TABLE IF NOT EXISTS library_paths(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, lib_id INTEGER, path TEXT)""")
-    n = d.execute('SELECT COUNT(*) c FROM libraries').fetchone()['c']
-    if not n:
-        seed = []
-        r0 = (cfg_get('root') or ROOT_DEFAULT or '').strip()
-        if r0:
-            seed.append(('媒体库', [r0], 'av'))
-        for nm, r, k in (('电影库', (cfg_get('root_movie') or '').strip(), 'movie'),
-                         ('剧集库', (cfg_get('root_tv') or '').strip(), 'tv')):
-            if r:
-                seed.append((nm, [r], k))
-        for nm, ps, k in seed:
-            cur = d.execute('INSERT INTO libraries(name,path,kind,enabled,ts) VALUES(?,?,?,1,?)',
-                            (nm, ps[0], k, now()))
-            for p in ps:
-                d.execute('INSERT INTO library_paths(lib_id,path) VALUES(?,?)',
-                          (int(cur.lastrowid), p))
-        d.commit()
-        return d
-    # 老库：libraries.path -> library_paths（每个库补一次，然后清掉旧列值）
-    for r in d.execute('SELECT id,path FROM libraries').fetchall():
-        p = (r['path'] or '').strip()
-        if not p:
+LIB_DIR = os.path.join(DB_DIR, 'libs')
+
+
+def _libs():
+    v = _cfg_load().get('libs')
+    return v if isinstance(v, list) else []
+
+
+def lib_db_path(L):
+    p = (L or {}).get('db') or ''
+    if p:
+        return p
+    return os.path.join(LIB_DIR, 'lib%d.db' % int((L or {}).get('id') or 1))
+
+
+def _clone_schema(dst_path):
+    """从现有库复制表/索���结构（不复制数据）；无源库时什么也不做。"""
+    if not (os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 0):
+        return
+    try:
+        src = sqlite3.connect('file:%s?mode=ro' % DB_PATH.replace('\\', '/').replace('?', '%3f'),
+                              uri=True, timeout=30)
+        dst = sqlite3.connect(dst_path, timeout=30)
+        for (sql,) in src.execute("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL "
+                                  "AND type IN ('table','index')"):
+            try:
+                dst.execute(sql)
+            except Exception:
+                pass
+        dst.commit()
+        dst.close()
+        src.close()
+    except Exception:
+        pass
+
+
+def _wipe_data(con):
+    try:
+        tabs = [r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        for t in tabs:
+            try:
+                con.execute('DELETE FROM "%s"' % t.replace('"', '""'))
+            except Exception:
+                pass
+        try:
+            con.execute('DELETE FROM sqlite_sequence')
+        except Exception:
+            pass
+        con.commit()
+        try:
+            con.execute('VACUUM')          # 空库别背着几 MB 空白页
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _make_lib_db(path, seed=False):
+    """建库文件：整库复制现有库的完整结构；seed=False 时清空数据。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path):
+        return path
+    src_path = DB_PATH if (os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 0) else ''
+    if src_path:
+        try:
+            src = sqlite3.connect('file:%s?mode=ro' % src_path.replace('\\', '/').replace('?', '%3f'),
+                                  uri=True, timeout=30)
+            dst = sqlite3.connect(path, timeout=30)
+            src.backup(dst)
+            src.close()
+            if not seed:
+                _wipe_data(dst)
+            dst.close()
+            return path
+        except Exception:
+            pass
+    sqlite3.connect(path, timeout=30).close()
+    _clone_schema(path)
+    return path
+
+
+def active_lib():
+    libs = _libs()
+    if not libs:
+        return None
+    aid = str(_cfg_load().get('active_lib') or '')
+    for L in libs:
+        if str(L.get('id')) == aid:
+            return L
+    return libs[0]
+
+
+def set_active_lib(lid):
+    libs = _libs()
+    for L in libs:
+        if str(L.get('id')) == str(lid):
+            cfg_set('active_lib', str(lid))
+            return True
+    return False
+
+
+def libraries(only_on=False):
+    out = []
+    for L in _libs():
+        e = dict(L)
+        e['paths'] = [p for p in (e.get('paths') or []) if p]
+        e['path'] = e['paths'][0] if e['paths'] else ''
+        e['db'] = lib_db_path(e)
+        e['enabled'] = 1 if str(e.get('enabled', 1)) not in ('0', 'False', 'false', '') else 0
+        if only_on and not e['enabled']:
             continue
-        c = d.execute('SELECT COUNT(*) c FROM library_paths WHERE lib_id=?',
-                      (r['id'],)).fetchone()['c']
-        if not c:
-            d.execute('INSERT INTO library_paths(lib_id,path) VALUES(?,?)', (r['id'], p))
-        d.execute("UPDATE libraries SET path='' WHERE id=?", (r['id'],))
-    d.commit()
-    return d
-
-
-def libraries(dbc=None, only_on=False):
-    d = ensure_libraries(dbc)
-    q = 'SELECT id,name,kind,enabled FROM libraries'
-    if only_on:
-        q += ' WHERE COALESCE(enabled,1)=1'
-    q += ' ORDER BY id'
-    out = [dict(r) for r in d.execute(q)]
-    pm = {}
-    for r in d.execute('SELECT lib_id,path FROM library_paths ORDER BY id'):
-        pm.setdefault(r['lib_id'], []).append(r['path'])
-    for L in out:
-        L['paths'] = pm.get(L['id'], [])
-        L['path'] = L['paths'][0] if L['paths'] else ''
+        out.append(e)
     return out
 
 
-def libraries_set(rows, dbc=None):
-    """整体保存 [{id,name,kind,enabled,paths:[...]}]；列表里没有的库删除。"""
-    d = ensure_libraries(dbc)
-    ts, keep = now(), []
+def libraries_set(rows):
+    """整体保存 [{id,name,kind,enabled,paths}]；库文件按需创建，不删除旧库文件。"""
+    d = _cfg_load()
+    cur = {str(L.get('id')): L for L in _libs()}
+    for L in cur.values():
+        _make_lib_db(lib_db_path(L))
+    nid = max([int(x) for x in cur] + [0]) + 1
+    out, keep = [], set()
     for r in (rows or []):
         ps = [str(x).strip() for x in (r.get('paths') or []) if str(x).strip()]
         if not ps:
@@ -198,56 +359,41 @@ def libraries_set(rows, dbc=None):
             if p1:
                 ps = [p1]
         if not ps:
-            continue                                  # 没有目录的库不保存
-        name = (r.get('name') or '').strip() or os.path.basename(ps[0].rstrip('\\/')) or ps[0]
-        kind = (r.get('kind') or 'av').strip()
-        if kind not in ('av', 'movie', 'tv'):
-            kind = 'av'
-        en = 0 if str(r.get('enabled', 1)) in ('0', 'False', 'false', 'None', '') else 1
+            continue
         try:
             _id = int(r.get('id') or 0)
         except Exception:
             _id = 0
-        if _id:
-            d.execute('UPDATE libraries SET name=?,path=?,kind=?,enabled=?,ts=? WHERE id=?',
-                      (name, ps[0], kind, en, ts, _id))
-            d.execute('DELETE FROM library_paths WHERE lib_id=?', (_id,))
+        if _id and str(_id) in cur:
+            L = cur[str(_id)]
         else:
-            cur = d.execute('INSERT INTO libraries(name,path,kind,enabled,ts) VALUES(?,?,?,?,?)',
-                            (name, ps[0], kind, en, ts))
-            _id = int(cur.lastrowid)
-        seen = set()
-        for p in ps:
-            if p in seen:
-                continue
-            seen.add(p)
-            d.execute('INSERT INTO library_paths(lib_id,path) VALUES(?,?)', (_id, p))
-        keep.append(_id)
-    if keep:
-        ph = ','.join('?' * len(keep))
-        d.execute('DELETE FROM library_paths WHERE lib_id NOT IN (%s)' % ph, keep)
-        d.execute('DELETE FROM libraries WHERE id NOT IN (%s)' % ph, keep)
-    else:
-        d.execute('DELETE FROM library_paths')
-        d.execute('DELETE FROM libraries')
-    d.commit()
-    return libraries(d)
+            L = {'id': nid, 'db': os.path.join(LIB_DIR, 'lib%d.db' % nid)}
+            nid += 1
+        L['name'] = (r.get('name') or '').strip() or os.path.basename(ps[0].rstrip('\\/')) or ps[0]
+        L['kind'] = (r.get('kind') or 'av').strip()
+        if L['kind'] not in ('av', 'movie', 'tv'):
+            L['kind'] = 'av'
+        L['enabled'] = 0 if str(r.get('enabled', 1)) in ('0', 'False', 'false', 'None', '') else 1
+        L['paths'] = ps
+        L['db'] = lib_db_path(L)
+        _make_lib_db(L['db'])
+        keep.add(str(L['id']))
+        out.append(L)
+    d['libs'] = out
+    if not any(str(d.get('active_lib')) == str(L['id']) for L in out):
+        d['active_lib'] = out[0]['id'] if out else ''
+    _cfg_save()
+    return libraries()
 
 
 def scan_roots():
-    """[(kind, path)]：所有启用媒体库的全部目录，按路径去重；空则退回 AV 根。"""
+    """[(kind, path)]：当前启用库的全部目录，按路径去重。"""
     out, seen = [], set()
-    try:
-        libs = libraries(only_on=True)
-    except Exception:
-        libs = []
-    for L in libs:
-        for p in (L.get('paths') or []):
-            p = (p or '').strip()
-            if not p or p in seen:
-                continue
-            seen.add(p)
-            out.append((L.get('kind') or 'av', p))
+    for L in libraries(only_on=True):
+        for p in L['paths']:
+            if p and p not in seen:
+                seen.add(p)
+                out.append((L['kind'], p))
     if not out:
         out = [('av', scan_root())]
     return out

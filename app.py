@@ -4901,7 +4901,17 @@ class H(BaseHTTPRequestHandler):
                 k = mlib.tmdb_key()
                 return self._json({'has': bool(k), 'mode': ('token' if k.startswith('eyJ') else ('key' if k else ''))})
             if p == '/api/libs':
-                return self._json({'libs': mlib.libraries()})
+                _ls = mlib.libraries()
+                for _L in _ls:
+                    try:
+                        _c = mlib.sqlite3.connect(_L['db'])
+                        _L['n'] = _c.execute('SELECT COUNT(*) c FROM items WHERE present=1'
+                                             ).fetchone()[0]
+                        _c.close()
+                    except Exception:
+                        _L['n'] = 0
+                _a = mlib.active_lib()
+                return self._json({'libs': _ls, 'active': int(_a['id']) if _a else 0})
             if p == '/api/sites':
                 return self._json({'sites': sites_info(), 'on': mlib.sites_enabled()})
             if p == '/api/net':
@@ -5236,6 +5246,10 @@ class H(BaseHTTPRequestHandler):
                 k = mlib.tmdb_key()
                 return self._json({'ok': ok, 'has': bool(k),
                                    'mode': ('token' if k.startswith('eyJ') else ('key' if k else ''))})
+            elif p == '/api/libs/active':
+                ok = mlib.set_active_lib(q.get('id') or '')
+                _a = mlib.active_lib()
+                return self._json({'ok': ok, 'active': int(_a['id']) if _a else 0})
             elif p == '/api/libs/set':
                 try:
                     rows = json.loads(self._body() or '[]')
@@ -5452,7 +5466,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
   <button id="b-sites">站点</button>
   <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
-  <button id="b-libs" title="管理媒体库：可建多个 AV/电影/剧集库">媒体库 <span class="muted" id="lib-n">0</span></button>
+  <select id="b-libsel" title="切换媒体库（每个库独立数据库）" style="min-width:132px"></select>
+  <button id="b-libs" title="媒体库设置">⚙ 库</button>
   <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select><span class="muted">输出语言</span><select id="cfg-outlang" title="元数据输出语言" style="min-width:104px"><option value="">跟随界面</option><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
@@ -5637,11 +5652,11 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <table id="seg-tbl"></table>
   <div class="bar"><button id="seg-add">+ 添加一段</button><button class="primary" id="seg-save">保存</button></div>
 </div></div>
-<div class="modal" id="modal5"><div class="box" style="max-width:980px">
-  <div class="bar"><b>媒体库</b><span class="muted" id="lib-info"></span><button class="right" id="md5-close">关闭</button></div>
-  <p class="muted">一个库 = 一个类型 + 任意多个目录（可跨盘/跨 NAS）。AV 库、电影库、剧集库可各建多个；扫描按目录分别判断增删，互不影响。</p>
-  <table id="lib-tbl"></table>
-  <div class="bar"><button id="lib-add">+ 新增媒体库</button><button class="primary" id="lib-save">保存</button></div>
+<div class="modal" id="modal5"><div class="box" style="max-width:1000px">
+  <div class="bar"><b>媒体库设置</b><span class="muted" id="lib-info"></span><button class="right" id="md5-close">关闭</button></div>
+  <p class="muted">每个库有独立数据库文件，互不影响。一个库可挂多个目录；类型决定条目归到 AV / 电影 / 剧集。顶部下拉可直接切换当前库。</p>
+  <div id="lib-list"></div>
+  <div class="bar"><button id="lib-add">+ 新增媒体库</button><button class="primary" id="lib-save">保存全部</button></div>
 </div></div>
 <div class="modal" id="modal4"><div class="box">
   <div class="bar"><b>站点设置</b><span class="muted" id="st-info"></span><button class="right" id="md4-close">关闭</button></div>
@@ -5685,6 +5700,7 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
   PLAT=s.os||'win';                     // 容器/Linux：隐藏 Windows 专属按钮
   const _ao=document.getElementById('a-open'); if(_ao)_ao.style.display=(PLAT==='win'?'':'none');
   const _ln=document.getElementById('lib-n');if(_ln)_ln.textContent=(s.libs||0);
+  try{await libSel();}catch(e){}
   const sel=$('#cfg-model');const ms=(s.ollama&&s.ollama.models)||[];
   if(sel.options.length!==ms.length+1){sel.innerHTML='<option value="'+esc(s.model)+'">'+esc(s.model)+'</option>'
     +ms.map(m=>'<option>'+esc(m)+'</option>').join('');}
@@ -6300,47 +6316,70 @@ async function setUILang(v){await fetch('/api/lang?lang='+encodeURIComponent(v),
 const _bl=document.getElementById('b-lang'); if(_bl)_bl.onchange=()=>setUILang(_bl.value);
 const _co=document.getElementById('cfg-outlang');
 if(_co)_co.onchange=async()=>{await fetch('/api/lang?out_lang='+encodeURIComponent(_co.value),{method:'POST'});};
-let LIBSROWS=[];
-function libRender(){$('#lib-tbl').innerHTML='<thead><tr><th style="width:170px">名称</th><th style="width:88px">类型</th><th style="width:52px">启用</th><th style="width:82px"></th></tr></thead><tbody>'
-  +LIBSROWS.map((L,i)=>'<tr data-i="'+i+'"><td><input class="lib-name" value="'+esc(L.name||'')+'" style="width:158px"></td>'
-    +'<td><select class="lib-kind">'+[['av','AV'],['movie','电影'],['tv','剧集']].map(([v,t])=>'<option value="'+v+'"'+(L.kind===v?' selected':'')+'>'+t+'</option>').join('')+'</select></td>'
-    +'<td><input type="checkbox" class="lib-on"'+(L.enabled?' checked':'')+'></td>'
-    +'<td><button class="lib-del">删除库</button></td></tr>'
-    +'<tr class="lib-prow" data-i="'+i+'"><td colspan="4"><div class="lib-paths">'
-    +(L.paths||[]).map((p,j)=>'<div class="lib-p"><input class="lib-path" data-j="'+j+'" value="'+esc(p)+'" style="width:84%">'
-        +'<button class="lib-pdel" data-i="'+i+'" data-j="'+j+'" title="移除这个目录">×</button></div>').join('')
-    +'<button class="lib-padd" data-i="'+i+'">+ 目录</button></div></td></tr>').join('')+'</tbody>';}
-function libSync(){document.querySelectorAll('#lib-tbl tbody tr[data-i]').forEach(tr=>{
-  const i=parseInt(tr.dataset.i,10),L=LIBSROWS[i];if(!L)return;
-  if(tr.classList.contains('lib-prow')){
-    L.paths=[...tr.querySelectorAll('.lib-path')].map(x=>x.value);return;}
-  L.name=tr.querySelector('.lib-name').value;
-  L.kind=tr.querySelector('.lib-kind').value;
-  L.enabled=tr.querySelector('.lib-on').checked;});}
+let LIBSROWS=[],ACTIVE=0;
+const KINDTXT={av:'AV',movie:'电影',tv:'剧集'};
+function libCard(L,i){
+  const cur=(L.id&&L.id===ACTIVE);
+  return '<div data-i="'+i+'" style="border:1px solid #2a3140;border-radius:9px;padding:9px 11px;margin:9px 0">'
+   +'<div class="bar" style="margin:0 0 6px"><input class="lib-name" value="'+esc(L.name||'')+'" placeholder="库名称" style="width:180px">'
+   +'<select class="lib-kind">'+Object.keys(KINDTXT).map(v=>'<option value="'+v+'"'+(L.kind===v?' selected':'')+'>'+KINDTXT[v]+'</option>').join('')+'</select>'
+   +'<label class="muted" style="margin-left:6px"><input type="checkbox" class="lib-on"'+(L.enabled?' checked':'')+'> 启用</label>'
+   +(cur?'<span style="color:var(--ok);margin-left:8px">● 当前库</span>'
+        :(L.id?'<button class="lib-use" style="margin-left:8px">设为当前</button>':''))
+   +'<button class="lib-del right">删除库</button></div>'
+   +'<div class="muted" style="font-size:11px;margin-bottom:6px">数据库：'+esc(L.db||'')+'　条目：'+(L.n==null?'-':L.n)+'</div>'
+   +'<div>'+ (L.paths||[]).map((p,k)=>'<div class="lib-p" style="margin:3px 0"><input class="lib-path" data-k="'+k+'" value="'+esc(p)+'" style="width:84%">'
+        +'<button class="lib-pdel" data-k="'+k+'" title="移除这个目录">×</button></div>').join('')
+   +'<button class="lib-padd">+ 目录</button></div></div>';
+}
+function libRender(){
+  $('#lib-list').innerHTML=LIBSROWS.length?LIBSROWS.map(libCard).join('')
+    :'<p class="muted">还没有媒体库，点下面「新增媒体库」。</p>';
+  $('#lib-info').textContent='共 '+LIBSROWS.length+' 个库 / '
+    +LIBSROWS.reduce((n,L)=>n+(L.paths||[]).length,0)+' 个目录';
+}
+function libSync(){document.querySelectorAll('#lib-list [data-i]').forEach(el=>{
+  const i=parseInt(el.dataset.i,10),L=LIBSROWS[i];if(!L)return;
+  L.name=el.querySelector('.lib-name').value;
+  L.kind=el.querySelector('.lib-kind').value;
+  L.enabled=el.querySelector('.lib-on').checked?1:0;
+  L.paths=[...el.querySelectorAll('.lib-path')].map(x=>x.value);});}
+async function libSel(){const d=await(await fetch('/api/libs')).json();
+  window.LIBS=d.libs||[];ACTIVE=d.active||0;
+  $('#b-libsel').innerHTML=(d.libs||[]).map(L=>'<option value="'+L.id+'"'
+    +(L.id===ACTIVE?' selected':'')+'>'+esc(L.name)+' · '+KINDTXT[L.kind||'av']+'</option>').join('');
+  const _ln=document.getElementById('lib-n');if(_ln)_ln.textContent=(d.libs||[]).length;}
 async function libLoad(){const d=await(await fetch('/api/libs')).json();
-  LIBSROWS=(d.libs||[]).map(L=>({id:L.id,name:L.name,kind:L.kind,enabled:!!L.enabled,paths:(L.paths||[]).slice()}));
-  libRender();$('#lib-info').textContent='共 '+LIBSROWS.length+' 个库 / '+LIBSROWS.reduce((n,L)=>n+(L.paths||[]).length,0)+' 个目录';}
+  ACTIVE=d.active||0;
+  LIBSROWS=(d.libs||[]).map(L=>({id:L.id,name:L.name,kind:L.kind,enabled:!!L.enabled,
+    paths:(L.paths||[]).slice(),db:L.db,n:L.n}));
+  libRender();}
+$('#b-libsel').onchange=async e=>{
+  await fetch('/api/libs/active?id='+e.target.value,{method:'POST'});
+  location.reload();};
 $('#b-libs').onclick=async()=>{await libLoad();$('#modal5').classList.add('on');};
 $('#md5-close').onclick=()=>$('#modal5').classList.remove('on');
-$('#lib-add').onclick=()=>{libSync();LIBSROWS.push({id:0,name:'',kind:'av',enabled:true,paths:['']});libRender();};
-document.addEventListener('click',e=>{
-  const t=e.target.closest?e.target.closest('.lib-del,.lib-padd,.lib-pdel'):null;
+$('#lib-add').onclick=()=>{libSync();LIBSROWS.push({id:0,name:'',kind:'av',enabled:1,paths:['']});libRender();};
+document.addEventListener('click',async e=>{
+  const t=e.target.closest?e.target.closest('.lib-del,.lib-padd,.lib-pdel,.lib-use'):null;
   if(!t)return;
+  const card=t.closest('[data-i]'),i=card?parseInt(card.dataset.i,10):-1;
+  if(t.classList.contains('lib-use')){
+    await fetch('/api/libs/active?id='+LIBSROWS[i].id,{method:'POST'});location.reload();return;}
   libSync();
-  const i=parseInt(t.dataset.i,10),L=LIBSROWS[i];
+  const L=LIBSROWS[i];if(!L)return;
   if(t.classList.contains('lib-del')){LIBSROWS.splice(i,1);}
-  else if(!L)return;
   else if(t.classList.contains('lib-padd')){L.paths.push('');}
-  else {L.paths.splice(parseInt(t.dataset.j,10),1);}
+  else {L.paths.splice(parseInt(t.dataset.k,10),1);}
   libRender();});
 $('#lib-save').onclick=async()=>{
   libSync();
   const rows=LIBSROWS.map(L=>({id:L.id||0,name:L.name,kind:L.kind,enabled:L.enabled?1:0,
     paths:(L.paths||[]).map(x=>x.trim()).filter(x=>x)}));
   const d=await(await fetch('/api/libs/set',{method:'POST',body:JSON.stringify(rows)})).json();
-  LIBSROWS=(d.libs||[]).map(L=>({id:L.id,name:L.name,kind:L.kind,enabled:!!L.enabled,paths:(L.paths||[]).slice()}));
-  libRender();$('#lib-info').textContent='已保存：'+LIBSROWS.length+' 个库';
-  const s=await(await fetch('/api/stats')).json();$('#lib-n').textContent=(s.libs||0);};
+  ACTIVE=(await(await fetch('/api/libs')).json()).active||ACTIVE;
+  await libLoad();await libSel();
+  $('#lib-info').textContent='已保存：'+LIBSROWS.length+' 个库';};
 $('#b-sites').onclick=async()=>{await stLoad();
   try{const s=await(await fetch('/api/stats')).json();$('#ck-state').textContent=s.cookie?'当前：已设置':'当前：未设置';
     const t=await(await fetch('/api/tmdb')).json();
