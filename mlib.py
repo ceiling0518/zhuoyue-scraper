@@ -460,6 +460,109 @@ def web_complete(item, model=None, log=None):
 
 
 # ---------------------------------------------------------------- 系列表
+# ---------------------------------------------------------------- 系列表完善
+SERIES_ENRICH_PROMPT = (
+    '你是影片厂牌资料助手。根据下面的网络搜索结果，判断这个**系列/厂牌**的信息。\n'
+    '系列：%s\n\n搜索结果：\n%s\n\n'
+    '规则：拿不到或不确定的字段留空，不要编造；publisher 是制作/发行公司。\n'
+    '只输出 JSON 对象：{"publisher":"公司","note":"一句话备注",'
+    '"sem_kind":"coded|uncensored|none","has_code":0或1}\n'
+)
+
+
+def series_build(dbc=None, log=None):
+    """从 items 的语义数据重建系列表，返回 (系列数, 条目数)。"""
+    def _log(x):
+        if log:
+            try:
+                log(x)
+            except Exception:
+                pass
+    d = dbc or db()
+    ensure_series(d)
+    rows = [dict(r) for r in d.execute(
+        'SELECT id,name,code,sem_code,sem_kind,studio FROM items WHERE present=1')]
+    groups, spell = {}, {}
+    for r in rows:
+        _code = (r.get('sem_code') or r.get('code') or '').strip()
+        k = series_key(_code or r.get('name') or '')
+        if not k:
+            continue
+        # 只按【有番号值】的条目建系列（无番号的请手工在界面加）
+        if not _code:
+            continue
+        gk = k.lower()
+        groups.setdefault(gk, []).append(r)
+        spell[gk] = spell.get(gk, {})
+        spell[gk][k] = spell[gk].get(k, 0) + 1
+    n = 0
+    # 清掉历史遗留的纯数字系列
+    try:
+        d.execute("DELETE FROM series WHERE has_code=0 AND series GLOB '*[^ -~]*'")
+        d.execute("DELETE FROM series WHERE series GLOB '[0-9]*' AND series NOT GLOB '*[A-Za-z]*'")
+        d.commit()
+    except Exception:
+        pass
+    for gk, its in groups.items():
+        k = max(spell[gk], key=spell[gk].get)
+        kinds = [x.get('sem_kind') or '' for x in its if (x.get('sem_kind') or '')]
+        kind = max(set(kinds), key=kinds.count) if kinds else ''
+        pubs = [x.get('studio') or '' for x in its if (x.get('studio') or '').strip()]
+        pub = max(set(pubs), key=pubs.count) if pubs else ''
+        has_code = 1 if any((x.get('sem_code') or x.get('code') or '').strip() for x in its) else 0
+        note = ''
+        if not has_code and kind in ('none', ''):
+            note = '无番号系列'
+        series_upsert(k, has_code, kind, note, pub, d)
+        n += 1
+    _log('系列表：重建 %d 个系列（来自 %d 个条目）' % (n, len(rows)))
+    return n, len(rows)
+
+
+def series_enrich(one, model=None, log=None, dbc=None):
+    """联网查一个系列的公司/备注/语义。返回 True/False。"""
+    def _log(x):
+        if log:
+            try:
+                log(x)
+            except Exception:
+                pass
+    one = (one or '').strip()
+    if not one:
+        return False
+    hits = web_search(one + ' 作品 制作公司 发行', 5)
+    _log('  搜索「%s」-> %d 条' % (one, len(hits)))
+    if not hits:
+        return False
+    ctx = '\n'.join('%d. %s | %s' % (i + 1, h['title'][:80], h['snippet'][:120])
+                    for i, h in enumerate(hits))
+    try:
+        txt = _chat(SERIES_ENRICH_PROMPT % (one, ctx), model or ai_model(), 500, 0.2)
+        j = extract_json(txt)
+        if not isinstance(j, dict):
+            return False
+        pub = strip_noise(j.get('publisher') or '')[:40]
+        note = strip_noise(j.get('note') or '')[:60]
+        kind = (j.get('sem_kind') or '').strip()
+        if kind not in ('coded', 'uncensored', 'none'):
+            kind = ''
+        try:
+            hc = int(j.get('has_code') or 0)
+        except Exception:
+            hc = 0
+        if not (pub or note or kind):
+            return False
+        cur = series_get(one, dbc) or {}
+        series_upsert(one, hc if hc else (cur.get('has_code') or 0),
+                      kind or (cur.get('sem_kind') or ''),
+                      note or (cur.get('note') or ''),
+                      pub or (cur.get('publisher') or ''), dbc)
+        _log('    -> 公司 %s | 备注 %s | %s' % (pub or '-', note or '-', kind or '-'))
+        return True
+    except Exception as e:
+        _log('    ERR %s' % str(e)[:100])
+        return False
+
 # 4 列：系列 / 番号有无 / 语义 / 备注
 # 语义识别与改名共用：7Boss 这类国产系列没有番号，靠 series 归类。
 def ensure_series(dbc=None):
@@ -534,8 +637,11 @@ def series_key(raw):
     """番号 -> 系列：JUR-212 -> JUR；FC2-PPV-4544125 -> FC2。"""
     t = strip_noise(raw or '')
     t = re.sub(r'\.(mp4|mkv|avi|wmv|mov|ts|m2ts)$', '', t, flags=re.I)
+    t = re.sub(r'^\d{2,5}\s*[-_]\s*', '', t)      # 去掉目录序号 0005-
     head = re.split(r'[\s\-_—.:：|/\\]+', t)[0] if t else ''
     head = head.strip(' .-_')
+    if not head or re.fullmatch(r'\d+', head):
+        return ''
     return head[:20]
 
 

@@ -1259,6 +1259,34 @@ def _topaz_path():
 
 
 # ---------------------------------------------------------------- 改名
+def _job_series(run_build=True, enrich=False, limit=0):
+    _begin('series')
+    try:
+        dbc = mlib.db()
+        if run_build:
+            n, cnt = mlib.series_build(dbc, log=_log)
+            _log('  系列 %d 个 / 条目 %d' % (n, cnt))
+        if enrich:
+            limit = int(limit or 0)
+            rows = [dict(r) for r in dbc.execute(
+                "SELECT series FROM series WHERE IFNULL(publisher,'')='' "
+                "ORDER BY series" + (' LIMIT ?' if limit > 0 else ''),
+                ((limit,) if limit > 0 else ()))]
+            _log('  待联网完善 %d 个系列' % len(rows))
+            ok = 0
+            for i, r in enumerate(rows, 1):
+                if _stop_req():
+                    _log('! 已请求停止'); break
+                _tick(i, len(rows))
+                if mlib.series_enrich(r['series'], log=_log, dbc=dbc):
+                    ok += 1
+                _log('[%d/%d] %s' % (i, len(rows), r['series']))
+            _log('  联网完善 %d/%d' % (ok, len(rows)))
+        _end('series 完成')
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200]); _end('series 失败')
+
+
 def _organize_plan(ids, root=False):
     """AI 模式：平铺计划 + 改名计划（只读）。"""
     its = [dict(x) for x in _items_by_ids(ids)]
@@ -3165,6 +3193,12 @@ class H(BaseHTTPRequestHandler):
                 return self._json(stats())
             if p == '/api/items':
                 return self._json(items(q))
+            if p == '/api/series/run':
+                ok = start_job(_job_series,
+                               (q.get('build') or '') in ('1', 'true', 'yes'),
+                               (q.get('enrich') or '') in ('1', 'true', 'yes'),
+                               int(q.get('limit') or 0), lane='heavy')
+                return self._json({'ok': ok})
             if p == '/api/series':
                 _q = q.get('q') or ''
                 _lim = max(1, min(1000, int(q.get('limit') or 300)))
@@ -3673,7 +3707,12 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 <div class="modal" id="modal9"><div class="box" style="max-width:1080px">
   <div class="bar"><b>系列表</b>
     <input id="sr-q" placeholder="搜索系列 / 备注 / 出版商" style="width:240px">
-    <button id="sr-find">搜索</button><span class="muted" id="sr-sum"></span>
+    <button id="sr-find">搜索</button>
+    <span class="muted">|</span>
+    <button id="sr-build" title="按语义库重建：系列/有无番号/语义/公司">从库重建</button>
+    <button id="sr-enrich" title="对没有出版商的系列联网搜索补全">联网完善</button>
+    <input id="sr-lim" type="number" value="20" style="width:64px" title="联网完善的数量上限，0=全部">
+    <span class="muted" id="sr-sum"></span>
     <button class="right" id="md9-close">关闭</button></div>
   <div style="max-height:62vh;overflow:auto"><table id="sr-tbl"><thead><tr>
     <th style="width:200px">系列</th><th style="width:72px">有番号</th><th style="width:110px">语义</th>
@@ -3872,6 +3911,9 @@ async function loadSeries(q){
 }
 $('#a-series').onclick=async()=>{$('#modal9').classList.add('on');loadSeries($('#sr-q').value);};
 $('#sr-find').onclick=()=>loadSeries($('#sr-q').value);
+$('#sr-build').onclick=async()=>{await post('/api/series/run?build=1');loadSeries($('#sr-q').value);};
+$('#sr-enrich').onclick=async()=>{await post('/api/series/run?build=0&enrich=1&limit='+$('#sr-lim').value);
+  setTimeout(()=>loadSeries($('#sr-q').value),3000);};
 $('#sr-q').onkeydown=e=>{if(e.key==='Enter')loadSeries($('#sr-q').value);};
 $('#sr-rows').onclick=async e=>{
   const b=e.target.closest('.sr-save'); if(!b)return;
