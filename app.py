@@ -3464,7 +3464,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted">语义组(0=全部)</span><input id="semg" type="number" value="20" style="width:76px">
     <span class="muted">AI组(0=全部)</span><input id="aig" type="number" value="5" style="width:74px">
     <label class="muted"><input type="checkbox" id="force"> force</label>
-    <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div id="prog"><i></i></div>
   <div class="logwrap"><div id="log"></div><button id="logjump" title="跳到最新一行">↓ 最新</button></div>
@@ -3478,29 +3477,34 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="f-order" title="正序 / 倒序"><option value="asc">正序 ↑</option><option value="desc">倒序 ↓</option></select>
     <button id="b-refresh">刷新</button>
     <button id="b-archive">档案</button>
-    <span class="muted right" id="count"></span>
   </div>
   <div class="bar" id="actbar" style="background:#171c25">
-    <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
-    <button class="primary" id="a-web" title="只对【选中的条目】跑网站线（不经过队列，队列里有别的也不会被跑）">重跑·网站</button>
-    <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
-    <label class="muted" title="勾选后：信息无效/不足时联网搜索补全"><input type="checkbox" id="fill-web"> Web</label>
-    <label class="muted" title="勾选后：信息无效/不足时抽帧看片补全（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
-    <button id="a-fill">AI 补全</button>
-    <button id="a-vscan">AI 看片</button>
-    <button id="a-auto" title="只对【选中的条目】跑全流程（不经过队列）">重跑·全流程</button>
-    <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
-    <button id="a-queue" title="把选中条目加入队列（用右侧 qmode 的模式），之后点「跑队列」才执行">加入队列</button>
-    <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
-    <button id="a-open">打开目录</button>
-<span id="hb-legend" style="margin-left:10px;font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 深检 · <b style="color:#1565c0">✓</b> 浅检 · <b style="color:var(--bad)">⚠</b> 有问题 · <b style="color:var(--muted)">↻</b> 需重测　｜　属性：<b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--muted)">○</b>无 <b style="color:var(--bad)">✕</b>有误 <b style="color:#777">–</b>删除　<b>🌐</b>网站 <b>🤖</b>AI　<b style="color:var(--warn)">📢n</b>广告段数</span>
-    <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label> <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
+    <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
+    <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
     <button id="a-selall">全选本页</button>
     <button id="a-selnone">取消选择</button>
+    <span class="muted">|</span>
+    <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
+    <button id="a-open">打开目录</button>
+  </div>
+  <div class="bar" id="infobar" style="background:#141922">
+    <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
+    <span class="muted" id="count"></span>
+    <span class="muted" id="page"></span>
+    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 深检 · <b style="color:#1565c0">✓</b> 浅检 · <b style="color:var(--bad)">✕</b> 有问题</span>
+    <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
+    <button class="primary" id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
+    <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
+    <label class="muted" title="勾选后：信息无效/不足时联网搜索补全"><input type="checkbox" id="fill-web"> Web</label>
+    <label class="muted" title="勾选后：信息无效/不足时抽帧看片补全（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
+    <button id="a-fill">AI 补全</button>
+    <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
+    <button id="a-queue" title="把选中条目加入队列（用右侧 qmode 的模式），之后点「跑队列」才执行">加入队列</button>
+    <span class="muted">|</span>
     <button id="a-thumbs">刷新缩略图</button>
     <button id="a-coverdel">删除封面图</button>
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
@@ -3523,7 +3527,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th style="width:80px">番号</th><th style="width:74px">语义</th>
     <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
-  <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><span id="page" class="muted"></span><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
+  <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
 <div class="modal" id="modal8"><div class="box" style="max-width:1280px">
   <div class="bar"><b>整理 + 改名</b><span class="muted" id="rn-sum"></span><button class="right" id="md8-close">关闭</button></div>
@@ -3697,11 +3701,6 @@ $('#a-fill').onclick=async()=>{
   await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value
     +(ids?'&ids='+ids:'')+'&web='+($('#fill-web').checked?1:0)
     +'&scan='+($('#fill-scan').checked?1:0));};
-$('#a-vscan').onclick=async()=>{
-  const ids=[...SEL].join(',');
-  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部 无/有误】的条目抽帧看视频（较慢），继续？')))return;
-  await post('/api/vscan?limit='+$('#limit').value+(ids?'&ids='+ids:''));};
-$('#a-auto').onclick=batchRun('auto');
 $('#a-queue').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));let n=0;
   for(const id of SEL){const r=await post('/api/queue/'+id+'?mode='+$('#qmode').value);n=r.queue;}
   $('#qcount').textContent=n;};
