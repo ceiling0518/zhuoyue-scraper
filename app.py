@@ -5616,7 +5616,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th style="width:80px">大小</th><th style="width:150px">许可</th><th style="width:120px">操作</th>
   </tr></thead><tbody id="mdl-rows"></tbody></table></div>
   <div class="muted" style="padding:6px 4px;font-size:12px">
-    开源模型可直接下载到 app 的 models 目录；Topaz 为商业授权模型，只能在本机安装后由软件调用，不提供下载。  <span class="muted">｜ 版本 v2.0.0</span>
+    开源模型可直接下载到 app 的 models 目录；Topaz 为商业授权模型，只能在本机安装后由软件调用，不提供下载。  <span class="muted">｜ 版本 v2.1.0</span>
   </div>
 </div></div>
 <div class="modal" id="modal8"><div class="box" style="max-width:1280px">
