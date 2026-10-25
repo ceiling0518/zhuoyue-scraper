@@ -3456,6 +3456,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="b-fetch">抓取</button>
     <button id="b-qrun">跑队列</button>
     <button id="b-qclear">清空队列</button>
+
     <button class="danger" id="b-stop">停止</button>
     <span class="muted">上限(0=全部)</span><input id="limit" type="number" value="0" style="width:104px">
     <span class="muted">模式</span>
@@ -3481,6 +3482,12 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="bar" id="actbar" style="background:#171c25">
     <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
     <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
+    <button class="primary" id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
+    <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
+    <label class="muted" title="勾选后：信息无效/不足时联网搜索补全"><input type="checkbox" id="fill-web"> Web</label>
+    <label class="muted" title="勾选后：信息无效/不足时抽帧看片补全（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
+    <button id="a-fill">AI 补全</button>
+    <span class="muted">|</span>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
     <button id="a-selall">全选本页</button>
@@ -3488,23 +3495,18 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted">|</span>
     <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
     <button id="a-open">打开目录</button>
+    <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
+    <button id="a-queue" title="把选中条目加入队列（用左侧模式），之后点「跑队列」才执行">加入队列</button>
   </div>
   <div class="bar" id="infobar" style="background:#141922">
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
     <span class="muted" id="count"></span>
     <span class="muted" id="page"></span>
-    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 深检 · <b style="color:#1565c0">✓</b> 浅检 · <b style="color:var(--bad)">✕</b> 有问题</span>
+    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测</span>
     <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
-    <button class="primary" id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
-    <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
-    <label class="muted" title="勾选后：信息无效/不足时联网搜索补全"><input type="checkbox" id="fill-web"> Web</label>
-    <label class="muted" title="勾选后：信息无效/不足时抽帧看片补全（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
-    <button id="a-fill">AI 补全</button>
-    <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
-    <button id="a-queue" title="把选中条目加入队列（用右侧 qmode 的模式），之后点「跑队列」才执行">加入队列</button>
-    <span class="muted">|</span>
+    
     <button id="a-thumbs">刷新缩略图</button>
     <button id="a-coverdel">删除封面图</button>
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
