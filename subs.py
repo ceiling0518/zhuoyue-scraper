@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""SenseVoice(SherpaOnnx) 语音转字幕：视频 -> SRT
+"""SenseVoice(SherpaOnnx) 语音转字幕：视频 -> SRT（可选人声强化 / 翻译双语）
 
 用法：
   python subs.py <video> <out.srt> [--model-dir DIR] [--threads N] [--lang zh]
+                 [--enhance 1] [--translate zh] [--bilingual 1]
 
-进度行写到 stderr，形如：
-  PROG 12.3/240.0
+进度行写到 stderr：
+  AUDIO 240.0 / PROG 12.3/240.0 / TRPROG 20/45 / DONE 45
 """
 import argparse
 import io
@@ -15,9 +16,14 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.request
 import wave
 
 FFMPEG = None
+
+ENHANCE_AF = ('highpass=f=90,lowpass=f=7800,'
+              'afftdn=nr=12:nf=-25,'
+              'dynaudnorm=f=150:g=15')
 
 
 def _find_ffmpeg():
@@ -36,12 +42,19 @@ def _find_ffmpeg():
     return 'ffmpeg'
 
 
-def extract_wav(video, wav, log):
-    cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', video,
-           '-vn', '-ac', '1', '-ar', '16000', '-f', 'wav', wav]
+def extract_wav(video, wav, log, enhance=False):
+    cmd = [FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', video, '-vn']
+    if enhance:
+        cmd += ['-af', ENHANCE_AF]
+    cmd += ['-ac', '1', '-ar', '16000', '-f', 'wav', wav]
     r = subprocess.run(cmd, capture_output=True, timeout=36000)
     if r.returncode != 0 or not os.path.exists(wav):
-        raise RuntimeError('抽音频失败: %s' % (r.stderr or b'')[-200:].decode('utf-8', 'replace'))
+        # 强化链失败就退回原始音频
+        if enhance:
+            log('ENHANCE_ERR 退回原始音频')
+            return extract_wav(video, wav, log, False)
+        raise RuntimeError('抽音频失败: %s'
+                           % (r.stderr or b'')[-200:].decode('utf-8', 'replace'))
     with wave.open(wav, 'rb') as f:
         n = f.getnframes()
         log('AUDIO %.1f' % (n / 16000.0))
@@ -63,6 +76,60 @@ def fmt_ts(sec):
     return ('%02d:%02d:%06.3f' % (h, m, s)).replace('.', ',')
 
 
+def _parse_json_array(txt):
+    t = (txt or '').strip()
+    t = re.sub(r'^```(?:json)?\s*', '', t)
+    t = re.sub(r'\s*```$', '', t)
+    i, j = t.find('['), t.rfind(']')
+    if i < 0 or j <= i:
+        return None
+    try:
+        v = json.loads(t[i:j + 1])
+        return v if isinstance(v, list) else None
+    except Exception:
+        return None
+
+
+def translate_lines(lines, target, model, log, host='http://127.0.0.1:11434'):
+    """逐批翻译；失败时返回空串，保留原文。"""
+    out = []
+    B = 20
+    sysmsg = ('你是字幕翻译。把用户给的 JSON 数组里的字幕逐条翻成%s，保持口语、短句，'
+              '不要加解释。只返回 JSON 数组，长度和输入一致。' % ('简体中文' if target == 'zh' else target))
+    for i in range(0, len(lines), B):
+        chunk = lines[i:i + B]
+        payload = {
+            'model': model,
+            'stream': False,
+            'keep_alive': '30m',
+            'options': {'temperature': 0.2},
+            'messages': [
+                {'role': 'system', 'content': sysmsg},
+                {'role': 'user', 'content': json.dumps(chunk, ensure_ascii=False)},
+            ],
+        }
+        req = urllib.request.Request(
+            host + '/api/chat',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=900) as r:
+                txt = json.loads(r.read().decode('utf-8'))['message']['content']
+            arr = _parse_json_array(txt)
+        except Exception as e:
+            log('TRANS_ERR %s' % str(e)[:100])
+            arr = None
+        if not arr:
+            out.extend([''] * len(chunk))
+        else:
+            arr = [str(x).strip() for x in arr]
+            if len(arr) < len(chunk):
+                arr += [''] * (len(chunk) - len(arr))
+            out.extend(arr[:len(chunk)])
+        log('TRPROG %d/%d' % (min(i + B, len(lines)), len(lines)))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('video')
@@ -70,6 +137,10 @@ def main():
     ap.add_argument('--model-dir', default=r'F:\MediaScraper\models\asr')
     ap.add_argument('--threads', type=int, default=4)
     ap.add_argument('--lang', default='zh')
+    ap.add_argument('--enhance', type=int, default=0)
+    ap.add_argument('--translate', default='')
+    ap.add_argument('--bilingual', type=int, default=0)
+    ap.add_argument('--tr-model', default=os.environ.get('ASR_TR_MODEL', 'qwen38-9b-v2:latest'))
     ap.add_argument('--max-line', type=int, default=42)
     a = ap.parse_args()
 
@@ -97,7 +168,7 @@ def main():
     tmpdir = tempfile.mkdtemp(prefix='subs_')
     wav = os.path.join(tmpdir, 'a.wav')
     try:
-        total_samples = extract_wav(a.video, wav, log)
+        total_samples = extract_wav(a.video, wav, log, bool(a.enhance))
         rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
             model=model, tokens=tokens, num_threads=a.threads,
             use_itn=True, debug=False, language=a.lang)
@@ -113,7 +184,7 @@ def main():
 
         win = 512
         offset = 0
-        segs = []          # (start, end, text)
+        segs = []
         with wave.open(wav, 'rb') as f:
             while True:
                 raw = f.readframes(win)
@@ -157,9 +228,17 @@ def main():
             else:
                 merged.append((st, en, tx))
 
+        tr = []
+        if a.translate and merged:
+            log('TRANS_START %d' % len(merged))
+            tr = translate_lines([m[2] for m in merged], a.translate, a.tr_model, log)
+
         with io.open(a.out, 'w', encoding='utf-8') as f:
             for i, (st, en, tx) in enumerate(merged, 1):
-                f.write('%d\n%s --> %s\n%s\n\n' % (i, fmt_ts(st), fmt_ts(en), tx))
+                body = tx
+                if a.bilingual and i - 1 < len(tr) and tr[i - 1]:
+                    body = tx + '\n' + tr[i - 1]
+                f.write('%d\n%s --> %s\n%s\n\n' % (i, fmt_ts(st), fmt_ts(en), body))
         log('DONE %d' % len(merged))
     finally:
         try:

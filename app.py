@@ -2689,7 +2689,7 @@ ASR_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models
 ASR_LANGS = {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韩文', 'yue': '粤语', 'auto': '自动'}
 
 
-def _job_subs(ids=None, lang='zh', force=False):
+def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False):
     """语音转字幕：逐个视频跑 SenseVoice（Python 3.11 子进程），输出 <视频名>.<lang>.srt。"""
     global PROG
     _begin('subs', 1)
@@ -2700,6 +2700,7 @@ def _job_subs(ids=None, lang='zh', force=False):
         _tick(0, max(1, len(its)))
         ok = 0
         lang = (lang or 'zh').strip() or 'zh'
+        bilingual = (lang != 'zh')
         if not os.path.exists(ASR_PY):
             _log('! 找不到 %s（字幕引擎装在 3.11）' % ASR_PY)
             _end('subs 失败')
@@ -2721,7 +2722,7 @@ def _job_subs(ids=None, lang='zh', force=False):
                     break
                 v = os.path.basename(vp)
                 stem = os.path.splitext(v)[0]
-                out_name = '%s.%s.srt' % (stem, lang)
+                out_name = ('%s.%s-zh.srt' % (stem, lang)) if bilingual else ('%s.%s.srt' % (stem, lang))
                 out_path = os.path.join(it['path'], out_name)
                 if os.path.exists(out_path) and not force:
                     _log('  %s 已有 %s，跳过' % (v[:36], out_name[-12:]))
@@ -2730,7 +2731,10 @@ def _job_subs(ids=None, lang='zh', force=False):
                 tmp = os.path.join(os.environ.get('TEMP') or '.', 'subs_%d_%d.srt'
                                    % (it['id'], int(time.time())))
                 cmd = [ASR_PY, '-X', 'utf8', '-u', ASR_SCRIPT, vp, tmp,
-                       '--model-dir', ASR_MODEL_DIR, '--lang', lang, '--threads', '6']
+                       '--model-dir', ASR_MODEL_DIR, '--lang', lang, '--threads', '6',
+                       '--enhance', '1' if enhance else '0']
+                if bilingual:
+                    cmd += ['--translate', 'zh', '--bilingual', '1']
                 t0 = time.time()
                 nline = 0
                 total = 0.0
@@ -2759,6 +2763,15 @@ def _job_subs(ids=None, lang='zh', force=False):
                                         'elapsed': int(time.time() - t0), 'eta': 0}
                             except Exception:
                                 pass
+                        elif ln.startswith('TRPROG '):
+                            try:
+                                a, b = ln[7:].split('/')
+                                PROG = {'label': '翻译', 'frames': 0, 'fps': 0,
+                                        'cur_fps': 0,
+                                        'pct': round(min(99.0, float(a) / max(1e-6, float(b)) * 100), 1),
+                                        'elapsed': int(time.time() - t0), 'eta': 0}
+                            except Exception:
+                                pass
                         elif ln.startswith('DONE '):
                             try:
                                 nline = int(ln[5:])
@@ -2778,6 +2791,39 @@ def _job_subs(ids=None, lang='zh', force=False):
                 if not mlib.commit_back(tmp, out_path, _log):
                     _log('    ! 字幕回拷失败')
                     continue
+                if burn:
+                    try:
+                        _esc = tmp.replace('\\', '/').replace(':', '\\:')
+                        bname = '%s.hardsub.mp4' % stem
+                        bpath = os.path.join(it['path'], bname)
+                        k = 1
+                        while os.path.exists(bpath):
+                            bname = '%s.hardsub(%d).mp4' % (stem, k)
+                            bpath = os.path.join(it['path'], bname)
+                            k += 1
+                        bloc = os.path.join(os.environ.get('TEMP') or '.',
+                                            'hardsub_%d_%d.mp4' % (it['id'], int(time.time())))
+                        _log('    烧字幕（重编码，较慢）...')
+                        vf = ("subtitles='%s':force_style="
+                              "'FontName=Microsoft YaHei,FontSize=16,Outline=1,MarginV=24'"
+                              % _esc)
+                        rr = subprocess.run([mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
+                                             '-i', vp, '-vf', vf, '-c:v', 'hevc_nvenc',
+                                             '-preset', 'p5', '-cq', '24',
+                                             '-c:a', 'copy', '-movflags', '+faststart', bloc],
+                                            capture_output=True, timeout=28800)
+                        if rr.returncode == 0 and os.path.exists(bloc):
+                            if mlib.commit_back(bloc, bpath, _log):
+                                _log('    烧录完成：%s' % bname)
+                            try:
+                                os.remove(bloc)
+                            except Exception:
+                                pass
+                        else:
+                            _log('    ! 烧录失败: %s'
+                                 % (rr.stderr or b'')[-120:].decode('utf-8', 'replace'))
+                    except Exception as e:
+                        _log('    ! 烧录异常: %s' % str(e)[:100])
                 try:
                     os.remove(tmp)
                 except Exception:
@@ -4210,7 +4256,10 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/subs':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_subs, ids, (q.get('lang') or 'zh'),
-                               (q.get('force') or '') in ('1', 'true', 'yes'), lane='heavy')
+                               (q.get('force') or '') in ('1', 'true', 'yes'),
+                               (q.get('enhance') or '1') in ('1', 'true', 'yes'),
+                               (q.get('burn') or '') in ('1', 'true', 'yes'),
+                               lane='heavy')
             elif p == '/api/merge':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_merge, ids, lane='heavy')
@@ -4617,6 +4666,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-segs" title="编辑有效段：每个视频要保留的区间；可改起止、加段、删段，可按文件选择">有效段编辑</button>
      <button id="a-addel" title="按有效段切掉区间（勾了「合并」的视频先拼成一个，用第一个视频的名字替换原片）；原文件留 .orig 回滚点，临时文件自动清理">有效段裁剪（合并）</button>
      <select id="sublang" style="min-width:64px" title="字幕语言：用 SenseVoice 转写，输出 <视频名>.<语言>.srt"><option value="zh">中文</option><option value="en">英文</option><option value="ja">日文</option><option value="ko">韩文</option><option value="yue">粤语</option></select>
+     <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
+     <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
      <button id="a-subs" title="语音转字幕：每个视频跑一次 SenseVoice（CPU，约 1/10 实时），输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
@@ -5078,7 +5129,8 @@ $('#a-subs').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('给选中条目的每个视频生成字幕（SenseVoice，输出 .srt 到原目录；已有字幕会跳过）。继续？')))return;
-  await post('/api/subs?'+(ids?'ids='+ids+'&':'')+'lang='+($('#sublang').value));};
+  await post('/api/subs?'+(ids?'ids='+ids+'&':'')+'lang='+($('#sublang').value)
+    +'&enhance='+($('#subenh').checked?'1':'0')+'&burn='+($('#subburn').checked?'1':'0'));};
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
