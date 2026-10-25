@@ -1342,6 +1342,14 @@ def _run_prog(cmd, dur, log, label='', cuda=None, cwd=None, timeout=86400):
     frames, fps, out_ms, last_log = 0, 0.0, 0, 0.0
     try:
         for raw in iter(p.stdout.readline, b''):
+            if _stop_req():
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+                if log:
+                    log('    %s 已按请求中止（编码进程已结束）' % label)
+                break
             ln = raw.decode('utf-8', 'replace').strip()
             if ln.startswith('frame='):
                 try:
@@ -1633,6 +1641,14 @@ def _job_down(ids=None, target='auto', fix=False, ad=False, fpsout=0):
     dbc = mlib.db()
     try:
         _ensure_media(dbc)
+        if ad:
+            _log('== 第一步：删除无效段（先切干净，再按新时长降分辨率）==')
+            _job_addel(ids, nested=True)
+            if _stop_req():
+                _log('! 已在删除无效段阶段停止，不再降分辨率')
+                _end('downscale 已停止')
+                return
+            _log('== 第二步：降分辨率 ==')
         its = _items_by_ids(ids)
         _tick(0, max(1, len(its)))
         ok = 0
@@ -2088,17 +2104,20 @@ def _job_vdetect(ids=None):
         _end('vdetect 失败')
 
 
-def _job_addel(ids=None):
-    """删除广告：按 ads_file（逐文件）切，校验+深检后原子替换原片。
+def _job_addel(ids=None, nested=False):
+    """删除无效段：按 segs_file/ads_file（逐文件）切，校验+深检后原子替换原片。
 
     media.ads 仍作为列表展示/兼容来源；ads_file 是逐文件真值。
+    nested=True：作为别的作业的第一步跑，不重置主作业的进度。
     """
-    _begin('addel', 1)
+    if not nested:
+        _begin('addel', 1)
     dbc = mlib.db()
     try:
         _ensure_media(dbc)
         its = _items_by_ids(ids)
-        _tick(0, max(1, len(its)))
+        if not nested:
+            _tick(0, max(1, len(its)))
         ok = 0
         for i, it in enumerate(its):
             if _stop_req():
@@ -2246,10 +2265,14 @@ def _job_addel(ids=None):
                     except Exception:
                         pass
             _media_refresh(it['id'], _log)
-            _tick(i + 1)
-        _end('addel %d/%d' % (ok, len(its)))
+            if not nested:
+                _tick(i + 1)
+        if not nested:
+            _end('addel %d/%d' % (ok, len(its)))
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:1200]); _end('addel 失败')
+        _log('ERR ' + traceback.format_exc()[:1200])
+        if not nested:
+            _end('addel 失败')
 
 
 def _job_health(ids=None, force=False, deep=False, nested=False):
