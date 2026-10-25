@@ -2492,7 +2492,7 @@ def video_frames(vpath, n=6, width=512):
     return out
 
 
-def cover_frame(dirpath, width=640):
+def cover_frame(dirpath, width=0):
     """缩略图兜底：随机挑一个视频 + 在 [MIN_START, 片尾] 内随机取一帧，返回 jpeg bytes。"""
     import random
     p = pick_cover_video(dirpath)
@@ -2506,9 +2506,10 @@ def cover_frame(dirpath, width=640):
     hi = max(lo, (dur or 0) - COVER.TAIL)
     t = random.uniform(lo, hi) if hi > lo else lo
     try:
+        _vf = ['-vf', 'scale=%d:-1' % width] if width and int(width) > 0 else []
         r = subprocess.run([FFMPEG, '-v', 'error', '-ss', '%.2f' % t, '-i', p,
-                            '-frames:v', '1', '-vf', 'scale=%d:-1' % width,
-                            '-f', 'image2', '-vcodec', 'mjpeg', '-'],
+                            '-frames:v', '1'] + _vf +
+                           ['-f', 'image2', '-vcodec', 'mjpeg', '-'],
                            capture_output=True, timeout=180)
         return r.stdout if (r.stdout and len(r.stdout) > 800) else None
     except Exception:

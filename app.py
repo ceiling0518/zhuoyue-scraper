@@ -4232,10 +4232,28 @@ def make_poster(iid):
     p = r['path']
     dst = os.path.join(p, 'poster.jpg')
     if os.path.exists(dst):
-        return dst
+        # 旧封面尺寸比原视频小太多 -> 重新按原分辨率截一帧
+        _regen = False
+        try:
+            from PIL import Image as _Im
+            _pw = _Im.open(dst).size[0]
+            _vp = mlib.pick_cover_video(p)
+            _vw = (_vinfo(_vp)[0] or 0) if _vp else 0
+            if _pw and _vw and _pw < _vw * 0.85:
+                _regen = True
+        except Exception:
+            _regen = False
+        if _regen:
+            try:
+                os.replace(dst, os.path.join(p, 'poster.small.jpg'))
+            except Exception:
+                pass
+        else:
+            return dst
     # 1) 目录里已有图 -> 选最大的那张当海报
     src = None
-    imgs = _img_files(p)
+    imgs = [x for x in _img_files(p)
+            if not os.path.basename(x).lower().startswith('poster.small')]
     if imgs:
         imgs.sort(key=lambda x: os.path.getsize(x), reverse=True)
         src = imgs[0]
@@ -4248,6 +4266,14 @@ def make_poster(iid):
                 return dst
             except Exception:
                 return None
+        _old = os.path.join(p, 'poster.small.jpg')
+        if os.path.exists(_old):
+            try:
+                os.replace(_old, dst)
+                return dst
+            except Exception:
+                pass
+        return None
     if src:
         try:
             if os.path.abspath(src) != os.path.abspath(dst):

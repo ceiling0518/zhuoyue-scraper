@@ -95,9 +95,10 @@ def duration(path):
     return 0.0
 
 
-def grab(path, t, width=640):
-    cmd = [FFMPEG, '-v', 'error', '-ss', '%.3f' % t, '-i', path, '-frames:v', '1',
-           '-vf', 'scale=%d:-2' % width, '-f', 'image2pipe', '-vcodec', 'png', '-']
+def grab(path, t, width=0):
+    vf = ['-vf', 'scale=%d:-2' % width] if width and int(width) > 0 else []
+    cmd = ([FFMPEG, '-v', 'error', '-ss', '%.3f' % t, '-i', path, '-frames:v', '1']
+           + vf + ['-f', 'image2pipe', '-vcodec', 'png', '-'])
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=180)
     except Exception:
@@ -137,7 +138,7 @@ def score(img, det):
     return dict(total=total, sharp=sharp, bright=bright, faces=faces, skin=skin, colour=colour)
 
 
-def grab_batch(path, times, width=640):
+def grab_batch(path, times, width=0):
     """Extract many frames in ONE ffmpeg pass. Over SMB this replaces N costly
     seeks with a single open+seek, which is several times faster."""
     if not times:
@@ -149,7 +150,8 @@ def grab_batch(path, times, width=640):
     fps = (n - 1) / span if n > 1 else 1.0
     pat = os.path.join(tmpdir, 'f_%03d.jpg')
     cmd = [FFMPEG, '-v', 'error', '-ss', '%.3f' % t0, '-i', path, '-t', '%.3f' % (span + 1.5),
-           '-vf', 'fps=%.6f,scale=%d:-2' % (fps, width), '-frames:v', str(n), '-q:v', '3', pat]
+           '-vf', ('fps=%.6f,scale=%d:-2' % (fps, width)) if width and int(width) > 0
+           else ('fps=%.6f' % fps), '-frames:v', str(n), '-q:v', '3', pat]
     try:
         subprocess.run(cmd, capture_output=True, timeout=900)
     except Exception:
@@ -171,7 +173,7 @@ def grab_batch(path, times, width=640):
     return out
 
 
-def pick(video, out, n=12, start_frac=0.05, end_frac=0.90, width=640, verbose=True,
+def pick(video, out, n=12, start_frac=0.05, end_frac=0.90, width=0, verbose=True,
          want_json=False, fast=False, min_start=None, rand=False, window=None):
     """取封面帧。rand=True 时，取样起点在 [min_start, 片尾-TAIL] 内**随机**。"""
     if min_start is None:
