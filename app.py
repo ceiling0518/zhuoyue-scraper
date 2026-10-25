@@ -2752,6 +2752,10 @@ class H(BaseHTTPRequestHandler):
                 return self._json(stats())
             if p == '/api/items':
                 return self._json(items(q))
+            if p == '/api/paths':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                rows = _items_by_ids(ids) if ids else []
+                return self._json({'paths': [x.get('path') or '' for x in rows if x.get('path')]})
             if p.startswith('/api/image/'):
                 b, ct = image(int(p.rsplit('/', 1)[1]))
                 return self._send(200, b, ct) if b else self._send(404, b'', 'image/jpeg')
@@ -3004,10 +3008,6 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': open_image(int(p.rsplit('/', 1)[1]))})
             elif p.startswith('/api/open/'):
                 return self._json({'ok': open_item(int(p.rsplit('/', 1)[1]))})
-            elif p == '/api/paths':
-                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                rows = _items_by_ids(ids) if ids else []
-                return self._json({'paths': [x.get('path') or '' for x in rows if x.get('path')]})
             elif p == '/api/stop':
                 with _LOCK:
                     STATE['stop'] = True
