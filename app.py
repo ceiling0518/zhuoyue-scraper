@@ -4721,9 +4721,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button class="warn-btn" id="b-rebuild">建库</button>
     <button id="b-incr">增量扫描</button>
     <label class="muted" title="扫描后接着跑语义"><input type="checkbox" id="inc-sem"> 语义</label>
-    <label class="muted" title="扫描后接着检测广告（头尾）"><input type="checkbox" id="inc-ad"> 广告</label>
-    <label class="muted" title="扫描后接着读取媒体信息"><input type="checkbox" id="inc-media"> 媒体信息</label>
-    <label class="muted" title="扫描后接着体检（浅检）"><input type="checkbox" id="inc-health"> 体检</label>
     <button id="b-sem">语义识别</button>
     <button id="b-fetch">抓取</button>
     <button id="b-qrun">跑队列</button>
@@ -5424,10 +5421,7 @@ $('#b-pipeline').onclick=()=>post('/api/pipeline?limit='+$('#limit').value+'&gro
 $('#b-rebuild').onclick=()=>{ if(!confirm(T('【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？')))return;
   if(!confirm(T('请再次确认：真的要【建库】吗？')))return; post('/api/scan?mode=rebuild'); };
 $('#b-incr').onclick=()=>post('/api/scan?mode=incr'
-  +'&sem='+($('#inc-sem').checked?1:0)
-  +'&ad='+($('#inc-ad').checked?1:0)
-  +'&media='+($('#inc-media').checked?1:0)
-  +'&health='+($('#inc-health').checked?1:0));
+  +'&sem='+($('#inc-sem').checked?1:0));
 $('#b-sem').onclick=()=>post('/api/sem?limit='+$('#limit').value+'&group='+$('#semg').value+($('#force').checked?'&force=1':''));
 $('#b-fetch').onclick=()=>post('/api/fetch?mode='+$('#mode').value+'&limit='+$('#limit').value+'&ai_group='+$('#aig').value);
 $('#b-cookie').onclick=async()=>{const s=await(await fetch('/api/stats')).json();
