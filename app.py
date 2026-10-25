@@ -1970,6 +1970,118 @@ def _job_down(ids=None, target='auto', fix=False, ad=False, fpsout=0):
         _log('ERR ' + traceback.format_exc()[:1200]); _end('downscale 失败')
 
 
+def _job_openbeautify(ids=None, engine='esrgan', scale=2, ad=False):
+    """开源美化：抽帧 -> Real-ESRGAN 超分 / RIFE 插帧 -> 分段编码 -> 合并。"""
+    import shutil
+    _begin('beautify', 1)
+    dbc = mlib.db()
+    exe = RIFE_EXE if engine == 'rife' else ESRGAN_EXE
+    if not os.path.exists(exe):
+        _log('! 找不到引擎: %s（先在「其他模型」里下载）' % exe)
+        _end('beautify 失败'); return
+    its = _items_by_ids(ids)
+    _tick(0, max(1, len(its)))
+    ok = 0
+
+    def _clean(d):
+        try:
+            for f in os.listdir(d):
+                os.remove(os.path.join(d, f))
+        except Exception:
+            pass
+
+    for i, it in enumerate(its):
+        if _stop_req():
+            break
+        v = mlib.biggest_video(it['path'] or '')
+        if not v:
+            _tick(i + 1); continue
+        vp = os.path.join(it['path'], v)
+        w, h, fps, kbps, dur = _vinfo(vp)
+        if not (w and h and dur):
+            _log('  %s 读不到媒体信息' % v[:44]); _tick(i + 1); continue
+        _log('[%d/%d] id=%s %s %dx%d@%.1f 引擎=%s' %
+             (i + 1, len(its), it['id'], v[:40], w, h, fps, engine))
+        loc = mlib.stage_local(vp, _log)
+        work = loc + '.obeaut'
+        shutil.rmtree(work, ignore_errors=True)
+        fin = os.path.join(work, 'in')
+        fout = os.path.join(work, 'out')
+        fc = os.path.join(work, 'chunks')
+        for d in (fin, fout, fc):
+            os.makedirs(d, exist_ok=True)
+        seg = max(2.0, min(8.0, 120.0 / max(1.0, fps)))
+        chunks = []
+        t = 0.0
+        cs = 0
+        try:
+            while t < dur - 0.05 and not _stop_req():
+                ln = min(seg, dur - t)
+                _clean(fin); _clean(fout)
+                subprocess.run([mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
+                                '-ss', '%.3f' % t, '-t', '%.3f' % ln, '-i', loc,
+                                '-vsync', '0', os.path.join(fin, '%06d.png')],
+                               capture_output=True, timeout=1800)
+                n_in = len(os.listdir(fin))
+                if n_in == 0:
+                    _log('  ! 抽帧为空（%.1f 秒处）' % t); break
+                if engine == 'rife':
+                    subprocess.run([exe, '-i', fin, '-o', fout, '-m', 'rife-v4.6'],
+                                   cwd=RIFE_DIR, capture_output=True, timeout=7200)
+                    fps_out = fps * 2
+                else:
+                    subprocess.run([exe, '-i', fin, '-o', fout, '-s', str(scale),
+                                    '-n', 'realesr-animevideov3', '-f', 'png'],
+                                   cwd=os.path.dirname(exe), capture_output=True, timeout=7200)
+                    fps_out = fps
+                n_out = len(os.listdir(fout))
+                if n_out == 0:
+                    _log('  ! 引擎无输出（%.1f 秒处）' % t); break
+                chunk = os.path.join(fc, 'c%04d.mp4' % cs)
+                subprocess.run([mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
+                                '-framerate', '%.6f' % fps_out,
+                                '-i', os.path.join(fout, '%06d.png')] + _gpu_enc(loc) +
+                               ['-an', '-movflags', '+faststart', chunk],
+                               capture_output=True, timeout=3600)
+                if os.path.exists(chunk):
+                    chunks.append(chunk)
+                    cs += 1
+                _log('  段 %d: %.1f-%.1f 秒, %d -> %d 帧' % (cs, t, t + ln, n_in, n_out))
+                t += ln
+            if not chunks:
+                _log('  ! 没有生成片段'); _tick(i + 1); continue
+            lst = os.path.join(work, 'list.txt')
+            io.open(lst, 'w', encoding='utf-8').write(
+                '\n'.join("file '%s'" % c.replace('\\', '/') for c in chunks))
+            merged = os.path.join(work, 'merged.mp4')
+            subprocess.run([mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
+                            '-f', 'concat', '-safe', '0', '-i', lst, '-c', 'copy', merged],
+                           capture_output=True, timeout=3600)
+            tmp = os.path.splitext(loc)[0] + '.obeaut.mp4'
+            subprocess.run([mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
+                            '-i', merged, '-i', loc, '-map', '0:v:0', '-map', '1:a?',
+                            '-c', 'copy', '-movflags', '+faststart', tmp],
+                           capture_output=True, timeout=3600)
+            nd = repair.video_duration(tmp) or 0
+            if not nd or abs(nd - dur) > max(3.0, dur * 0.01):
+                _log('  ! 合并校验失败 %.1f/%.1f' % (nd, dur))
+                _tick(i + 1); continue
+            bk = _swap_in(loc, tmp)
+            if not mlib.commit_back(loc, vp, _log):
+                _log('  ! 回拷失败，成品留在 %s' % loc); _tick(i + 1); continue
+            if not _verify_out(vp, nd, _log):
+                _log('  ! 回拷校验失败，源副本在 %s.orig' % loc); _tick(i + 1); continue
+            mlib.stage_backup(loc + '.orig', _log)
+            mlib.drop_work(loc)
+            shutil.rmtree(work, ignore_errors=True)
+            ok += 1
+            _log('  完成：%.1f 秒 / %.1f MB' % (nd, os.path.getsize(vp) / 1048576.0))
+        except Exception as e:
+            _log('  ! 失败: %s' % str(e)[:120])
+        _tick(i + 1)
+    _end('beautify %d/%d' % (ok, len(its)))
+
+
 def _job_proteus(ids=None, ad=False):
     """画质修复：Topaz Proteus(prob-4) scale=1，同尺寸修复，按设置的码率重编码。"""
     _begin('proteus', 1)
@@ -2792,6 +2904,13 @@ def _job_merge(ids=None):
 ASR_PY = r'D:\Python311\python.exe'
 ASR_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'subs.py')
 ASR_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'asr')
+WHISPER_EXE = r'C:\Program Files\DAUM\PotPlayer\Module\Whisper\CUDA\main.exe'
+WHISPER_MODEL = os.path.join(os.environ.get('APPDATA') or '', 'PotPlayerMini64',
+                             'Model', 'ggml-large-v3-turbo.bin')
+_ENG_BASE = os.path.dirname(os.path.abspath(__file__))
+ESRGAN_EXE = os.path.join(_ENG_BASE, 'models', 'realesrgan', 'realesrgan-ncnn-vulkan.exe')
+RIFE_DIR = os.path.join(_ENG_BASE, 'models', 'rife', 'rife-ncnn-vulkan-20221029-windows')
+RIFE_EXE = os.path.join(RIFE_DIR, 'rife-ncnn-vulkan.exe')
 
 # ---------------------------------------------------------------- 模型登记表
 # 只登记「能自动下载的开源模型」；商业模型（Topaz 等）只做状态展示，不下载。
@@ -2808,18 +2927,20 @@ MODELS = [
      'path': os.path.join('models', 'asr', 'silero_vad.onnx'),
      'url': 'https://huggingface.co/csukuangfj/sherpa-onnx-silero-vad/resolve/main/silero_vad.onnx',
      'license': 'MIT'},
-    {'id': 'realesrgan', 'name': 'Real-ESRGAN x4plus', 'use': '超分 / 画质修复（开源）',
-     'path': os.path.join('models', 'upscale', 'RealESRGAN_x4plus.pth'),
-     'url': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
-     'license': 'BSD-3-Clause'},
+    {'id': 'realesrgan', 'name': 'Real-ESRGAN ncnn', 'use': '超分 / 画质修复（开源）',
+     'path': os.path.join('models', 'realesrgan', 'realesrgan-ncnn-vulkan.exe'),
+     'url': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip',
+     'extract': os.path.join('models', 'realesrgan'), 'license': 'BSD-3-Clause'},
     {'id': 'gfpgan', 'name': 'GFPGAN v1.4', 'use': '人脸修复（开源）',
      'path': os.path.join('models', 'face', 'GFPGANv1.4.pth'),
      'url': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth',
      'license': 'Apache-2.0'},
     {'id': 'rife', 'name': 'RIFE 插帧（ncnn）', 'use': '插帧 / 补帧（开源）',
-     'path': os.path.join('models', 'rife', 'rife-ncnn-vulkan-20221029-windows.zip'),
+     'path': os.path.join('models', 'rife', 'rife-ncnn-vulkan-20221029-windows', 'rife-ncnn-vulkan.exe'),
      'url': 'https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-windows.zip',
      'extract': os.path.join('models', 'rife'), 'license': 'MIT'},
+    {'id': 'whisper', 'name': 'Whisper large-v3-turbo', 'use': '字幕（PotPlayer CUDA，更准但慢）',
+     'path': WHISPER_MODEL, 'url': '', 'license': 'MIT'},
     {'id': 'yunet', 'name': 'YuNet 人脸检测', 'use': '抽帧看片 / 封面',
      'path': os.path.join('models', 'face_detection_yunet_2023mar.onnx'),
      'url': 'https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx',
@@ -2908,6 +3029,71 @@ def _model_download(mid):
     threading.Thread(target=run, daemon=True).start()
     return True
 ASR_LANGS = {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韩文', 'yue': '粤语', 'auto': '自动'}
+
+
+def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False):
+    """Whisper large-v3-turbo（PotPlayer CUDA main.exe），输出 <视频名>.zh.srt。"""
+    _begin('subs', 1)
+    dbc = mlib.db()
+    try:
+        _ensure_media(dbc)
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        if not (os.path.exists(WHISPER_EXE) and os.path.exists(WHISPER_MODEL)):
+            _log('! Whisper 引擎或模型缺失'); _end('subs 失败'); return
+        ok = 0
+        for i, it in enumerate(its):
+            if _stop_req():
+                break
+            vids = [v for v in sorted(_video_files(it['path'] or ''))
+                    if os.path.splitext(v)[1].lower() in repair.VIDEO_EXT]
+            if not vids:
+                _tick(i + 1); continue
+            for vp in vids:
+                v = os.path.basename(vp)
+                stem = os.path.splitext(v)[0]
+                out_path = os.path.join(it['path'], '%s.%s.srt' % (stem, lang))
+                if os.path.exists(out_path) and not force:
+                    _log('  %s 已有字幕，跳过' % v[:40]); continue
+                _log('  %s Whisper 转写中...' % v[:44])
+                td = os.environ.get('TEMP') or '.'
+                wav = os.path.join(td, 'ws_%d_%d.wav' % (it['id'], int(time.time())))
+                pref = os.path.join(td, 'wsout_%d_%d' % (it['id'], int(time.time())))
+                t0 = time.time()
+                try:
+                    subprocess.run([mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
+                                    '-i', vp, '-vn', '-ac', '1', '-ar', '16000', wav],
+                                   capture_output=True, timeout=3600)
+                    subprocess.run([WHISPER_EXE, '-m', WHISPER_MODEL, '-f', wav,
+                                    '-osrt', '-of', pref, '-l', 'zh', '-t', '8'],
+                                   cwd=os.path.dirname(WHISPER_EXE),
+                                   capture_output=True, timeout=14400)
+                    srt = pref + '.srt'
+                    if os.path.exists(srt):
+                        txt = io.open(srt, encoding='utf-8', errors='replace').read()
+                        io.open(out_path, 'w', encoding='utf-8').write(txt)
+                        ok += 1
+                        _log('    OK %.1f 秒 -> %s' % (time.time() - t0, os.path.basename(out_path)))
+                        try:
+                            dbc.execute('UPDATE items SET subs=1 WHERE id=?', (it['id'],))
+                            dbc.commit()
+                        except Exception:
+                            pass
+                    else:
+                        _log('    ! 没有生成 srt')
+                except Exception as e:
+                    _log('    ! 失败: %s' % str(e)[:100])
+                finally:
+                    for f in (wav, pref + '.srt'):
+                        try:
+                            if os.path.exists(f):
+                                os.remove(f)
+                        except Exception:
+                            pass
+            _tick(i + 1)
+        _end('subs(whisper) %d' % ok)
+    finally:
+        mlib.unload_ai()
 
 
 def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False):
@@ -4577,6 +4763,13 @@ class H(BaseHTTPRequestHandler):
                 return self._json(keep_save(json.loads(self._body() or '{}')))
             elif p == '/api/subs':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                _eng = (q.get('engine') or '').strip()
+                if _eng == 'whisper':
+                    ok = start_job(_job_subs_whisper, ids, (q.get('lang') or 'zh'),
+                                   (q.get('force') or '') in ('1', 'true', 'yes'),
+                                   (q.get('burn') or '') in ('1', 'true', 'yes'),
+                                   lane='light')
+                    return self._json({'ok': ok, 'queued': bool(ok), 'engine': 'whisper'})
                 ok = start_job(_job_subs, ids, (q.get('lang') or 'zh'),
                                (q.get('force') or '') in ('1', 'true', 'yes'),
                                (q.get('enhance') or '1') in ('1', 'true', 'yes'),
@@ -4604,6 +4797,12 @@ class H(BaseHTTPRequestHandler):
                                (q.get('ad') or '') in ('1', 'true', 'yes'), _fq, lane='heavy')
             elif p == '/api/proteus':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                _eng = (q.get('engine') or 'topaz').strip()
+                _ad = (q.get('ad') or '') in ('1', 'true', 'yes')
+                if _eng in ('esrgan', 'rife'):
+                    ok = start_job(_job_openbeautify, ids, _eng,
+                                   int(q.get('scale') or 2), _ad, lane='heavy')
+                    return self._json({'ok': ok, 'engine': _eng})
                 ok = start_job(_job_proteus, ids,
                                (q.get('ad') or '') in ('1', 'true', 'yes'), lane='heavy')
             elif p == '/api/health':
@@ -5011,14 +5210,17 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
      <select id="sublang" style="min-width:64px" title="字幕语言：用 SenseVoice 转写，输出 <视频名>.<语言>.srt"><option value="zh">中文</option><option value="en">英文</option><option value="ja">日文</option><option value="ko">韩文</option><option value="yue">粤语</option></select>
      <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
      <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
-     <button id="a-subs" title="语音转字幕：每个视频跑一次 SenseVoice（CPU，约 1/10 实时），输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
+     <select id="subs-engine" style="min-width:112px" title="字幕引擎：SenseVoice 快且省资源；Whisper v3 Turbo 更准但慢（PotPlayer CUDA）"><option value="sensevoice">SenseVoice</option><option value="whisper">Whisper v3 Turbo</option></select>
+     <button id="a-subs" title="语音转字幕：输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <select id="downfps" style="min-width:96px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">保持帧率</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
     <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 同时修复</label>
     <label class="muted" title="勾上后先按有效段裁剪（勾了「合并」的视频会先拼成一个），再降分辨率/修复"><input type="checkbox" id="downad"> 有效段裁剪（合并）</label>
     <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
-    <button id="a-proteus" title="Topaz Proteus(prob-4) 同尺寸修复；速度按输入分辨率，1080p 约 2.3 fps（1 小时片约 8 小时）">画质修复</button>
+    <select id="beaut-engine" style="min-width:104px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">Real-ESRGAN</option><option value="rife">RIFE 插帧</option></select>
+    <select id="beaut-scale" style="min-width:56px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
+    <button id="a-proteus" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE；会替换原片并保留回滚点">画质修复</button>
   </div>
   </div>
   <table id="tbl"><thead><tr>
@@ -5493,9 +5695,10 @@ $('#a-subs').onclick=async()=>{
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('给选中条目的每个视频生成字幕（SenseVoice，输出 .srt 到原目录；已有字幕会跳过）。继续？')))return;
     if($('#qadd-chk').checked){await qAdd('subs',[...SEL],
-      {lang:$('#sublang').value,enhance:$('#subenh').checked,burn:$('#subburn').checked});return;}
+      {lang:$('#sublang').value,enhance:$('#subenh').checked,burn:$('#subburn').checked,engine:$('#subs-engine').value});return;}
     await post('/api/subs?'+(ids?'ids='+ids+'&':'')+'lang='+($('#sublang').value)
-    +'&enhance='+($('#subenh').checked?'1':'0')+'&burn='+($('#subburn').checked?'1':'0'));};
+    +'&enhance='+($('#subenh').checked?'1':'0')+'&burn='+($('#subburn').checked?'1':'0')
+    +'&engine='+$('#subs-engine').value);};
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
@@ -5520,8 +5723,11 @@ $('#a-down').onclick=async()=>{
 $('#a-proteus').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
-  if(!confirm(T('Topaz Proteus 修复非常慢（1080p 约 2.3 fps，1 小时片约 8 小时），且会【替换原片】。继续？')))return;
-  await post('/api/proteus?'+(ids?'ids='+ids+'&':'')+'ad='+($('#downad').checked?1:0));};
+  const _eng=$('#beaut-engine').value;
+  const _tip={'topaz':'Topaz Proteus 修复非常慢（1080p 约 2.3 fps，1 小时片约 8 小时）','esrgan':'Real-ESRGAN 逐帧超分，速度取决于显卡与分辨率','rife':'RIFE 逐帧插帧（帧率翻倍），速度取决于显卡'}[_eng];
+  if(!confirm(T(_tip+'，且会【替换原片】。继续？')))return;
+  await post('/api/proteus?'+(ids?'ids='+ids+'&':'')+'ad='+($('#downad').checked?1:0)
+    +'&engine='+_eng+'&scale='+$('#beaut-scale').value);};
 $('#a-media').onclick=async()=>{
   const ids=[...SEL].join(',');
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
