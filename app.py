@@ -4860,7 +4860,7 @@ def doc_page(name):
 
 # ---------------------------------------------------------------- http
 class H(BaseHTTPRequestHandler):
-    server_version = 'ZhuoYue-Scraper/2.0.0'
+    server_version = 'ZhuoYue-Scraper/2.1.0'
 
     def _send(self, code, body, ctype='application/json; charset=utf-8'):
         b = body.encode('utf-8') if isinstance(body, str) else body
@@ -5462,7 +5462,7 @@ tr.sel .selbtn{background:var(--acc);border-color:var(--acc);color:#08121f;font-
 pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;overflow:auto;font-size:11px}
 </style></head><body>
 <header>
-  <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.0.0</span> 
+  <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.1.0</span> 
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
   <button id="b-sites">站点</button>
   <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
