@@ -3504,8 +3504,11 @@ class H(BaseHTTPRequestHandler):
                 _s = (_b.get('series') or '').strip()
                 if not _s:
                     return self._json({'ok': False, 'error': '系列名为空'}, 400)
-                mlib.db().execute('DELETE FROM series WHERE series=?', (_s,))
-                mlib.db().commit()
+                _d = mlib.db()
+                _n = _d.execute('DELETE FROM series WHERE series=?', (_s,)).rowcount
+                _d.commit()
+                _d.close()
+                return self._json({'ok': True, 'n': _n})
                 return self._json({'ok': True})
             if p == '/api/series/save':
                 try:
