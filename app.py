@@ -2657,7 +2657,7 @@ def items(params):
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
     rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,status,site,path,'
-                       'm.vbr AS vbr, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads, m.ads_ts AS ads_ts,'
+                       'm.vbr AS vbr, m.size AS fsize, m.file AS mfile, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads, m.ads_ts AS ads_ts,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT CASE WHEN COUNT(*)=0 THEN 0 "
                        "WHEN SUM(CASE WHEN cls<>'ok' THEN 1 ELSE 0 END)>0 THEN 2 "
@@ -3731,7 +3731,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th style="width:136px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
     <th style="width:92px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数">属性</th>
     <th style="width:80px">番号</th><th style="width:74px">语义</th>
-    <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
+    <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th style="width:76px" title="视频文件大小">大小</th><th style="width:64px" title="视频文件类型">类型</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
@@ -3887,6 +3887,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
       +'<div class="meta" style="color:'+((r.bpp&&r.bpp<0.04)?'var(--bad)':(r.bpp&&r.bpp<0.08)?'var(--warn)':'var(--ok)')     +'">'+(r.bpp?'bpp '+r.bpp.toFixed(3):'')+'</div>'
       +'<div class="meta">'+r.mw+'×'+r.mh+' @'+(Math.round((r.mfps||0)*10)/10)+'</div>'
       :'—')+'</td>'
+    +'<td class="muted" style="white-space:nowrap">'+fsize(r.fsize)+'</td>'+'<td class="muted">'+fext(r.mfile)+'</td>'
     +'<td><div class="cellclip"><a href="#" data-id="'+r.id+'" class="lk" style="color:var(--fg)">'+esc(r.title||r.name)+'</a>'
     +'<div class="meta">简介: '+esc((r.plot||'').slice(0,70))+'</div>'
     +'<div class="meta">标签: <span class="tags">'+esc(tagsOf(r.tags))+'</span></div>'
@@ -3907,6 +3908,13 @@ function adsText(s){try{const a=JSON.parse(s||'[]');if(!a||!a.length)return '';
     return m+':'+String(ss).padStart(2,'0');};
   return a.map(x=>f(x[0])+'-'+f(x[1])).join(' ');}catch(e){return '';}}
 const SEL=new Set();
+function fext(f){var m=/(\.(avi|mp4|m4v|mkv|wmv|mov|ts|m2ts|flv|rmvb|rm|webm|mpg|mpeg|iso|vob))$/i.exec(f||'');
+  return m?m[1].slice(1).toUpperCase():'—';}
+function fsize(n){n=+n||0;if(!n)return '—';
+  if(n>=1073741824)return Math.round(n/1073741824)+' GB';
+  if(n>=1048576)return Math.round(n/1048576)+' MB';
+  if(n>=1024)return Math.round(n/1024)+' KB';
+  return n+' B';}
 function selinfo(){$('#seln').textContent=SEL.size;}
 function selSet(b,on){const id=b.dataset.id,tr=b.closest('tr');
   if(on){SEL.add(id);tr.classList.add('sel');b.textContent='✓ 已选';}
