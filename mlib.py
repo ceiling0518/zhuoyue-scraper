@@ -411,17 +411,22 @@ def web_complete(item, model=None, log=None):
     plot = strip_noise(item.get('plot') or '')
     qs = []
     if code and hint_ok(code, 0):
-        qs.append(code + ' ' + title[:30])
+        qs += [code + ' Released Date', code + ' Maker', code + ' Tag']
     if hint_ok(title):
         qs.append(title[:60])
     if not qs:
         qs.append(title[:60] or code)
-    hits = []
-    for q in qs[:2]:
-        hits = web_search(q, 5)
-        _log('    搜索「%s」-> %d 条' % (q[:40], len(hits)))
-        if hits:
-            break
+    hits, seen = [], set()
+    for q in qs[:4]:
+        hs = web_search(q, 4)
+        _log('    搜索「%s」-> %d 条' % (q[:40], len(hs)))
+        for h in hs:
+            key = (h.get('url') or '') + (h.get('title') or '')[:30]
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(h)
+    hits = hits[:12]
     if not hits:
         return None
     ctx = '\n'.join('%d. %s | %s' % (i + 1, h['title'][:80], h['snippet'][:120])
