@@ -2792,6 +2792,99 @@ def _job_merge(ids=None):
 ASR_PY = r'D:\Python311\python.exe'
 ASR_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'subs.py')
 ASR_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'asr')
+
+# ---------------------------------------------------------------- 模型登记表
+# 只登记「能自动下载的开源模型」；商业模型（Topaz 等）只做状态展示，不下载。
+MODELS = [
+    {'id': 'asr_model', 'name': 'SenseVoice 语音识别', 'use': '字幕转写（主模型）',
+     'path': os.path.join('models', 'asr', 'model.int8.onnx'),
+     'url': 'https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx',
+     'license': 'Apache-2.0'},
+    {'id': 'asr_tokens', 'name': 'SenseVoice tokens', 'use': '字幕转写（词表）',
+     'path': os.path.join('models', 'asr', 'tokens.txt'),
+     'url': 'https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt',
+     'license': 'Apache-2.0'},
+    {'id': 'asr_vad', 'name': 'Silero VAD', 'use': '人声切段（字幕）',
+     'path': os.path.join('models', 'asr', 'silero_vad.onnx'),
+     'url': 'https://huggingface.co/csukuangfj/sherpa-onnx-silero-vad/resolve/main/silero_vad.onnx',
+     'license': 'MIT'},
+    {'id': 'yunet', 'name': 'YuNet 人脸检测', 'use': '抽帧看片 / 封面',
+     'path': os.path.join('models', 'face_detection_yunet_2023mar.onnx'),
+     'url': 'https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx',
+     'license': 'Apache-2.0'},
+]
+
+MODEL_DL = {}      # id -> {'pct': int, 'done': bool, 'error': str}
+
+
+def _models_list():
+    base = os.path.dirname(os.path.abspath(__file__))
+    out = []
+    for e in MODELS:
+        fp = os.path.join(base, e['path'])
+        try:
+            sz = os.path.getsize(fp) if os.path.exists(fp) else 0
+        except Exception:
+            sz = 0
+        out.append(dict(e, present=bool(sz), size=sz,
+                        dl=MODEL_DL.get(e['id']) or {}))
+    # Topaz：只展示，不提供下载（商业模型）
+    tp = _topaz_path()
+    out.append({'id': 'topaz', 'name': 'Topaz 视频模型', 'use': '插帧 / 修复（外部安装）',
+                'path': tp, 'url': '', 'license': '商业授权（不可自动下载）',
+                'present': bool(tp and os.path.exists(tp)),
+                'size': 0, 'dl': {}})
+    # Ollama：远程模型，显示当前选中的名字
+    try:
+        _om = mlib.ai_model()
+    except Exception:
+        _om = ''
+    out.append({'id': 'ollama', 'name': 'Ollama 语义模型', 'use': '语义分类 / 补标签',
+                'path': 'ollama:' + (_om or '未配置'), 'url': '', 'license': '取决于所选模型',
+                'present': bool(_om), 'size': 0, 'dl': {}})
+    return out
+
+
+def _model_download(mid):
+    """后台线程下载（只允许 MODELS 里登记的开源模型）。"""
+    ent = next((e for e in MODELS if e['id'] == mid), None)
+    if not ent or not ent.get('url'):
+        return False
+    base = os.path.dirname(os.path.abspath(__file__))
+    dst = os.path.join(base, ent['path'])
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    st = {'pct': 0, 'done': False, 'error': ''}
+    MODEL_DL[mid] = st
+
+    def run():
+        import urllib.request
+        tmp = dst + '.part'
+        try:
+            req = urllib.request.Request(ent['url'], headers={'User-Agent': 'MediaScraper/1.0'})
+            with urllib.request.urlopen(req, timeout=60) as r, open(tmp, 'wb') as f:
+                total = int(r.headers.get('Content-Length') or 0)
+                got = 0
+                while True:
+                    buf = r.read(1024 * 1024)
+                    if not buf:
+                        break
+                    f.write(buf)
+                    got += len(buf)
+                    if total:
+                        st['pct'] = int(got * 100 / total)
+            os.replace(tmp, dst)
+            st['pct'] = 100
+            st['done'] = True
+        except Exception as e:
+            st['error'] = str(e)[:160]
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+
+    threading.Thread(target=run, daemon=True).start()
+    return True
 ASR_LANGS = {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韩文', 'yue': '粤语', 'auto': '自动'}
 
 
@@ -4382,6 +4475,8 @@ class H(BaseHTTPRequestHandler):
                     return self._json(_snap)
             if p == '/api/queue/list':
                 return self._json({'ok': True, 'batches': q_batches()})
+            if p == '/api/models':
+                return self._json({'models': _models_list(), 'dl': MODEL_DL})
             if p == '/api/ollama':
                 return self._json(_ollama())
             return self._json({'error': 'bad path'}, 404)
@@ -4513,6 +4608,9 @@ class H(BaseHTTPRequestHandler):
                 if not ids:
                     return self._json({'ok': False, 'error': 'ids 为空'}, 400)
                 ok = start_job(_job_runset, ids, mode)
+            elif p == '/api/models/download':
+                ok = _model_download(q.get('id') or '')
+                return self._json({'ok': ok, 'dl': MODEL_DL})
             elif p == '/api/queue/run':
                 _b = [x for x in (q.get('batches') or '').split(',') if x.strip()]
                 ok = start_job(_job_queue, _b or None, lane='heavy')
@@ -4807,6 +4905,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
   <span class="muted">修复码率</span><select id="cfg-encmode" title="重编码时的码率策略"><option value="crf">CRF</option><option value="kbps">固定 kbps</option><option value="scale">源码率×N</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数">
   <span class="muted">最短广告</span><input id="cfg-admin" type="number" min="0" step="1" style="width:56px" title="短于这个秒数的广告段直接忽略（默认 10 秒）"> <span class="muted">秒</span>
+  <button id="cfg-models" title="查看在用模型、下载开源模型">其他模型</button>
   <button id="cfg-save">保存设置</button>
   <span id="ollama" class="muted right">ollama …</span>
 </header>
@@ -4934,6 +5033,17 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="q-del-sel" style="color:var(--bad)">删除选定</button>
     <button id="q-clear-all" class="danger">清空队列</button>
     <span class="muted">执行时会按批次顺序跑；跑完的批次自动移除</span></div>
+</div></div>
+<div class="modal" id="modal11"><div class="box" style="max-width:900px">
+  <div class="bar"><b>其他模型</b><span class="muted" id="mdl-sum"></span>
+    <button id="mdl-refresh">刷新</button><button class="right" id="mdl-close">关闭</button></div>
+  <div style="max-height:62vh;overflow:auto"><table id="mdl-tbl"><thead><tr>
+    <th style="width:180px">模型</th><th>用途</th><th style="width:90px">状态</th>
+    <th style="width:80px">大小</th><th style="width:150px">许可</th><th style="width:120px">操作</th>
+  </tr></thead><tbody id="mdl-rows"></tbody></table></div>
+  <div class="muted" style="padding:6px 4px;font-size:12px">
+    开源模型可直接下载到 app 的 models 目录；Topaz 为商业授权模型，只能在本机安装后由软件调用，不提供下载。
+  </div>
 </div></div>
 <div class="modal" id="modal8"><div class="box" style="max-width:1280px">
   <div class="bar"><b>整理 + 改名</b><span class="muted" id="rn-sum"></span><button class="right" id="md8-close">关闭</button></div>
@@ -5665,6 +5775,34 @@ async function loadQueue(){
 function qSel(){return [...document.querySelectorAll('.q-sel')].filter(c=>c.checked).map(c=>c.dataset.b);}
 $('#b-qview').onclick=async()=>{$('#modal10').classList.add('on');await loadQueue();};
 $('#md10-close').onclick=()=>$('#modal10').classList.remove('on');
+async function loadModels(){
+  const j=await(await fetch('/api/models')).json();
+  const rows=j.models||[];
+  $('#mdl-rows').innerHTML=rows.map(m=>{
+    const st=m.present?'<span style="color:var(--ok)">已安装</span>':'<span style="color:var(--bad)">缺失</span>';
+    const sz=m.size?(Math.round(m.size/1048576*10)/10+' MB'):'—';
+    const d=m.dl||{};
+    let act='—';
+    if(m.url){
+      if(d.done)act='<span style="color:var(--ok)">完成</span>';
+      else if(d.pct!==undefined&&d.error==='')act='<span class="muted">下载 '+d.pct+'%</span>';
+      else if(d.error)act='<button class="mdl-dl" data-id="'+m.id+'">重试</button>';
+      else act='<button class="mdl-dl" data-id="'+m.id+'">'+(m.present?'重下':'下载')+'</button>';
+    }
+    return '<tr><td title="'+esc(m.path)+'">'+esc(m.name)+'</td><td class="muted">'+esc(m.use)+'</td>'
+      +'<td>'+st+'</td><td>'+sz+'</td><td class="muted">'+esc(m.license||'')+'</td><td>'+act+'</td></tr>';
+  }).join('');
+  $('#mdl-sum').textContent=rows.length+' 项';
+  document.querySelectorAll('.mdl-dl').forEach(b=>b.onclick=async()=>{
+    await post('/api/models/download?id='+b.dataset.id);await loadModels();
+  });
+  if(rows.some(m=>{const d=m.dl||{};return d.pct!==undefined&&!d.done&&!d.error;})){
+    setTimeout(loadModels,1000);
+  }
+}
+$('#cfg-models').onclick=async()=>{$('#modal11').classList.add('on');await loadModels();};
+$('#mdl-close').onclick=()=>$('#modal11').classList.remove('on');
+$('#mdl-refresh').onclick=()=>loadModels();
 $('#b-qrun').onclick=()=>post('/api/queue/run');
 $('#q-run-sel').onclick=async()=>{
   const b=qSel();
