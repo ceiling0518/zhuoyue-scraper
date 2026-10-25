@@ -2112,6 +2112,120 @@ def _job_vdetect(ids=None):
         _end('vdetect 失败')
 
 
+def _ensure_keep(dbc):
+    dbc.execute('CREATE TABLE IF NOT EXISTS keep_file(item_id INTEGER, file TEXT, '
+                'segs TEXT, ts TEXT, PRIMARY KEY(item_id,file))')
+    dbc.commit()
+
+
+def _norm_ranges(segs, dur):
+    """排序/合并/裁剪到 [0,dur]。"""
+    out = []
+    for x in (segs or []):
+        try:
+            a, b = float(x[0]), float(x[1])
+        except Exception:
+            continue
+        a = max(0.0, a)
+        b = min(dur, b) if dur else b
+        if b - a > 0.15:
+            out.append((a, b))
+    out.sort()
+    merged = []
+    for a, b in out:
+        if merged and a <= merged[-1][1] + 0.2:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
+
+
+def _invert_ranges(dur, ranges):
+    """给定一段列表，返回它的补集（区间内/外互换）。"""
+    ks = _norm_ranges(ranges, dur)
+    out, cur = [], 0.0
+    for a, b in ks:
+        if a - cur > 0.15:
+            out.append([round(cur, 3), round(a, 3)])
+        cur = max(cur, b)
+    if dur and dur - cur > 0.15:
+        out.append([round(cur, 3), round(dur, 3)])
+    return out
+
+
+def _file_keep_ranges(dbc, iid, file_, dur):
+    """该文件要保留的区间：有手工 keep 就用它，否则用「时长 - 删除段」。"""
+    try:
+        r = dbc.execute('SELECT segs FROM keep_file WHERE item_id=? AND file=?',
+                        (iid, file_)).fetchone()
+        if r is not None:
+            try:
+                ks = json.loads(r['segs'] or '[]')
+            except Exception:
+                ks = []
+            ks = _norm_ranges(ks, dur)
+            if ks:
+                return [[a, b] for a, b in ks]
+    except Exception:
+        pass
+    cuts = []
+    try:
+        for _s in mlib.load_segs(iid, file_):
+            cuts.extend(_s.get('segs') or [])
+    except Exception:
+        pass
+    if not cuts:
+        try:
+            a = dbc.execute('SELECT ads FROM ads_file WHERE item_id=? AND file=?',
+                            (iid, file_)).fetchone()
+            if a:
+                cuts = json.loads(a['ads'] or '[]')
+        except Exception:
+            cuts = []
+    return _invert_ranges(dur, cuts)
+
+
+def keep_rows(iid):
+    dbc = mlib.db()
+    try:
+        it = dbc.execute('SELECT id,path FROM items WHERE id=?', (iid,)).fetchone()
+        if not it:
+            return {'rows': []}
+        _ensure_keep(dbc)
+        out = []
+        for vp in sorted(_video_files(it['path'] or '')):
+            v = os.path.basename(vp)
+            if os.path.splitext(v)[1].lower() not in repair.VIDEO_EXT:
+                continue
+            dur = repair.video_duration(vp) or 0
+            out.append({'file': v, 'dur': dur,
+                        'segs': _file_keep_ranges(dbc, iid, v, dur)})
+        return {'rows': out}
+    finally:
+        dbc.close()
+
+
+def keep_save(payload):
+    iid = int(payload.get('item') or 0)
+    rows = payload.get('rows') or []
+    dbc = mlib.db()
+    try:
+        _ensure_keep(dbc)
+        dbc.execute('DELETE FROM keep_file WHERE item_id=?', (iid,))
+        k = 0
+        for r in rows:
+            f = (r.get('file') or '').strip()
+            segs = _norm_ranges(r.get('segs') or [], 0)
+            if f and segs:
+                dbc.execute('INSERT INTO keep_file(item_id,file,segs,ts) VALUES(?,?,?,?)',
+                            (iid, f, json.dumps([[a, b] for a, b in segs]), mlib.now()))
+                k += 1
+        dbc.commit()
+        return {'ok': True, 'files': k}
+    finally:
+        dbc.close()
+
+
 def _job_addel(ids=None, nested=False):
     """删除无效段：按 segs_file/ads_file（逐文件）切，校验+深检后原子替换原片。
 
@@ -2132,11 +2246,29 @@ def _job_addel(ids=None, nested=False):
                 _log('! 已请求停止'); break
             jobs = []
             try:
-                _byfile = {}
-                for _r in mlib.load_segs(it['id']):
+                _keeprows = {}
+                try:
+                    for _r in dbc.execute('SELECT file,segs FROM keep_file WHERE item_id=?',
+                                          (it['id'],)):
+                        _keeprows[_r['file']] = json.loads(_r['segs'] or '[]')
+                except Exception:
+                    _keeprows = {}
+                if _keeprows:
+                    _byfile = {}
+                    for _vp in _video_files(it['path'] or ''):
+                        _v = os.path.basename(_vp)
+                        if os.path.splitext(_v)[1].lower() not in repair.VIDEO_EXT:
+                            continue
+                        _d = repair.video_duration(_vp) or 0
+                        _ks = _file_keep_ranges(dbc, it['id'], _v, _d)
+                        _cuts = _invert_ranges(_d, _ks)
+                        if _cuts:
+                            _byfile.setdefault(_v, []).extend(_cuts)
+                for _r in ([] if _keeprows else mlib.load_segs(it['id'])):
                     _k = _r.get('file') or ''
                     _byfile.setdefault(_k, []).extend(_r.get('segs') or [])
-                for r in dbc.execute('SELECT file,ads FROM ads_file WHERE item_id=?', (it['id'],)):
+                for r in ([] if _keeprows else dbc.execute(
+                        'SELECT file,ads FROM ads_file WHERE item_id=?', (it['id'],))):
                     try:
                         _s = json.loads(r['ads'] or '[]')
                     except Exception:
@@ -2296,6 +2428,122 @@ def _job_addel(ids=None, nested=False):
         _log('ERR ' + traceback.format_exc()[:1200])
         if not nested:
             _end('addel 失败')
+
+
+def _job_merge(ids=None):
+    """把条目的有效段拼成一个新视频（新增文件，绝不覆盖原片）。"""
+    _begin('merge', 1)
+    dbc = mlib.db()
+    try:
+        _ensure_media(dbc)
+        _ensure_keep(dbc)
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok = 0
+        base_dir = os.path.join(os.path.dirname(mlib.DB_PATH), 'backup', 'work')
+        for i, it in enumerate(its):
+            if _stop_req():
+                _log('! 已请求停止'); break
+            vids = [v for v in sorted(_video_files(it['path'] or ''))
+                    if os.path.splitext(v)[1].lower() in repair.VIDEO_EXT]
+            if not vids:
+                _log('[%d/%d] id=%s 没有视频' % (i + 1, len(its), it['id']))
+                _tick(i + 1); continue
+            wd = os.path.join(base_dir, 'merge_%s_%d' % (it['id'], int(time.time())))
+            try:
+                os.makedirs(wd, exist_ok=True)
+            except Exception as e:
+                _log('  ! 建临时目录失败: %s' % str(e)[:80]); _tick(i + 1); continue
+            _log('[%d/%d] id=%s 合并有效段：%d 个视频' % (i + 1, len(its), it['id'], len(vids)))
+            parts, total = [], 0.0
+            for vp in vids:
+                if _stop_req():
+                    break
+                v = os.path.basename(vp)
+                dur = repair.video_duration(vp) or 0
+                ks = _file_keep_ranges(dbc, it['id'], v, dur)
+                if not ks:
+                    _log('  %s 没有有效段，跳过' % v[:40]); continue
+                _log('  %s 保留 %d 段 / %.0f 秒'
+                     % (v[:40], len(ks), sum(b - a for a, b in ks)))
+                for a, b in ks:
+                    if _stop_req():
+                        break
+                    part = os.path.join(wd, 'p%03d.mp4' % len(parts))
+                    rr = subprocess.run([mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
+                                         '-ss', '%.3f' % a, '-t', '%.3f' % (b - a),
+                                         '-i', vp, '-c', 'copy',
+                                         '-avoid_negative_ts', 'make_zero',
+                                         '-movflags', '+faststart', part],
+                                        capture_output=True, timeout=7200)
+                    if rr.returncode != 0 or not os.path.exists(part):
+                        _log('    ! %.1f-%.1f 拷贝失败，跳过' % (a, b)); continue
+                    pd = repair.video_duration(part) or 0
+                    if pd <= 0:
+                        _log('    ! %.1f-%.1f 读不到时长，跳过' % (a, b))
+                        try:
+                            os.remove(part)
+                        except Exception:
+                            pass
+                        continue
+                    parts.append(part)
+                    total += pd
+            if not parts:
+                _log('  ! 没有可用片段，跳过')
+                _tick(i + 1); continue
+            lst = os.path.join(wd, 'list.txt')
+            with io.open(lst, 'w', encoding='utf-8') as f:
+                for p in parts:
+                    f.write("file '%s'\n" % p.replace('\\', '/'))
+            merged = os.path.join(wd, 'merged.mp4')
+            _log('  拼接 %d 段（共 %.0f 秒）...' % (len(parts), total))
+            rr = subprocess.run([mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
+                                 '-f', 'concat', '-safe', '0', '-i', lst,
+                                 '-c', 'copy', '-movflags', '+faststart', merged],
+                                capture_output=True, timeout=14400)
+            if rr.returncode != 0 or not os.path.exists(merged):
+                _log('  ! 拼接失败: %s'
+                     % (rr.stderr or b'')[-160:].decode('utf-8', 'replace'))
+                _tick(i + 1); continue
+            md = repair.video_duration(merged) or 0
+            if not md or abs(md - total) > max(6.0, total * 0.02):
+                _log('  ! 拼接结果校验失败（%.1f / %.1f 秒）' % (md, total))
+                _tick(i + 1); continue
+            stem = os.path.splitext(os.path.basename(vids[0]))[0]
+            outname = stem + '-有效段合并.mp4'
+            outp = os.path.join(it['path'], outname)
+            k = 1
+            while os.path.exists(outp):
+                outname = '%s-有效段合并(%d).mp4' % (stem, k)
+                outp = os.path.join(it['path'], outname)
+                k += 1
+            if not mlib.commit_back(merged, outp, _log):
+                _log('  ! 回拷失败，成品留在 %s' % merged)
+                _tick(i + 1); continue
+            rd = repair.video_duration(outp) or 0
+            _log('  完成：%s（%.1f MB，%.1f 秒）'
+                 % (outname, os.path.getsize(outp) / 1048576.0, rd))
+            _media_refresh(it['id'], _log)
+            ok += 1
+            for _p in parts:
+                try:
+                    os.remove(_p)
+                except Exception:
+                    pass
+            for _t in (lst, merged):
+                try:
+                    os.remove(_t)
+                except Exception:
+                    pass
+            try:
+                os.rmdir(wd)
+            except Exception:
+                pass
+            _tick(i + 1)
+        _end('merge %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200])
+        _end('merge 失败')
 
 
 def _job_health(ids=None, force=False, deep=False, nested=False):
@@ -3576,6 +3824,8 @@ class H(BaseHTTPRequestHandler):
                 return self._json(stats())
             if p == '/api/segs':
                 return self._json({'rows': mlib.load_segs(int(q.get('item') or 0))})
+            if p == '/api/keep':
+                return self._json(keep_rows(int(q.get('item') or 0)))
             if p == '/api/items':
                 return self._json(items(q))
             if p == '/api/series/run':
@@ -3706,6 +3956,13 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/segs':
                 _iid = int(q.get('item') or 0)
                 return self._json({'rows': mlib.load_segs(_iid)})
+            elif p == '/api/keep':
+                return self._json(keep_rows(int(q.get('item') or 0)))
+            elif p == '/api/keep/save':
+                return self._json(keep_save(json.loads(self._body() or '{}')))
+            elif p == '/api/merge':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_merge, ids, lane='heavy')
             elif p == '/api/segs/save':
                 _kv = json.loads(self._body() or '{}')
                 mlib.save_segs(int(_kv.get('item') or 0), _kv.get('file') or '',
@@ -4106,8 +4363,9 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
      <select id="admode" style="min-width:86px" title="头尾：只扫开头/结尾各 4 分钟（能只重封装，秒级）；全片：30 秒全网扫（可能命中中插广告）"><option value="headtail">头尾</option><option value="full">全片</option></select>
     <button id="a-adtect" title="抽帧判断广告：头尾模式只扫首尾各 4 分钟并 15 秒取样；全片模式 30 秒全网扫。结果写在列表「属性」列">广告检测</button>
     <button id="a-vdetect" title="每 30 秒抽帧判断是否有女性；连续 2 点（≥60 秒）无女性判无效，边界 5 秒细化。仅初筛，需人工核实">检测无效段</button>
-    <button id="a-segs" title="查看/编辑无效段（含广告段）：可改起止、加段、删段；广告为秒级、无效内容为 5 秒级">无效段编辑</button>
+    <button id="a-segs" title="编辑有效段：每个视频要保留的区间；可改起止、加段、删段，可按文件选择">有效段编辑</button>
      <button id="a-addel" title="按无效段（广告+无女性段）切掉区间，【替换原片】；原文件留 .orig 回滚点，临时文件自动清理">删除无效段</button>
+     <button id="a-merge" title="把条目里各个视频的有效段按顺序拼成一个新视频（新增文件，不覆盖原片）">合并有效段</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <select id="downfps" style="min-width:96px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">保持帧率</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
@@ -4173,8 +4431,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="bar"><b id="md2-title">档案</b><button class="right" id="md2-close">关闭</button></div>
   <div id="md2-body"></div></div></div>
 <div class="modal" id="modalseg"><div class="box">
-  <div class="bar"><b>无效段编辑</b><span class="muted" id="seg-info"></span><button class="right" id="mdseg-close">关闭</button></div>
-  <p class="muted">广告按秒、无效内容按 5 秒；可多段。保存后「删除无效段」会按这些区间切。</p>
+  <div class="bar"><b>有效段编辑</b><span class="muted" id="seg-info"></span><button class="right" id="mdseg-close">关闭</button></div>
+  <p class="muted">这里填「要保留」的区间（每个视频可多段）。保存后「删除无效段」会切掉区间以外的部分；「合并有效段」会把它们拼成一个新视频。</p>
   <table id="seg-tbl"></table>
   <div class="bar"><button id="seg-add">+ 添加一段</button><button class="primary" id="seg-save">保存</button></div>
 </div></div>
@@ -4487,13 +4745,11 @@ $('#a-segs').onclick=async()=>{
   if(!ids){alert(T('先选条目'));return;}
   const iid=ids.split(',')[0];
   window.SEGIID=iid;
-  const d=await(await fetch('/api/segs?item='+iid)).json();
-  window.SEGFILES=[];
-  try{const _it=await(await fetch('/api/item/'+iid)).json();
-    window.SEGFILES=(_it.files||[]).filter(function(x){return /\.(avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|mts|rm|rmvb|ts|webm|wmv)$/i.test(x);});
-  }catch(_e){}
-  window.SEGFIRST=(d.rows&&d.rows[0]&&d.rows[0].file)||window.SEGFILES[0]||'';
-  if(window.SEGFIRST&&window.SEGFILES.indexOf(window.SEGFIRST)<0)window.SEGFILES.unshift(window.SEGFIRST);
+  const d=await(await fetch('/api/keep?item='+iid)).json();
+  window.SEGFILES=(d.rows||[]).map(function(r){return r.file;});
+  window.SEGDUR={};
+  (d.rows||[]).forEach(function(r){window.SEGDUR[r.file]=r.dur||0;});
+  window.SEGFIRST=window.SEGFILES[0]||'';
   segRender(d.rows||[]);
   $('#modalseg').classList.add('on');
 };
@@ -4506,28 +4762,28 @@ function segFileSel(cur){
     +list.map(function(f){return '<option value="'+esc(f)+'"'+(f===cur?' selected':'')+'>'+esc(f)+'</option>';}).join('')
     +'</select>';
 }
+function segDurOf(f){return (window.SEGDUR&&window.SEGDUR[f])||0;}
+function segHead(){return '<thead><tr><th>文件</th><th style="width:96px">起(s)</th><th style="width:96px">止(s)</th><th style="width:60px">删</th></tr></thead><tbody>';}
 function segRender(rows){
   const flat=[];
-  (rows||[]).forEach(r=>(r.segs||[]).forEach(x=>flat.push({file:r.file,kind:r.kind,a:x[0],b:x[1]})));
-  $('#seg-tbl').innerHTML='<thead><tr><th>文件</th><th style="width:86px">类型</th><th style="width:90px">起(s)</th><th style="width:90px">止(s)</th><th style="width:60px">删</th></tr></thead><tbody>'
+  (rows||[]).forEach(r=>(r.segs||[]).forEach(x=>flat.push({file:r.file,a:x[0],b:x[1]})));
+  $('#seg-tbl').innerHTML=segHead()
     +flat.map(x=>'<tr><td>'+segFileSel(x.file)+'</td>'
-      +'<td><select class="seg-k"><option value="ad"'+(x.kind==='ad'?' selected':'')+'>广告</option><option value="invalid"'+(x.kind==='invalid'?' selected':'')+'>无效</option></select></td>'
-      +'<td><input class="seg-a" type="number" step="0.1" value="'+x.a+'" style="width:80px"></td>'
-      +'<td><input class="seg-b" type="number" step="0.1" value="'+x.b+'" style="width:80px"></td>'
+      +'<td><input class="seg-a" type="number" step="0.1" value="'+x.a+'" style="width:86px"></td>'
+      +'<td><input class="seg-b" type="number" step="0.1" value="'+x.b+'" style="width:86px"></td>'
       +'<td><button class="seg-del">×</button></td></tr>').join('')+'</tbody>';
   $('#seg-tbl').querySelectorAll('.seg-del').forEach(b=>b.onclick=()=>b.closest('tr').remove());
 }
 $('#seg-add').onclick=()=>{
-  const tb=$('#seg-tbl').querySelector('tbody');
-  if(!tb){$('#seg-tbl').innerHTML='<thead><tr><th>文件</th><th style="width:86px">类型</th><th style="width:90px">起(s)</th><th style="width:90px">止(s)</th><th style="width:60px">删</th></tr></thead><tbody></tbody>';}
+  if(!$('#seg-tbl').querySelector('tbody')){$('#seg-tbl').innerHTML=segHead()+'</tbody>';}
   const tbody=$('#seg-tbl').querySelector('tbody');
   const _lastS=document.querySelector('#seg-tbl tbody tr:last-child .seg-f');
   const first=(_lastS&&_lastS.value)||window.SEGFIRST||'';
+  const _d=segDurOf(first);
   const tr=document.createElement('tr');
   tr.innerHTML='<td>'+segFileSel(first)+'</td>'
-    +'<td><select class="seg-k"><option value="invalid">无效</option><option value="ad">广告</option></select></td>'
-    +'<td><input class="seg-a" type="number" step="0.1" value="0" style="width:80px"></td>'
-    +'<td><input class="seg-b" type="number" step="0.1" value="60" style="width:80px"></td>'
+    +'<td><input class="seg-a" type="number" step="0.1" value="0" style="width:86px"></td>'
+    +'<td><input class="seg-b" type="number" step="0.1" value="'+(_d?Math.round(_d):60)+'" style="width:86px"></td>'
     +'<td><button class="seg-del">×</button></td>';
   tr.querySelector('.seg-del').onclick=()=>tr.remove();
   tbody.appendChild(tr);
@@ -4538,20 +4794,23 @@ $('#seg-save').onclick=async()=>{
   $('#seg-tbl').querySelectorAll('tbody tr').forEach(tr=>{
     const _fe=tr.querySelector('.seg-f');
     const f=((_fe&&(_fe.value||_fe.textContent))||'').trim();
-    const k=tr.querySelector('.seg-k').value;
     const a=parseFloat(tr.querySelector('.seg-a').value||'0');
     const b=parseFloat(tr.querySelector('.seg-b').value||'0');
     if(!f||!(b>a))return;
-    (groups[f+'|'+k]=groups[f+'|'+k]||[]).push([a,b]);
+    (groups[f]=groups[f]||[]).push([a,b]);
   });
-  for(const key in groups){
-    const i=key.lastIndexOf('|');
-    await fetch('/api/segs/save',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({item:+iid,file:key.slice(0,i),kind:key.slice(i+1),segs:groups[key]})});
-  }
-  $('#seg-info').textContent='已保存';
+  const rows=Object.keys(groups).map(function(f){return {file:f,segs:groups[f]};});
+  const r=await fetch('/api/keep/save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({item:+iid,rows:rows})});
+  const j=await r.json().catch(function(){return {};});
+  $('#seg-info').textContent=(j&&j.ok)?('已保存（'+j.files+' 个文件）'):'保存失败';
   $('#modalseg').classList.remove('on');
 };
+$('#a-merge').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size)return alert(T('先选条目'));
+  if(!confirm(T('把选中条目的有效段按顺序拼成一个新视频（新增文件，原片不动，可能需要几分钟）。继续？')))return;
+  await post('/api/merge?'+(ids?'ids='+ids:''));};
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
