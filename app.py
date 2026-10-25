@@ -973,7 +973,7 @@ def _media_refresh(item_id, log=None):
         if not r:
             return False
         vids = [v for v in _video_files(r['path'] or '')
-                if os.path.splitext(v)[1].lower() in ('.mp4', '.m4v', '.mov')]
+                if os.path.splitext(v)[1].lower() in repair.VIDEO_EXT]
         seen = []
         for _v in vids:
             _b = os.path.basename(_v)
@@ -1049,7 +1049,7 @@ def _job_media(ids=None, force=False, nested=False):
         its = _items_by_ids(ids)
         _tick(0, max(1, len(its)))
         n_new = n_skip = n_err = 0
-        _vid_ext = ('.mp4', '.m4v', '.mov')
+        _vid_ext = tuple(repair.VIDEO_EXT)
         for i, it in enumerate(its, 1):
             if _stop_req():
                 _log('! 已请求停止')
