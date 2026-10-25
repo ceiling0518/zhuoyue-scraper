@@ -466,12 +466,12 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
     limit = int(limit or 0)
     ai_group = int(ai_group or 0)
     if web or scan:
-        q = ("SELECT id,name,title,plot,code,sem_code,path FROM items WHERE present=1 "
-             "AND COALESCE(kind,'')<>'nested' "
+        q = ("SELECT id,name,title,plot,code,sem_code,path,actors,studio,year "
+             "FROM items WHERE present=1 AND COALESCE(kind,'')<>'nested' "
              "AND (COALESCE(plot,'')='' OR COALESCE(tags,'')='' OR COALESCE(title,'')='')")
     else:
-        q = ("SELECT id,name,title,plot,code,sem_code,path FROM items WHERE present=1 "
-             "AND COALESCE(plot,'')<>''")
+        q = ("SELECT id,name,title,plot,code,sem_code,path,actors,studio,year "
+             "FROM items WHERE present=1 AND COALESCE(plot,'')<>''")
     args = []
     if ids:
         # 选中项：按简介重补（允许覆盖旧标签，也不看 kind）
@@ -532,10 +532,17 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
                 base['tags'] = list(dict.fromkeys((base.get('tags') or []) +
                                                   (d.get('tags') or [])))
             tags = ','.join(base.get('tags') or [])[:300]
-            dbc.execute("UPDATE items SET title=?, plot=?, tags=?, quality=?, source=?, "
-                        "last_update=? WHERE id=?",
-                        (base.get('title'), base.get('plot'), tags,
-                         '有' if tags else '缺', '+'.join(s for s, _ in cands),
+            # 演员/公司/年份/番号：有值才覆盖，不拿空值冲掉已有信息
+            _actors = ','.join(base.get('actors') or []) or (r.get('actors') or '')
+            _studio = base.get('studio') or (r.get('studio') or '')
+            _year = base.get('year') or (r.get('year') or '')
+            _code = base.get('code') or ''
+            if _code and not (r.get('sem_code') or r.get('code')):
+                dbc.execute('UPDATE items SET code=? WHERE id=?', (_code, r['id']))
+            dbc.execute("UPDATE items SET title=?, plot=?, tags=?, actors=?, studio=?, "
+                        "year=?, quality=?, source=?, last_update=? WHERE id=?",
+                        (base.get('title'), base.get('plot'), tags, _actors, _studio,
+                         _year, '有' if tags else '缺', '+'.join(s for s, _ in cands),
                          mlib.now(), r['id']))
             dbc.commit()
             try:
@@ -544,9 +551,10 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
             except Exception:
                 pass
             ok += 1
-            _log('[%d/%d] id=%d OK（%s）: %s'
+            _log('[%d/%d] id=%d OK（%s）: %s | 演员 %s | 公司 %s | %s'
                  % (wi, len(weak), r['id'], '+'.join(s for s, _ in cands),
-                    (base.get('title') or '')[:30]))
+                    (base.get('title') or '')[:26], (_actors or '-')[:24],
+                    (_studio or '-')[:16], (_year or '-')))
             _tick(wi)
 
     _tick(0, len(rows))

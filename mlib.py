@@ -297,10 +297,29 @@ def web_search(q, n=5):
 WEB_FILL_PROMPT = (
     '下面是某影片的现有信息与网络搜索结果。请判断哪些信息可信，并给出补全结果。\n'
     '规则：忽略网址、广告词、无意义编号（如 227、KJSDHUIDS11）；\n'
+    '拿不到或不确定的字段留空字符串/空数组，不要编造。\n'
     '只输出 JSON 对象，不要解释：\n'
-    '{"title":"40字内中文标题","plot":"2-3句中文简介","tags":["标签1","标签2"]}\n\n'
-    '现有：番号=%s | 标题=%s | 简介=%s\n\n搜索结果：\n%s'
+    '{"code":"番号（如 SSIS-001，没有就留空）",'
+    '"title":"40字内中文标题","plot":"2-3句中文简介","tags":["标签1","标签2"],'
+    '"actors":["演员名1","演员名2"],"studio":"制作/发行公司","year":"YYYY"}\n\n'
+    '现有：番号=%s | 标题=%s | 简介=%s | 演员=%s | 公司=%s | 年份=%s\n\n搜索结果：\n%s'
 )
+
+
+def _clean_year(y):
+    mm = re.search(r'(19|20)\d{2}', str(y or ''))
+    return mm.group(0) if mm else ''
+
+
+def _clean_people(v):
+    if isinstance(v, str):
+        v = re.split(r'[,，/、|;]+', v)
+    out = []
+    for x in (v or []):
+        x = strip_noise(str(x)).strip(' .,-')
+        if 1 < len(x) <= 24 and hint_ok(x, 1):
+            out.append(x)
+    return list(dict.fromkeys(out))[:12]
 
 
 def web_complete(item, model=None, log=None):
@@ -331,12 +350,16 @@ def web_complete(item, model=None, log=None):
         return None
     ctx = '\n'.join('%d. %s | %s' % (i + 1, h['title'][:80], h['snippet'][:120])
                     for i, h in enumerate(hits))
-    prompt = WEB_FILL_PROMPT % (code or '-', title or '-', plot[:120] or '-', ctx)
+    prompt = WEB_FILL_PROMPT % (code or '-', title or '-', plot[:120] or '-',
+                                item.get('actors') or '-', item.get('studio') or '-',
+                                item.get('year') or '-', ctx)
     try:
         txt = _chat(prompt, model or ai_model(), 900, 0.2)
-        j = extract_json_array(txt)
-        if isinstance(j, list):
-            j = j[0] if j else None
+        j = extract_json(txt)
+        if not isinstance(j, dict):
+            arr = extract_json_array(txt)
+            if isinstance(arr, list) and arr and isinstance(arr[0], dict):
+                j = arr[0]
         if not isinstance(j, dict):
             return None
         t2 = strip_noise(j.get('title') or '')
@@ -344,7 +367,14 @@ def web_complete(item, model=None, log=None):
         tg = [str(x).strip() for x in (j.get('tags') or []) if str(x).strip()]
         if not hint_ok(t2, 3):
             return None
-        return {'title': t2, 'plot': p2, 'tags': tg[:12]}
+        c2 = strip_noise(j.get('code') or '').strip()
+        if c2 and not re.match(r'^[A-Za-z]{1,6}[-_]?\d{2,6}$', re.sub(r'[^A-Za-z0-9-]', '', c2)):
+            c2 = ''
+        return {'title': t2, 'plot': p2, 'tags': tg[:12],
+                'actors': _clean_people(j.get('actors')),
+                'studio': strip_noise(j.get('studio') or '')[:40],
+                'year': _clean_year(j.get('year')),
+                'code': c2.upper() if c2 else ''}
     except Exception as e:
         _log('    web 抽取失败: %s' % str(e)[:80])
         return None
