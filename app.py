@@ -507,10 +507,11 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
                 return True
             return False
 
-        rows = [x for x in _all if _need(x)]
         if ids:
             _ids = set(ids)
-            rows = [x for x in rows if x['id'] in _ids]
+            rows = [x for x in _all if x['id'] in _ids]   # 选中的一律走来源
+        else:
+            rows = [x for x in _all if _need(x)]
         if limit > 0:
             rows = rows[:limit]
     else:
@@ -535,10 +536,12 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
     if batch > 60:
         _log('  单批上限 60（自动切），请求组=%d' % batch)
         batch = 60
+    ok = 0
     # 信息无效/不足的条目：先用勾选的来源补（web / 看片）
+    _force = bool(ids) and (web or scan)
     weak = [r for r in rows
-            if (not mlib.hint_ok(r.get('title') or '', 4)
-                or not mlib.hint_ok(r.get('plot') or '', 8))]
+            if _force or (not mlib.hint_ok(r.get('title') or '', 4)
+                          or not mlib.hint_ok(r.get('plot') or '', 8))]
     weak_ids = set(r['id'] for r in weak)
     rows = [r for r in rows if r['id'] not in weak_ids]
     srcs = []
