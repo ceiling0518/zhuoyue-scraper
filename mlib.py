@@ -1275,14 +1275,14 @@ def fetch_javdb(code, cookie=None):
 SITES = [
     ('javbus',      'JavBus',      '有码', 'https://www.javbus.com',          1),
     ('javdb',       'JavDB',       '有码', 'https://javdb.com',               1),
-    ('jav321',      'JAV321',      '有码', 'https://www.jav321.com',          0),   # 源站 522（CF 源站超时），站点不可用，暂不接入
+    ('jav321',      'JAV321',      '有码', 'https://www.jav321.com',          1),   # 源站 522（CF 源站超时），站点不可用，暂不接入
     ('missav',      'MissAV',      '有码+无码', 'https://missav123.com',       1),
     ('avsox',       'avsox 系',    '无码', 'https://avsox.click',             1),
     ('123av',       '123AV',       '无码', 'https://123av.com',               1),
     ('njav',        'NJAV',        '无码', 'https://njav.tv',                 1),
     ('netflav',     'Netflav',     '聚合', 'https://netflav.com',             1),
     ('javtrailers', 'JAVTrailers', '资料', 'https://javtrailers.com',         1),
-    ('fc2',         'FC2 官方',    'FC2',  'https://adult.contents.fc2.com',  0),
+    ('fc2',         'FC2 官方',    'FC2',  'https://adult.contents.fc2.com',  1),
     ('avfan',       'AVFan',       '资料', 'https://avfan.com',               1),
 ]
 SITE_NOTES = {
@@ -1399,6 +1399,50 @@ def fc2_num(item):
         if m:
             return m.group(1)
     return ''
+
+
+def fetch_jav321(item):
+    """JAV321：POST /search (sn=番号) -> 标题/封面/演员/简介。"""
+    if 'jav321' not in sites_enabled():
+        return None
+    code = (item.get('sem_code') or item.get('code') or '').strip().upper()
+    if not code:
+        return None
+    try:
+        r = requests.post('https://www.jav321.com/search', timeout=25,
+                          headers={'User-Agent': _UA, 'Accept-Language': 'zh-CN,zh;q=0.9',
+                                   'Referer': 'https://www.jav321.com/'},
+                          data={'sn': code})
+        if r.status_code != 200 or code.replace('-', '').lower() not in (r.text or '').lower().replace('-', ''):
+            return None
+        t = r.text
+        title = ''
+        mm = re.search(r'<h3[^>]*>(.*?)</h3>', t, re.S)
+        if mm:
+            title = strip_noise(re.sub(r'<[^>]+>', ' ', mm.group(1)))
+        if not title:
+            mm = re.search(r'og:title"[^>]*content="([^"]+)"', t, re.I)
+            if mm:
+                title = strip_noise(mm.group(1))
+        cover = ''
+        mm = re.search(r'og:image"[^>]*content="([^"]+)"', t, re.I)
+        if mm:
+            cover = mm.group(1)
+        actors = []
+        mm = re.search(r'主演[:：]?\s*</?[^>]*>?\s*([^<]{1,80})', t)
+        if mm:
+            actors = [x.strip() for x in re.split(r'[,，/、]', mm.group(1)) if x.strip()]
+        plot = ''
+        mm = re.search(r'<div class="panel-body">(.*?)</div>', t, re.S)
+        if mm:
+            plot = strip_noise(re.sub(r'<[^>]+>', ' ', mm.group(1)))[:400]
+        if not title:
+            return None
+        return {'source': 'jav321', 'code': code, 'title': title, 'plot': plot or title,
+                'studio': '', 'cover': cover, 'samples': [], 'genres': [], 'actors': actors,
+                'url': 'https://www.jav321.com/search', 'note': ''}
+    except Exception:
+        return None
 
 
 def fetch_avfan(item):
@@ -1973,30 +2017,44 @@ def scrape_website(item):
         d = fetch_fc2(item)          # FC2 官方始终优先
         if d and d.get('title'):
             return d
-    for _k in on:                    # 其余按用户在站点设置里的顺序
+    # 多站合并：资料与封面可来自不同站点；拿到标题+简介+封面或满 3 站即停
+    merged, used, got = {}, [], 0
+    for _k in on:
         d = None
         if _k == 'avfan':
             d = fetch_avfan(item)
-            ok = bool(d and d.get('title') and d.get('plot'))
         elif _k == 'javbus':
             d = JS.fetch(code)
             if d:
                 d['source'] = 'javbus'
-            ok = bool(d and (d.get('code') or d.get('date')))
         elif _k == 'javdb':
             d = fetch_javdb(code)
-            ok = bool(d and d.get('code'))
+        elif _k == 'jav321':
+            d = fetch_jav321(item)
         elif _k == 'netflav':
             d = fetch_netflav(item)
-            ok = bool(d and d.get('title'))
         elif _k == 'javtrailers':
             d = fetch_javtrailers(item)
-            ok = bool(d and d.get('title'))
         else:
             continue
-        if ok:
-            return d
-    return None
+        if not d:
+            continue
+        used.append(d.get('source') or _k)
+        got += 1
+        for f in ('code', 'title', 'plot', 'studio', 'cover', 'actors', 'genres',
+                  'released', 'year', 'note', 'url'):
+            if not merged.get(f) and d.get(f):
+                merged[f] = d[f]
+        if merged.get('title') and merged.get('plot') and merged.get('cover'):
+            break
+        if got >= 3:
+            break
+    if not merged.get('title') and not merged.get('code'):
+        return None
+    merged['source'] = '+'.join(used) if used else 'avfan'
+    merged.setdefault('cover', '')
+    merged.setdefault('samples', [])
+    return merged
 
 
 # ------------------------------------------------------------------ uncensored line
