@@ -3035,7 +3035,8 @@ def save_item(iid, kv):
 
 def sites_info():
     on = set(mlib.sites_enabled())
-    return [{'k': k, 'n': n, 't': t, 'u': u, 'has': h, 'on': k in on}
+    return [{'k': k, 'n': n, 't': t, 'u': u, 'has': h, 'on': k in on,
+             'note': mlib.SITE_NOTES.get(k, '')}
             for (k, n, t, u, h) in mlib.SITES]
 
 
@@ -4309,11 +4310,20 @@ $('#b-sites').onclick=async()=>{await stLoad();$('#st-info').textContent='';$('#
 $('#md4-close').onclick=()=>$('#modal4').classList.remove('on');
 async function stLoad(){
   const d=await(await fetch('/api/sites')).json();
-  $('#st-tbl').innerHTML='<thead><tr><th style="width:44px">启用</th><th>站点</th><th style="width:56px">类型</th><th>入口</th><th style="width:160px">状态</th></tr></thead><tbody>'
+  $('#st-tbl').innerHTML='<thead><tr><th style="width:44px">启用</th><th style="width:110px">站点</th><th style="width:76px">类型</th><th>备注</th><th style="width:150px">状态</th><th style="width:64px">顺序</th></tr></thead><tbody>'
    +d.sites.map(s=>'<tr><td><input type="checkbox" class="ston" data-k="'+s.k+'"'+(s.on?' checked':'')+'></td>'
      +'<td>'+esc(s.n)+(s.has?'':' <span class="muted">(待接入)</span>')+'</td><td>'+esc(s.t)+'</td>'
-     +'<td class="muted" style="font-size:11px">'+esc(s.u)+'</td>'
-     +'<td class="st-'+s.k+'">—</td></tr>').join('')+'</tbody>';}
+     +'<td class="muted" style="font-size:11px">'+esc(s.note||'')+'</td>'
+     +'<td class="st-'+s.k+'">—</td>'
+     +'<td><button class="st-up" data-k="'+s.k+'">↑</button><button class="st-dn" data-k="'+s.k+'">↓</button></td></tr>').join('')+'</tbody>';}
+document.addEventListener('click',e=>{
+  const up=e.target.closest?e.target.closest('.st-up'):null;
+  const dn=e.target.closest?e.target.closest('.st-dn'):null;
+  if(!up&&!dn)return;
+  const tr=(up||dn).closest('tr');
+  if(up&&tr.previousElementSibling)tr.parentNode.insertBefore(tr,tr.previousElementSibling);
+  if(dn&&tr.nextElementSibling)tr.parentNode.insertBefore(tr.nextElementSibling,tr);
+});
 $('#st-check').onclick=async()=>{
   $('#st-info').textContent='检测中…（逐个真实请求）';
   const d=await(await fetch('/api/sites/check',{method:'POST'})).json();

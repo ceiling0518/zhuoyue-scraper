@@ -1276,7 +1276,7 @@ SITES = [
     ('javbus',      'JavBus',      '有码', 'https://www.javbus.com',          1),
     ('javdb',       'JavDB',       '有码', 'https://javdb.com',               1),
     ('jav321',      'JAV321',      '有码', 'https://www.jav321.com',          0),   # 源站 522（CF 源站超时），站点不可用，暂不接入
-    ('missav',      'MissAV',      '无码', 'https://missav123.com',           1),
+    ('missav',      'MissAV',      '有码+无码', 'https://missav123.com',       1),
     ('avsox',       'avsox 系',    '无码', 'https://avsox.click',             1),
     ('123av',       '123AV',       '无码', 'https://123av.com',               1),
     ('njav',        'NJAV',        '无码', 'https://njav.tv',                 1),
@@ -1285,7 +1285,21 @@ SITES = [
     ('fc2',         'FC2 官方',    'FC2',  'https://adult.contents.fc2.com',  0),
     ('avfan',       'AVFan',       '资料', 'https://avfan.com',               1),
 ]
-DEFAULT_SITES = 'javbus,javdb,missav,fc2'
+SITE_NOTES = {
+    'javbus': '标题/封面/演员/类型；有码；需过年龄验证',
+    'javdb': '标题/封面/演员/类型；有码；详情要登录 cookie',
+    'jav321': '标题/封面/演员；有码；曾 522，现可访问，默认关',
+    'missav': '标题/封面/演员；有码+无码；无标签，建议排后',
+    'avsox': '标题/封面；无码；页面较薄，易被墙',
+    '123av': '标题/简介/封面；无码',
+    'njav': '标题/封面；无码；会跳 123AV 品牌页',
+    'netflav': '标题/封面/简介；聚合站，有码无码都可能收录',
+    'javtrailers': '标题/封面/时长/演员；资料站',
+    'fc2': '标题/发售日/标签/卖家；FC2 官方；不下海报',
+    'avfan': '标题/简介/制作商/发售日/标签；资料站；不下海报',
+}
+
+DEFAULT_SITES = 'javbus,javdb,missav,fc2' 
 
 
 def sites_enabled():
@@ -1955,30 +1969,32 @@ def scrape_website(item):
     if not code:
         return None
     on = sites_enabled()
-    if 'avfan' in on:
-        _d = fetch_avfan(item)
-        if _d and _d.get('title') and _d.get('plot'):
-            return _d
     if 'fc2' in on and re.match(r'(?i)fc2[-_ ]?ppv', code):
-        d = fetch_fc2(item)          # FC2 官方：官方标题 + 样张封面
+        d = fetch_fc2(item)          # FC2 官方始终优先
         if d and d.get('title'):
             return d
-    if 'javbus' in on:
-        d = JS.fetch(code)
-        if d and (d.get('code') or d.get('date')):
-            d['source'] = 'javbus'
-            return d
-    if 'javdb' in on:
-        d = fetch_javdb(code)
-        if d and d.get('code'):
-            return d
-    if 'netflav' in on:                    # 聚合站：有码/无码都可能收录
-        d = fetch_netflav(item)
-        if d and d.get('title'):
-            return d
-    if 'javtrailers' in on:                # 资料站：片名/封面/时长
-        d = fetch_javtrailers(item)
-        if d and d.get('title'):
+    for _k in on:                    # 其余按用户在站点设置里的顺序
+        d = None
+        if _k == 'avfan':
+            d = fetch_avfan(item)
+            ok = bool(d and d.get('title') and d.get('plot'))
+        elif _k == 'javbus':
+            d = JS.fetch(code)
+            if d:
+                d['source'] = 'javbus'
+            ok = bool(d and (d.get('code') or d.get('date')))
+        elif _k == 'javdb':
+            d = fetch_javdb(code)
+            ok = bool(d and d.get('code'))
+        elif _k == 'netflav':
+            d = fetch_netflav(item)
+            ok = bool(d and d.get('title'))
+        elif _k == 'javtrailers':
+            d = fetch_javtrailers(item)
+            ok = bool(d and d.get('title'))
+        else:
+            continue
+        if ok:
             return d
     return None
 
