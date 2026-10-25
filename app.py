@@ -3948,8 +3948,9 @@ def stats():
            'by_quality': {}, 'by_source': {}, 'sem': {}, 'ollama': _ollama(), 'os': ('win' if mlib.IS_WIN else 'linux'),
            'archive': dbc.execute('SELECT COUNT(*) c FROM archive').fetchone()['c'],
            'root': mlib.scan_root(), 'root_movie': mlib.root_movie(),
-           'root_tv': mlib.root_tv(), 'model': mlib.ai_model(), 'db': mlib.DB_PATH,
-           'cookie': bool(mlib.javdb_cookie()),
+           'root_tv': mlib.root_tv(), 'libs': len(mlib.libraries()),
+           'model': mlib.ai_model(), 'db': mlib.DB_PATH,
+           'cookie': bool(mlib.javdb_cookie()), 'tmdb': bool(mlib.tmdb_key()),
            'queue': len(QUEUE)}
     try:
         out['hbad'] = dbc.execute("SELECT COUNT(DISTINCT item_id) c FROM health "
@@ -4893,6 +4894,11 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, PAGE, 'text/html; charset=utf-8')
             if p.startswith('/doc/'):
                 return self._send(200, doc_page(p.rsplit('/', 1)[1]), 'text/html; charset=utf-8')
+            if p == '/api/tmdb':
+                k = mlib.tmdb_key()
+                return self._json({'has': bool(k), 'mode': ('token' if k.startswith('eyJ') else ('key' if k else ''))})
+            if p == '/api/libs':
+                return self._json({'libs': mlib.libraries()})
             if p == '/api/sites':
                 return self._json({'sites': sites_info(), 'on': mlib.sites_enabled()})
             if p == '/api/net':
@@ -5219,6 +5225,17 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/covers/drop':
                 tids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 return self._json({'ok': True, 'n': drop_covers(tids) if tids else 0})
+            elif p == '/api/tmdb':
+                ok = mlib.set_tmdb_key(q.get('key') or '')
+                k = mlib.tmdb_key()
+                return self._json({'ok': ok, 'has': bool(k),
+                                   'mode': ('token' if k.startswith('eyJ') else ('key' if k else ''))})
+            elif p == '/api/libs/set':
+                try:
+                    rows = json.loads(self._body() or '[]')
+                except Exception:
+                    rows = []
+                return self._json({'ok': True, 'libs': mlib.libraries_set(rows)})
             elif p == '/api/sites/type':
                 ok = mlib.set_site_type(q.get('key') or '', q.get('type') or '')
                 return self._json({'ok': ok, 'sites': sites_info()})
@@ -5429,9 +5446,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
   <button id="b-sites">站点</button>
   <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
-  <span class="muted">媒体库</span><input id="cfg-root" style="width:220px">
-  <span class="muted">电影库</span><input id="cfg-root-movie" style="width:190px" placeholder="留空=不启用">
-  <span class="muted">剧集库</span><input id="cfg-root-tv" style="width:190px" placeholder="留空=不启用">
+  <button id="b-libs" title="管理媒体库：可建多个 AV/电影/剧集库">媒体库 <span class="muted" id="lib-n">0</span></button>
   <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select><span class="muted">输出语言</span><select id="cfg-outlang" title="元数据输出语言" style="min-width:104px"><option value="">跟随界面</option><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
@@ -5616,10 +5631,19 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <table id="seg-tbl"></table>
   <div class="bar"><button id="seg-add">+ 添加一段</button><button class="primary" id="seg-save">保存</button></div>
 </div></div>
+<div class="modal" id="modal5"><div class="box" style="max-width:980px">
+  <div class="bar"><b>媒体库</b><span class="muted" id="lib-info"></span><button class="right" id="md5-close">关闭</button></div>
+  <p class="muted">一个库 = 一个类型 + 任意多个目录（可跨盘/跨 NAS）。AV 库、电影库、剧集库可各建多个；扫描按目录分别判断增删，互不影响。</p>
+  <table id="lib-tbl"></table>
+  <div class="bar"><button id="lib-add">+ 新增媒体库</button><button class="primary" id="lib-save">保存</button></div>
+</div></div>
 <div class="modal" id="modal4"><div class="box">
   <div class="bar"><b>站点设置</b><span class="muted" id="st-info"></span><button class="right" id="md4-close">关闭</button></div>
   <p class="muted">勾选要使用的站点（抓取时按此顺序尝试）。javbus / javdb / MissAV 已有专属解析器，其余为待接入站点。</p>
   <table id="st-tbl"></table>
+  <div class="bar" style="margin-top:14px"><b>TMDB</b><span class="muted" id="tm-state"></span></div>
+  <p class="muted">电影/剧集元数据。填 API Key（v3）或 Read Access Token（v4，eyJ 开头）都行，保存后立即生效。</p>
+  <div class="bar"><input id="tm-key" style="flex:1" placeholder="API Key 或 Read Access Token"><button class="primary" id="tm-save">保存</button><button id="tm-clear">清空</button></div>
   <div class="bar" style="margin-top:14px"><b>JavDB Cookie</b><span class="muted" id="ck-state"></span></div>
   <p class="muted">粘贴 Cookie 字符串（可含 “Cookie:” 前缀），或选文件上传。保存后写入 javdb_cookie.txt，JavDB 默认识别即生效。</p>
   <textarea id="ck-text" style="width:100%;height:90px" placeholder="vd=...; over18=1; ..."></textarea>
@@ -5650,10 +5674,7 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
   }
   PLAT=s.os||'win';                     // 容器/Linux：隐藏 Windows 专属按钮
   const _ao=document.getElementById('a-open'); if(_ao)_ao.style.display=(PLAT==='win'?'':'none');
-  if(!$('#cfg-root').value)$('#cfg-root').value=s.root;
-  const _rmv=document.getElementById('cfg-root-movie'),_rtv=document.getElementById('cfg-root-tv');
-  if(_rmv&&!_rmv.value)_rmv.value=s.root_movie||'';
-  if(_rtv&&!_rtv.value)_rtv.value=s.root_tv||'';
+  const _ln=document.getElementById('lib-n');if(_ln)_ln.textContent=(s.libs||0);
   const sel=$('#cfg-model');const ms=(s.ollama&&s.ollama.models)||[];
   if(sel.options.length!==ms.length+1){sel.innerHTML='<option value="'+esc(s.model)+'">'+esc(s.model)+'</option>'
     +ms.map(m=>'<option>'+esc(m)+'</option>').join('');}
@@ -6158,10 +6179,7 @@ $('#md-body').addEventListener('click',async e=>{
   e.target.textContent='已保存 ✓';setTimeout(()=>e.target.textContent='保存',1200);
   list();});
 $('#md2-close').onclick=()=>$('#modal2').classList.remove('on');
-$('#cfg-save').onclick=async()=>{await fetch('/api/config?root='+encodeURIComponent($('#cfg-root').value)
-  +'&model='+encodeURIComponent($('#cfg-model').value)
-  +'&root_movie='+encodeURIComponent($('#cfg-root-movie').value)
-  +'&root_tv='+encodeURIComponent($('#cfg-root-tv').value),{method:'POST'});
+$('#cfg-save').onclick=async()=>{await fetch('/api/config?model='+encodeURIComponent($('#cfg-model').value),{method:'POST'});
   const n=await(await fetch('/api/net?port='+($('#cfg-port').value||0)+'&lan='+($('#cfg-lan').checked?1:0)
     +'&bak_days='+($('#cfg-bakdays').value||0)
     +'&enc_mode='+($('#cfg-encmode').value)+'&enc_val='+encodeURIComponent($('#cfg-encval').value||'')
@@ -6186,6 +6204,13 @@ $('#ck-file').onchange=e=>{const f=e.target.files[0];if(!f)return;const rd=new F
   rd.onload=()=>{$('#ck-text').value=rd.result;};rd.readAsText(f);};
 $('#ck-save').onclick=async()=>{const r=await fetch('/api/cookie',{method:'POST',body:$('#ck-text').value});
   const j=await r.json();alert(j.set?T('已保存 (%d 字符)').replace('%d',j.len):T('已清空'));};
+$('#tm-save').onclick=async()=>{const v=($('#tm-key').value||'').trim();
+  if(!v){alert(T('请先粘贴 TMDB 凭据'));return;}
+  const d=await(await fetch('/api/tmdb?key='+encodeURIComponent(v),{method:'POST'})).json();
+  $('#tm-state').textContent=d.has?('当前：已设置（'+d.mode+'）'):'当前：未设置';$('#tm-key').value='';
+  alert(T('已保存'));};
+$('#tm-clear').onclick=async()=>{await fetch('/api/tmdb?key=',{method:'POST'});
+  $('#tm-state').textContent='当前：未设置';alert(T('已清空'));};
 $('#ck-clear').onclick=async()=>{await fetch('/api/cookie?clear=1',{method:'POST'});alert(T('已清空'));};
 const UI_LANGS=['zh','en','ja','es','zh-Hant'];
 const LANG_LABEL={'zh':'中文','en':'English','ja':'日本語','es':'Español','zh-Hant':'繁體中文'};
@@ -6257,8 +6282,52 @@ async function setUILang(v){await fetch('/api/lang?lang='+encodeURIComponent(v),
 const _bl=document.getElementById('b-lang'); if(_bl)_bl.onchange=()=>setUILang(_bl.value);
 const _co=document.getElementById('cfg-outlang');
 if(_co)_co.onchange=async()=>{await fetch('/api/lang?out_lang='+encodeURIComponent(_co.value),{method:'POST'});};
+let LIBSROWS=[];
+function libRender(){$('#lib-tbl').innerHTML='<thead><tr><th style="width:170px">名称</th><th style="width:88px">类型</th><th style="width:52px">启用</th><th style="width:82px"></th></tr></thead><tbody>'
+  +LIBSROWS.map((L,i)=>'<tr data-i="'+i+'"><td><input class="lib-name" value="'+esc(L.name||'')+'" style="width:158px"></td>'
+    +'<td><select class="lib-kind">'+[['av','AV'],['movie','电影'],['tv','剧集']].map(([v,t])=>'<option value="'+v+'"'+(L.kind===v?' selected':'')+'>'+t+'</option>').join('')+'</select></td>'
+    +'<td><input type="checkbox" class="lib-on"'+(L.enabled?' checked':'')+'></td>'
+    +'<td><button class="lib-del">删除库</button></td></tr>'
+    +'<tr class="lib-prow" data-i="'+i+'"><td colspan="4"><div class="lib-paths">'
+    +(L.paths||[]).map((p,j)=>'<div class="lib-p"><input class="lib-path" data-j="'+j+'" value="'+esc(p)+'" style="width:84%">'
+        +'<button class="lib-pdel" data-i="'+i+'" data-j="'+j+'" title="移除这个目录">×</button></div>').join('')
+    +'<button class="lib-padd" data-i="'+i+'">+ 目录</button></div></td></tr>').join('')+'</tbody>';}
+function libSync(){document.querySelectorAll('#lib-tbl tbody tr[data-i]').forEach(tr=>{
+  const i=parseInt(tr.dataset.i,10),L=LIBSROWS[i];if(!L)return;
+  if(tr.classList.contains('lib-prow')){
+    L.paths=[...tr.querySelectorAll('.lib-path')].map(x=>x.value);return;}
+  L.name=tr.querySelector('.lib-name').value;
+  L.kind=tr.querySelector('.lib-kind').value;
+  L.enabled=tr.querySelector('.lib-on').checked;});}
+async function libLoad(){const d=await(await fetch('/api/libs')).json();
+  LIBSROWS=(d.libs||[]).map(L=>({id:L.id,name:L.name,kind:L.kind,enabled:!!L.enabled,paths:(L.paths||[]).slice()}));
+  libRender();$('#lib-info').textContent='共 '+LIBSROWS.length+' 个库 / '+LIBSROWS.reduce((n,L)=>n+(L.paths||[]).length,0)+' 个目录';}
+$('#b-libs').onclick=async()=>{await libLoad();$('#modal5').classList.add('on');};
+$('#md5-close').onclick=()=>$('#modal5').classList.remove('on');
+$('#lib-add').onclick=()=>{libSync();LIBSROWS.push({id:0,name:'',kind:'av',enabled:true,paths:['']});libRender();};
+document.addEventListener('click',e=>{
+  const t=e.target.closest?e.target.closest('.lib-del,.lib-padd,.lib-pdel'):null;
+  if(!t)return;
+  libSync();
+  const i=parseInt(t.dataset.i,10),L=LIBSROWS[i];
+  if(t.classList.contains('lib-del')){LIBSROWS.splice(i,1);}
+  else if(!L)return;
+  else if(t.classList.contains('lib-padd')){L.paths.push('');}
+  else {L.paths.splice(parseInt(t.dataset.j,10),1);}
+  libRender();});
+$('#lib-save').onclick=async()=>{
+  libSync();
+  const rows=LIBSROWS.map(L=>({id:L.id||0,name:L.name,kind:L.kind,enabled:L.enabled?1:0,
+    paths:(L.paths||[]).map(x=>x.trim()).filter(x=>x)}));
+  const d=await(await fetch('/api/libs/set',{method:'POST',body:JSON.stringify(rows)})).json();
+  LIBSROWS=(d.libs||[]).map(L=>({id:L.id,name:L.name,kind:L.kind,enabled:!!L.enabled,paths:(L.paths||[]).slice()}));
+  libRender();$('#lib-info').textContent='已保存：'+LIBSROWS.length+' 个库';
+  const s=await(await fetch('/api/stats')).json();$('#lib-n').textContent=(s.libs||0);};
 $('#b-sites').onclick=async()=>{await stLoad();
-  try{const s=await(await fetch('/api/stats')).json();$('#ck-state').textContent=s.cookie?'当前：已设置':'当前：未设置';}catch(e){}
+  try{const s=await(await fetch('/api/stats')).json();$('#ck-state').textContent=s.cookie?'当前：已设置':'当前：未设置';
+    const t=await(await fetch('/api/tmdb')).json();
+    $('#tm-state').textContent=t.has?('当前：已设置（'+t.mode+'）'):'当前：未设置';
+    $('#tm-key').value='';}catch(e){}
   $('#st-info').textContent='';$('#modal4').classList.add('on');};
 $('#md4-close').onclick=()=>$('#modal4').classList.remove('on');
 async function stLoad(){

@@ -43,6 +43,7 @@ DB_PATH = os.path.join(DB_DIR, 'mlib.db')
 CACHE_DIR = os.path.join(DB_DIR, 'cache')
 NFO_DIR = os.path.join(DB_DIR, 'nfo_out')
 COOKIE_FILE = os.path.join(DB_DIR, 'javdb_cookie.txt')
+TMDB_KEY_FILE = os.path.join(DB_DIR, 'tmdb_key.txt')
 # Ollama：容器里指向宿主 host.docker.internal
 OLLAMA = (os.environ.get('MS_OLLAMA') or 'http://127.0.0.1:11434').rstrip('/')
 FFMPEG = os.environ.get('FFMPEG', 'ffmpeg')
@@ -129,16 +130,128 @@ def root_tv():
     return (cfg_get('root_tv') or '').strip()
 
 
-def scan_roots():
-    """[(kind, root)]：AV 根固定在内，电影/剧集根可选，按路径去重。"""
-    out = [('av', scan_root())]
-    for k, r in (('movie', root_movie()), ('tv', root_tv())):
-        if r and all(r != x[1] for x in out):
-            out.append((k, r))
+def ensure_libraries(dbc=None):
+    """媒体库表（一个库可含多个目录）；首次运行时迁入旧的单根配置。"""
+    d = dbc or db()
+    d.execute("""CREATE TABLE IF NOT EXISTS libraries(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, path TEXT, kind TEXT,
+        enabled INTEGER DEFAULT 1, ts TEXT)""")
+    d.execute("""CREATE TABLE IF NOT EXISTS library_paths(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, lib_id INTEGER, path TEXT)""")
+    n = d.execute('SELECT COUNT(*) c FROM libraries').fetchone()['c']
+    if not n:
+        seed = []
+        r0 = (cfg_get('root') or ROOT_DEFAULT or '').strip()
+        if r0:
+            seed.append(('媒体库', [r0], 'av'))
+        for nm, r, k in (('电影库', (cfg_get('root_movie') or '').strip(), 'movie'),
+                         ('剧集库', (cfg_get('root_tv') or '').strip(), 'tv')):
+            if r:
+                seed.append((nm, [r], k))
+        for nm, ps, k in seed:
+            cur = d.execute('INSERT INTO libraries(name,path,kind,enabled,ts) VALUES(?,?,?,1,?)',
+                            (nm, ps[0], k, now()))
+            for p in ps:
+                d.execute('INSERT INTO library_paths(lib_id,path) VALUES(?,?)',
+                          (int(cur.lastrowid), p))
+        d.commit()
+        return d
+    # 老库：libraries.path -> library_paths（每个库补一次，然后清掉旧列值）
+    for r in d.execute('SELECT id,path FROM libraries').fetchall():
+        p = (r['path'] or '').strip()
+        if not p:
+            continue
+        c = d.execute('SELECT COUNT(*) c FROM library_paths WHERE lib_id=?',
+                      (r['id'],)).fetchone()['c']
+        if not c:
+            d.execute('INSERT INTO library_paths(lib_id,path) VALUES(?,?)', (r['id'], p))
+        d.execute("UPDATE libraries SET path='' WHERE id=?", (r['id'],))
+    d.commit()
+    return d
+
+
+def libraries(dbc=None, only_on=False):
+    d = ensure_libraries(dbc)
+    q = 'SELECT id,name,kind,enabled FROM libraries'
+    if only_on:
+        q += ' WHERE COALESCE(enabled,1)=1'
+    q += ' ORDER BY id'
+    out = [dict(r) for r in d.execute(q)]
+    pm = {}
+    for r in d.execute('SELECT lib_id,path FROM library_paths ORDER BY id'):
+        pm.setdefault(r['lib_id'], []).append(r['path'])
+    for L in out:
+        L['paths'] = pm.get(L['id'], [])
+        L['path'] = L['paths'][0] if L['paths'] else ''
     return out
 
 
-# 剧集特征：S01E02 / S01.E02 / 第12集 / Season 1 / EP05
+def libraries_set(rows, dbc=None):
+    """整体保存 [{id,name,kind,enabled,paths:[...]}]；列表里没有的库删除。"""
+    d = ensure_libraries(dbc)
+    ts, keep = now(), []
+    for r in (rows or []):
+        ps = [str(x).strip() for x in (r.get('paths') or []) if str(x).strip()]
+        if not ps:
+            p1 = (r.get('path') or '').strip()
+            if p1:
+                ps = [p1]
+        if not ps:
+            continue                                  # 没有目录的库不保存
+        name = (r.get('name') or '').strip() or os.path.basename(ps[0].rstrip('\\/')) or ps[0]
+        kind = (r.get('kind') or 'av').strip()
+        if kind not in ('av', 'movie', 'tv'):
+            kind = 'av'
+        en = 0 if str(r.get('enabled', 1)) in ('0', 'False', 'false', 'None', '') else 1
+        try:
+            _id = int(r.get('id') or 0)
+        except Exception:
+            _id = 0
+        if _id:
+            d.execute('UPDATE libraries SET name=?,path=?,kind=?,enabled=?,ts=? WHERE id=?',
+                      (name, ps[0], kind, en, ts, _id))
+            d.execute('DELETE FROM library_paths WHERE lib_id=?', (_id,))
+        else:
+            cur = d.execute('INSERT INTO libraries(name,path,kind,enabled,ts) VALUES(?,?,?,?,?)',
+                            (name, ps[0], kind, en, ts))
+            _id = int(cur.lastrowid)
+        seen = set()
+        for p in ps:
+            if p in seen:
+                continue
+            seen.add(p)
+            d.execute('INSERT INTO library_paths(lib_id,path) VALUES(?,?)', (_id, p))
+        keep.append(_id)
+    if keep:
+        ph = ','.join('?' * len(keep))
+        d.execute('DELETE FROM library_paths WHERE lib_id NOT IN (%s)' % ph, keep)
+        d.execute('DELETE FROM libraries WHERE id NOT IN (%s)' % ph, keep)
+    else:
+        d.execute('DELETE FROM library_paths')
+        d.execute('DELETE FROM libraries')
+    d.commit()
+    return libraries(d)
+
+
+def scan_roots():
+    """[(kind, path)]：所有启用媒体库的全部目录，按路径去重；空则退回 AV 根。"""
+    out, seen = [], set()
+    try:
+        libs = libraries(only_on=True)
+    except Exception:
+        libs = []
+    for L in libs:
+        for p in (L.get('paths') or []):
+            p = (p or '').strip()
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            out.append((L.get('kind') or 'av', p))
+    if not out:
+        out = [('av', scan_root())]
+    return out
+
+
 _KIND_TV_RE = re.compile(r'(?i)(?:\bS\d{1,2}[\s._-]*E\d{1,3}\b|\bSeason\s*\d{1,2}\b'
                          r'|第\s*\d{1,3}\s*[集话話]|\bEP?\s*\d{1,2}\b)')
 # 电影特征：(2019) / .2019. / 2019 —— 前后要有边界，避免把 4716 当成年份
@@ -1362,6 +1475,51 @@ def scan(root=None, mode='incr', dbc=None, kind_hint=''):
 
 
 # ------------------------------------------------------------------ website scrape
+def tmdb_key():
+    """TMDB 凭据：API Key(v3) 或 Read Access Token(v4 JWT) 均可。"""
+    if os.path.exists(TMDB_KEY_FILE):
+        try:
+            t = io.open(TMDB_KEY_FILE, encoding='utf-8').read().strip()
+            if t:
+                return t
+        except Exception:
+            pass
+    return (cfg_get('tmdb_key') or '').strip()
+
+
+def set_tmdb_key(t):
+    t = (t or '').strip()
+    try:
+        if t:
+            io.open(TMDB_KEY_FILE, 'w', encoding='utf-8').write(t)
+        elif os.path.exists(TMDB_KEY_FILE):
+            os.remove(TMDB_KEY_FILE)
+        return True
+    except Exception:
+        return False
+
+
+def tmdb_get(path, params=None, timeout=25):
+    """TMDB v3 调用；凭据是 JWT 走 Bearer，否则走 api_key。失败返回 {'_error':...}。"""
+    key = tmdb_key()
+    if not key:
+        return {'_error': 'no_key'}
+    p = dict(params or {})
+    url = 'https://api.themoviedb.org/3' + path
+    headers = {'Accept': 'application/json'}
+    if key.startswith('eyJ'):
+        headers['Authorization'] = 'Bearer ' + key
+    else:
+        p['api_key'] = key
+    try:
+        r = requests.get(url, params=p, headers=headers, timeout=timeout)
+        if r.status_code != 200:
+            return {'_error': r.status_code, '_body': (r.text or '')[:200]}
+        return r.json()
+    except Exception as e:
+        return {'_error': str(e)[:120]}
+
+
 def javdb_cookie():
     if os.path.exists(COOKIE_FILE):
         try:
