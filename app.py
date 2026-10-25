@@ -994,6 +994,16 @@ def _media_refresh(item_id, log=None):
                                 (item_id, _x['file']))
         except Exception:
             pass
+        # 段记录跟着文件走：文件已不存在（改名/删除）就一并清掉，避免徽标一直亮
+        try:
+            for _t in ('segs_file', 'ads_file'):
+                for _x in dbc.execute('SELECT file FROM %s WHERE item_id=?' % _t,
+                                      (item_id,)).fetchall():
+                    if (_x['file'] or '') not in seen:
+                        dbc.execute('DELETE FROM %s WHERE item_id=? AND file=?' % _t,
+                                    (item_id, _x['file']))
+        except Exception:
+            pass
         if not vids:
             dbc.execute('DELETE FROM media WHERE item_id=?', (item_id,))
             dbc.commit()
@@ -2134,12 +2144,6 @@ def _job_addel(ids=None):
                         (r.get('new_size') or 0) / 1048576.0,
                         os.path.basename(r.get('orig_backup') or '')))
                 try:
-                    dbc.execute("UPDATE ads_file SET ads='[]', ts=? WHERE item_id=? AND file=?",
-                                (mlib.now(), it['id'], v))
-                    _mr = dbc.execute('SELECT file FROM media WHERE item_id=?', (it['id'],)).fetchone()
-                    if _mr and (_mr['file'] or '') == v:
-                        dbc.execute('UPDATE media SET ads=?, dur=?, size=? WHERE item_id=?',
-                                    ('[]', r.get('new_dur') or 0, r.get('new_size') or 0, it['id']))
                     dbc.execute('DELETE FROM health WHERE item_id=? AND file=?', (it['id'], v))
                     dbc.execute('DELETE FROM deepscan WHERE item_id=? AND file=?', (it['id'], v))
                     dbc.commit()
@@ -2163,6 +2167,22 @@ def _job_addel(ids=None):
                     _log('    浅检异常: %s' % str(_e)[:120])
 
                 if _good:
+                    # 只有成片体检通过才清段：体检不合格会回滚原片，段区间要留着重试
+                    try:
+                        dbc.execute('DELETE FROM segs_file WHERE item_id=? AND file=?',
+                                    (it['id'], v))
+                        dbc.execute("UPDATE ads_file SET ads='[]', ts=? WHERE item_id=? AND file=?",
+                                    (mlib.now(), it['id'], v))
+                        _mr = dbc.execute('SELECT file FROM media WHERE item_id=?',
+                                          (it['id'],)).fetchone()
+                        if _mr and (_mr['file'] or '') == v:
+                            dbc.execute('UPDATE media SET ads=?, dur=?, size=? WHERE item_id=?',
+                                        ('[]', r.get('new_dur') or 0, r.get('new_size') or 0,
+                                         it['id']))
+                        dbc.commit()
+                        _log('    段记录已清除（无效段徽标会消失）')
+                    except Exception as _e:
+                        _log('    库更新失败: %s' % str(_e)[:90])
                     ok += 1
                 else:
                     _bk = r.get('orig_backup')
