@@ -4727,12 +4727,12 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="b-qview">队列详情</button>
 
     <button class="danger" id="b-stop">停止</button>
-    <span class="muted">上限(0=全部)</span><input id="limit" type="number" value="0" style="width:104px">
+    <span class="muted" title="最多处理多少条；0 = 全部">上限</span><input id="limit" type="number" value="0" style="width:64px">
     <span class="muted">模式</span>
     <select id="mode"><option value="auto">auto</option><option value="ai">ai</option>
       <option value="website">website</option></select>
-    <span class="muted">语义组(0=全部)</span><input id="semg" type="number" value="20" style="width:76px">
-    <span class="muted">AI组(0=全部)</span><input id="aig" type="number" value="5" style="width:74px">
+    <span class="muted" title="每批送多少条给语义模型；0 = 全部">语义组</span><input id="semg" type="number" value="20" style="width:56px">
+    <span class="muted" title="每次请求给 AI 多少条；0 = 全部">AI组</span><input id="aig" type="number" value="5" style="width:52px">
     <label class="muted"><input type="checkbox" id="force"> force</label>
   </div>
   <div id="prog"><i></i></div>
