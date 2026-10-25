@@ -414,19 +414,31 @@ def _fetch_pass(mode, limit, ai_group=None):
 
 
 # ---------------------------------------------------------------- job bodies
-def _job_scan(mode, sem=False):
-    _begin('scan:' + mode + ('+sem' if sem else ''))
+def _job_scan(mode, sem=False, ad=False, media=False, health=False):
+    _begin('scan:' + mode)
     try:
         r = _scan_pass(mode)
-        if not sem:
-            _end('scan 完成')
-            return
-        _log('  扫描完成（新增 %s / 变更 %s / 跳过未变 %s），接着跑语义'
+        _log('  扫描完成（新增 %s / 变更 %s / 跳过未变 %s）'
              % (r.get('added'), r.get('changed'), r.get('skipped')))
-        ok, tot = _sem_pass(0, False, 0)      # 只处理还没语义的（增量）
-        mlib.unload_ai()
-        _end('scan+sem 完成：新增 %s 变更 %s 跳过 %s / 语义 %d/%d'
-             % (r.get('added'), r.get('changed'), r.get('skipped'), ok, tot))
+        extra = []
+        if media:
+            _log('  接着读媒体信息')
+            _job_media(None, False, True)
+            extra.append('媒体信息')
+        if ad:
+            _log('  接着检测广告')
+            _job_adtect(None, 'headtail', True)
+            extra.append('广告')
+        if health:
+            _log('  接着体检')
+            _job_health(None, False, False, True)
+            extra.append('体检')
+        if sem:
+            _log('  接着跑语义')
+            ok, tot = _sem_pass(0, False, 0)
+            mlib.unload_ai()
+            extra.append('语义 %d/%d' % (ok, tot))
+        _end('scan 完成' + ('：' + ' / '.join(extra) if extra else ''))
     except Exception:
         _log('ERR ' + traceback.format_exc()[:1600]); _end('scan 失败')
 
@@ -881,9 +893,10 @@ def _media_probe(path):
             'fps': fps, 'vbr': vbr}
 
 
-def _job_media(ids=None, force=False):
+def _job_media(ids=None, force=False, nested=False):
     """媒体信息扫描：主视频的时长/宽高/帧率/码率 -> media 表（heavy 车道）。"""
-    _begin('media', 1)
+    if not nested:
+        _begin('media', 1)
     dbc = mlib.db()
     try:
         _ensure_media(dbc)
@@ -932,7 +945,8 @@ def _job_media(ids=None, force=False):
         _log('ERR ' + traceback.format_exc()[:1200])
     finally:
         dbc.close()
-        _end('media 完成')
+        if not nested:
+            _end('media 完成')
 
 
 def _ensure_health(dbc):
@@ -1615,13 +1629,14 @@ def _job_proteus(ids=None, ad=False):
         _log('ERR ' + traceback.format_exc()[:1200]); _end('proteus 失败')
 
 
-def _job_adtect(ids=None, mode='headtail'):
+def _job_adtect(ids=None, mode='headtail', nested=False):
     """广告检测：30s 粗扫 + 精修 -> ads_file（逐文件）/ media（最大文件）。
 
     多视频条目：先只测最大的那个。它没有广告就跳过同组其余
     （同一条目的分片通常共用同一套片头片尾）；有广告才逐个补测。
     """
-    _begin('adtect', 1)
+    if not nested:
+        _begin('adtect', 1)
     dbc = mlib.db()
     try:
         _ensure_media(dbc)
@@ -1669,9 +1684,12 @@ def _job_adtect(ids=None, mode='headtail'):
             except Exception as e:
                 _log('    ERR %s' % str(e)[:180])
             _tick(i + 1)
-        _end('adtect %d/%d' % (ok, len(its)))
+        if not nested:
+            _end('adtect %d/%d' % (ok, len(its)))
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:1200]); _end('adtect 失败')
+        _log('ERR ' + traceback.format_exc()[:1200])
+        if not nested:
+            _end('adtect 失败')
 
 
 def _job_addel(ids=None):
@@ -1820,14 +1838,15 @@ def _job_addel(ids=None):
         _log('ERR ' + traceback.format_exc()[:1200]); _end('addel 失败')
 
 
-def _job_health(ids=None, force=False, deep=False):
+def _job_health(ids=None, force=False, deep=False, nested=False):
     """只读体检，结果写入 health 表（下次默认跳过）。
 
     deep=False：只看头部（快）。
     deep=True ：数据级深检（字节扫洞 + 抽窗解码），慢 —— 能发现"能打开的坏文件"。
     已体检过（体积未变）的默认跳过；deep 会把浅检结果视为"未测"从而重测。
     """
-    _begin('deephealth' if deep else 'health', 1)
+    if not nested:
+        _begin('deephealth' if deep else 'health', 1)
     dbc = mlib.db()
     try:
         _ensure_health(dbc)
@@ -2031,10 +2050,12 @@ def _job_health(ids=None, force=False, deep=False):
                         'skipped': skipped, 'fixable': len(fixable), 'heavy': len(heavy),
                         'dead': len(dead), 'ids': sorted(fixable),
                         'lists': {k: v[:200] for k, v in lists.items()}})
-        _end(('deephealth' if deep else 'health') + ' 完成')
+        if not nested:
+            _end(('deephealth' if deep else 'health') + ' 完成')
     except Exception:
         _log('ERR ' + traceback.format_exc()[:1600])
-        _end('health 失败')
+        if not nested:
+            _end('health 失败')
 
 
 
@@ -3127,6 +3148,9 @@ class H(BaseHTTPRequestHandler):
             if p == '/api/scan':
                 ok = start_job(_job_scan, q.get('mode') or 'incr',
                                (q.get('sem') or '') in ('1', 'true', 'yes'),
+                               (q.get('ad') or '') in ('1', 'true', 'yes'),
+                               (q.get('media') or '') in ('1', 'true', 'yes'),
+                               (q.get('health') or '') in ('1', 'true', 'yes'),
                                lane='heavy')
             elif p == '/api/sem':
                 ok = start_job(_job_sem, lim, force, int(q.get('group') or 0))
@@ -3451,7 +3475,10 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button class="primary" id="b-pipeline">① 全流程</button>
     <button class="warn-btn" id="b-rebuild">建库</button>
     <button id="b-incr">增量扫描</button>
-<button id="b-incrsem">增量+语义</button>
+    <label class="muted" title="扫描后接着跑语义"><input type="checkbox" id="inc-sem"> 语义</label>
+    <label class="muted" title="扫描后接着检测广告（头尾）"><input type="checkbox" id="inc-ad"> 广告</label>
+    <label class="muted" title="扫描后接着读取媒体信息"><input type="checkbox" id="inc-media"> 媒体信息</label>
+    <label class="muted" title="扫描后接着体检（浅检）"><input type="checkbox" id="inc-health"> 体检</label>
     <button id="b-sem">语义识别</button>
     <button id="b-fetch">抓取</button>
     <button id="b-qrun">跑队列</button>
@@ -3480,13 +3507,13 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="b-archive">档案</button>
   </div>
   <div class="bar" id="actbar" style="background:#171c25">
-    <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
-    <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
     <button class="primary" id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
     <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
     <label class="muted" title="勾选后：信息无效/不足时联网搜索补全"><input type="checkbox" id="fill-web"> Web</label>
     <label class="muted" title="勾选后：信息无效/不足时抽帧看片补全（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
     <button id="a-fill">AI 补全</button>
+    <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
+    <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
     <span class="muted">|</span>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
@@ -3596,7 +3623,7 @@ async function job(){const j=await(await fetch('/api/job')).json();
   setLog(j.log||[]);
   const p=j.total?Math.round(j.done*100/j.total):0;
   $('#prog').firstElementChild.style.width=(j.running?Math.max(p,3):(j.done?'100':'0'))+'%';
-  const busy=j.running;['b-pipeline','b-rebuild','b-incr','b-incrsem','b-sem','b-fetch','b-qrun'].forEach(i=>$('#'+i).disabled=busy);
+  const busy=j.running;['b-pipeline','b-rebuild','b-incr','b-sem','b-fetch','b-qrun'].forEach(i=>$('#'+i).disabled=busy);
   $('#b-stop').disabled=!busy;$('#qcount').textContent=j.queue||0;}
 let _logText='', _logFollow=true;
 function setLog(lines){
@@ -3948,8 +3975,11 @@ $('#cfg-save').onclick=async()=>{await fetch('/api/config?root='+encodeURICompon
 $('#b-pipeline').onclick=()=>post('/api/pipeline?limit='+$('#limit').value+'&group='+$('#semg').value+'&ai_group='+$('#aig').value);
 $('#b-rebuild').onclick=()=>{ if(!confirm(T('【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？')))return;
   if(!confirm(T('请再次确认：真的要【建库】吗？')))return; post('/api/scan?mode=rebuild'); };
-$('#b-incr').onclick=()=>post('/api/scan?mode=incr');
-$('#b-incrsem').onclick=()=>post('/api/scan?mode=incr&sem=1');
+$('#b-incr').onclick=()=>post('/api/scan?mode=incr'
+  +'&sem='+($('#inc-sem').checked?1:0)
+  +'&ad='+($('#inc-ad').checked?1:0)
+  +'&media='+($('#inc-media').checked?1:0)
+  +'&health='+($('#inc-health').checked?1:0));
 $('#b-sem').onclick=()=>post('/api/sem?limit='+$('#limit').value+'&group='+$('#semg').value+($('#force').checked?'&force=1':''));
 $('#b-fetch').onclick=()=>post('/api/fetch?mode='+$('#mode').value+'&limit='+$('#limit').value+'&ai_group='+$('#aig').value);
 $('#b-cookie').onclick=async()=>{const s=await(await fetch('/api/stats')).json();
