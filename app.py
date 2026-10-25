@@ -34,6 +34,7 @@ THUMB_DIR = os.path.join(HERE, 'thumbs')
 
 _LOCK = threading.Lock()
 _DLOK = threading.Lock()
+PROG = {}
 STATE = {'running': False, 'name': '', 'done': 0, 'total': 0,
          'stop': False, 'started': 0, 'log': []}
 # 两条车道：heavy=吃 NAS/CPU 的重活（体检/深检/扫描/vscan/修复），light=外网/轻量（抓取/AI/语义/填标签）
@@ -1227,6 +1228,75 @@ def _vinfo(path):
         return 0, 0, 0, 0, 0
 
 
+def _run_prog(cmd, dur, log, label='', cuda=None, cwd=None, timeout=86400):
+    """跑 ffmpeg/Topaz，解析 -progress pipe:1，实时记录帧数/平均fps/百分比。"""
+    global PROG
+    env = dict(os.environ)
+    if cuda is not None:
+        env['CUDA_VISIBLE_DEVICES'] = str(cuda)
+    cmd = list(cmd) + ['-progress', 'pipe:1', '-nostats']
+    t0 = time.time()
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         env=env, cwd=cwd)
+    import threading
+    errbuf = []
+    def _rd():
+        try:
+            errbuf.append(p.stderr.read())
+        except Exception:
+            pass
+    th = threading.Thread(target=_rd, daemon=True)
+    th.start()
+    frames, fps, out_ms, last_log = 0, 0.0, 0, 0.0
+    try:
+        for raw in iter(p.stdout.readline, b''):
+            ln = raw.decode('utf-8', 'replace').strip()
+            if ln.startswith('frame='):
+                try:
+                    frames = int(ln.split('=', 1)[1])
+                except Exception:
+                    pass
+            elif ln.startswith('fps='):
+                try:
+                    fps = float(ln.split('=', 1)[1])
+                except Exception:
+                    pass
+            elif ln.startswith('out_time_ms='):
+                try:
+                    out_ms = int(ln.split('=', 1)[1])
+                except Exception:
+                    pass
+            elif ln.startswith('progress='):
+                el = max(1e-6, time.time() - t0)
+                sec = out_ms / 1e6
+                pct = (sec / dur * 100.0) if dur else 0.0
+                avg = frames / el
+                eta = ((dur - sec) / max(1e-6, sec / el)) if sec > 0 and dur else 0
+                PROG = {'label': label, 'frames': frames, 'fps': round(avg, 2),
+                        'cur_fps': round(fps, 2), 'pct': round(min(99.9, pct), 1),
+                        'elapsed': int(el), 'eta': int(eta)}
+                if log and (time.time() - last_log >= 10):
+                    last_log = time.time()
+                    log('    %s 进度: %d 帧 / 平均 %.2f fps / %.1f%% / 剩余 %d 分'
+                        % (label, frames, avg, pct, max(0, eta) // 60))
+        p.wait(timeout=timeout)
+    except Exception as e:
+        try:
+            p.kill()
+        except Exception:
+            pass
+        if log:
+            log('    %s 进度读取异常: %s' % (label, str(e)[:60]))
+    th.join(timeout=5)
+    err = b''.join([x for x in errbuf if x])
+    if log and frames:
+        el = max(1e-6, time.time() - t0)
+        log('    %s 结束: %d 帧 / 平均 %.2f fps / %.0f 秒'
+            % (label, frames, frames / el, el))
+    PROG = {}
+    return p.returncode, err
+
+
 def _gpu_enc(path):
     """按设置里的码率策略生成 nvenc 参数。CRF 模式映射为 cq。"""
     if repair.ENC_MODE == 'kbps' and repair.ENC_KBPS > 0:
@@ -1236,10 +1306,10 @@ def _gpu_enc(path):
     else:
         k = 0
     if k > 0:
-        return ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-rc', 'vbr',
+        return ['-c:v', 'hevc_nvenc', '-gpu', '0', '-preset', 'p5', '-rc', 'vbr',
                 '-b:v', '%dk' % k, '-maxrate', '%dk' % int(k * 1.4),
                 '-bufsize', '%dk' % int(k * 2), '-pix_fmt', 'yuv420p']
-    return ['-c:v', 'hevc_nvenc', '-preset', 'p5', '-rc', 'vbr',
+    return ['-c:v', 'hevc_nvenc', '-gpu', '0', '-preset', 'p5', '-rc', 'vbr',
             '-cq', str(repair.ENC_CRF), '-pix_fmt', 'yuv420p']
 
 
@@ -1551,9 +1621,9 @@ def _job_down(ids=None, target='auto', fix=False, ad=False):
                         if _ad_skip else [])
                 cmd = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y'] + _pre +                       ['-i', loc, '-vf', vf] + _gpu_enc(loc) +                       ['-c:a', 'copy', '-movflags', '+faststart', tmp]
                 t0 = time.time()
-                r = subprocess.run(cmd, capture_output=True, timeout=14400)
-                if r.returncode != 0 or not os.path.exists(tmp):
-                    _log('    编码失败: %s' % (r.stderr or b'')[-160:].decode('utf-8', 'replace'))
+                _rc, _err = _run_prog(cmd, dur, _log, '降分辨率', cuda=0, timeout=14400)
+                if _rc != 0 or not os.path.exists(tmp):
+                    _log('    编码失败: %s' % (_err or b'')[-160:].decode('utf-8', 'replace'))
                     try:
                         os.remove(tmp)
                     except Exception:
@@ -1578,11 +1648,11 @@ def _job_down(ids=None, target='auto', fix=False, ad=False):
                                '-vf', 'tvai_up=model=prob-4:scale=1:device=0'] + \
                               _gpu_enc(tmp) + ['-c:a', 'copy', '-movflags', '+faststart', tmp2]
                         _t1 = time.time()
-                        _r2 = subprocess.run(_c2, capture_output=True, timeout=86400,
-                                             cwd=r'F:\Topaz Video')
-                        if _r2.returncode != 0 or not os.path.exists(tmp2):
+                        _rc2, _err2 = _run_prog(_c2, nd, _log, 'Proteus', cuda=0,
+                                                cwd=r'F:\Topaz Video', timeout=86400)
+                        if _rc2 != 0 or not os.path.exists(tmp2):
                             _log('    ! 修复失败，保留降分辨率结果: %s'
-                                 % (_r2.stderr or b'')[-160:].decode('utf-8', 'replace'))
+                                 % (_err2 or b'')[-160:].decode('utf-8', 'replace'))
                         elif not _verify_out(tmp2, dur):
                             _log('    ! 修复结果校验失败，保留降分辨率结果')
                             mlib.drop_work(tmp2)
@@ -1690,10 +1760,10 @@ def _job_proteus(ids=None, ad=False):
                    '-vf', 'tvai_up=model=prob-4:scale=1:device=0'] + _gpu_enc(loc) + \
                   ['-c:a', 'copy', '-movflags', '+faststart', tmp]
             t0 = time.time()
-            r = subprocess.run(cmd, capture_output=True, timeout=86400,
-                               cwd=r'F:\Topaz Video')
-            if r.returncode != 0 or not os.path.exists(tmp):
-                _log('    Topaz 失败: %s' % (r.stderr or b'')[-200:].decode('utf-8', 'replace'))
+            _rc, _err = _run_prog(cmd, dur, _log, 'Proteus', cuda=0,
+                                  cwd=r'F:\Topaz Video', timeout=86400)
+            if _rc != 0 or not os.path.exists(tmp):
+                _log('    Topaz 失败: %s' % (_err or b'')[-200:].decode('utf-8', 'replace'))
                 try:
                     os.remove(tmp)
                 except Exception:
@@ -3261,6 +3331,7 @@ class H(BaseHTTPRequestHandler):
                     _act = STATE if STATE['running'] else LANES['light']
                     _snap = dict(_act)
                     _snap['log'] = STATE['log']
+                    _snap['prog'] = dict(PROG)
                     _snap['queue'] = len(QUEUE)
                     _snap['lanes'] = {'heavy': bool(STATE['running']),
                                       'light': bool(LANES['light']['running'])}
