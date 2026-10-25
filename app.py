@@ -4769,9 +4769,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
     <button id="a-open">打开目录</button>
     <button id="a-series" title="编辑语义/系列表：系列、是否有番号、语义、备注、出版商">系列表</button>
-    <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
      <label class="muted" title="勾上后：降分辨率/裁剪/字幕/检测/补全 等按钮只把条目加入队列，不立即执行；可边跑边攒批次"><input type="checkbox" id="qadd-chk"> 加入队列</label>
-     <button id="a-queue" title="把选中条目加入队列（用左侧模式），之后点「跑队列」或队列详情里执行">加入队列</button>
   </div>
   <div class="bar" id="infobar" style="background:#141922">
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
@@ -5048,9 +5046,7 @@ $('#a-fill').onclick=async()=>{
   await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value
     +(ids?'&ids='+ids:'')+'&web='+($('#fill-web').checked?1:0)
     +'&scan='+($('#fill-scan').checked?1:0));};
-$('#a-queue').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));let n=0;
-  for(const id of SEL){const r=await post('/api/queue/'+id+'?mode='+$('#qmode').value);n=r.queue;}
-  $('#qcount').textContent=n;};
+
 $('#md8-close').onclick=()=>$('#modal8').classList.remove('on');
 $('#md9-close').onclick=()=>$('#modal9').classList.remove('on');
 async function loadSeries(q){
