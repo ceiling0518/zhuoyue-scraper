@@ -613,6 +613,9 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
             if _av:
                 _log('    avfan: %s | 公司 %s | %s' % (_av.get('released') or '-',
                                                       _av.get('maker') or '-', _code))
+            # 系列表有发行商时以它为准（FC2 有大量子发行商，统一记 FC2）
+            if _sr.get('publisher'):
+                _studio = _sr['publisher']
             dbc.execute("UPDATE items SET title=?, plot=?, tags=?, actors=?, studio=?, "
                         "year=?, quality=?, source=?, last_update=? WHERE id=?",
                         (_title, _plot, tags, _actors, _studio,
