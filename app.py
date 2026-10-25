@@ -995,13 +995,13 @@ def _media_refresh(item_id, log=None):
         except Exception:
             pass
         # 段记录跟着文件走：文件已不存在（改名/删除）就一并清掉，避免徽标一直亮
+        # 注意：ads_file 是「检测过没有」的凭证，文件没了也不删，只清 segs_file
         try:
-            for _t in ('segs_file', 'ads_file'):
-                for _x in dbc.execute('SELECT file FROM %s WHERE item_id=?' % _t,
-                                      (item_id,)).fetchall():
-                    if (_x['file'] or '') not in seen:
-                        dbc.execute('DELETE FROM %s WHERE item_id=? AND file=?' % _t,
-                                    (item_id, _x['file']))
+            for _x in dbc.execute('SELECT file FROM segs_file WHERE item_id=?',
+                                  (item_id,)).fetchall():
+                if (_x['file'] or '') not in seen:
+                    dbc.execute('DELETE FROM segs_file WHERE item_id=? AND file=?',
+                                (item_id, _x['file']))
         except Exception:
             pass
         if not vids:
