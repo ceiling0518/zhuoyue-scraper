@@ -507,7 +507,8 @@ def series_build(dbc=None, log=None):
         k = max(spell[gk], key=spell[gk].get)
         kinds = [x.get('sem_kind') or '' for x in its if (x.get('sem_kind') or '')]
         kind = max(set(kinds), key=kinds.count) if kinds else ''
-        pubs = [x.get('studio') or '' for x in its if (x.get('studio') or '').strip()]
+        pubs = [clean_publisher(x.get('studio')) for x in its
+                if clean_publisher(x.get('studio'))]
         pub = max(set(pubs), key=pubs.count) if pubs else ''
         has_code = 1 if any((x.get('sem_code') or x.get('code') or '').strip() for x in its) else 0
         note = ''
@@ -541,7 +542,7 @@ def series_enrich(one, model=None, log=None, dbc=None):
         j = extract_json(txt)
         if not isinstance(j, dict):
             return False
-        pub = strip_noise(j.get('publisher') or '')[:40]
+        pub = clean_publisher(j.get('publisher') or '')
         note = strip_noise(j.get('note') or '')[:60]
         kind = (j.get('sem_kind') or '').strip()
         if kind not in ('coded', 'uncensored', 'none'):
@@ -631,6 +632,35 @@ def series_get(name, dbc=None):
         return dict(r) if r else None
     except Exception:
         return None
+
+
+PUB_BAD = ('javbus', 'javdb', 'missav', '123av', 'njav', 'supjav', 'freejav',
+           'javlibrary', 'avmoo', 'searxng', 'google', 'yandex', 'baidu', 'bing',
+           'dmm.co.jp', 'dmm.com', 'javfree')
+
+
+def clean_publisher(p):
+    """发行商清洗：站点名/搜索引擎名不是发行商。"""
+    x = strip_noise(p or '')[:60]
+    low = x.lower()
+    if not x:
+        return ''
+    if any(b in low for b in PUB_BAD):
+        return ''
+    return x.strip(' .-')[:40]
+
+
+def normalize_code(c):
+    """番号规范化：OSTP10034 -> OSTP-10034；STP36113 -> STP-36113。"""
+    x = (c or '').strip().upper()
+    if not x:
+        return ''
+    x = re.sub(r'[\s_]+', '-', x)
+    x = re.sub(r'-{2,}', '-', x).strip('-')
+    mm = re.match(r'^([A-Z]{2,6})(\d{2,7})$', x)
+    if mm:
+        return mm.group(1) + '-' + mm.group(2)
+    return x
 
 
 def series_key(raw):

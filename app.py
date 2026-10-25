@@ -295,6 +295,7 @@ def _sem_pass(limit, force=False, group=None):
             s = res[k] if res else mlib.semantic_code(r)
             kind = mlib.kind_by_rule(r['name'])          # 标签按系列名粗分，不必很准
             code = (s or {}).get('code') or ''
+            code = mlib.normalize_code(code)
             dbc.execute('UPDATE items SET sem_kind=?, sem_code=?, last_update=? WHERE id=?',
                         (kind, code, mlib.now(), r['id']))
             try:
@@ -595,8 +596,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
             # 演员/公司/年份/番号：有值才覆盖，不拿空值冲掉已有信息
             _actors = ','.join(base.get('actors') or []) or (r.get('actors') or '')
             _sr = mlib.series_get(mlib.series_of_item(r)) or {}
-            _studio = (_sr.get('publisher') or base.get('studio')
-                       or (r.get('studio') or ''))
+            _studio = mlib.clean_publisher(
+                _sr.get('publisher') or base.get('studio') or (r.get('studio') or ''))
             _year = base.get('year') or (r.get('year') or '')
             _code = base.get('code') or ''
             if _code and not (r.get('sem_code') or r.get('code')):
