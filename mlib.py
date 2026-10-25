@@ -148,8 +148,9 @@ def ui_lang():
 
 
 LANG_RULE = {
-    'zh': ('语言规则：一律输出 **简体中文**；若原文是**日文则保留日文原文**（不要翻译）；'
-           '**繁体中文转成简体**；其它语言**翻译成简体中文**。'),
+    'zh': ('语言规则：**简体中文和日文原文都允许保留**（不要互相翻译）；'
+           '繁体中文转成简体；**其它语言（英/西/韩等）一律翻译成简体中文**；'
+           '标签用简体中文。'),
     'en': ('Language rule: write EVERYTHING in **English** - title, plot and tags. '
            'If the source text is Japanese, **translate it into English** '
            '(do not keep the Japanese original).'),
@@ -361,12 +362,24 @@ WEB_FILL_PROMPT = (
     '下面是某影片的现有信息与网络搜索结果。请判断哪些信息可信，并给出补全结果。\n'
     '规则：忽略网址、广告词、无意义编号（如 227、KJSDHUIDS11）；\n'
     '拿不到或不确定的字段留空字符串/空数组，不要编造。\n'
+    '{LANG}\n'
     '只输出 JSON 对象，不要解释：\n'
     '{"code":"番号（如 SSIS-001，没有就留空）",'
     '"title":"40字内中文标题","plot":"2-3句中文简介","tags":["标签1","标签2"],'
     '"actors":["演员名1","演员名2"],"studio":"制作/发行公司","year":"YYYY"}\n\n'
     '现有：番号=%s | 标题=%s | 简介=%s | 演员=%s | 公司=%s | 年份=%s\n\n搜索结果：\n%s'
 )
+
+
+def lang_ok(t):
+    """文本是否符合设置的输出语言（粗略判断，够用即可）。"""
+    L = out_lang()
+    t = t or ''
+    han = len(re.findall(r'[\u4e00-\u9fff]', t))
+    kana = len(re.findall(r'[\u3040-\u30ff]', t))
+    if L in ('zh', 'zh-Hant', 'ja'):
+        return (han + kana) >= 2          # 中文/日文都允许
+    return (han + kana) < 2               # en/es：出现中日文视为需要翻译
 
 
 def _clean_year(y):
@@ -416,6 +429,7 @@ def web_complete(item, model=None, log=None):
     prompt = WEB_FILL_PROMPT % (code or '-', title or '-', plot[:120] or '-',
                                 item.get('actors') or '-', item.get('studio') or '-',
                                 item.get('year') or '-', ctx)
+    prompt = prompt.replace('{LANG}', lang_rule())
     try:
         txt = _chat(prompt, model or ai_model(), 900, 0.2)
         j = extract_json(txt)

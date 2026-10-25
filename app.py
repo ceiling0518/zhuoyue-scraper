@@ -584,8 +584,9 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
             _old_p = (r.get('plot') or '').strip()
             _new_t = (base.get('title') or '').strip()
             _new_p = (base.get('plot') or '').strip()
-            _title = _old_t if mlib.hint_ok(_old_t, 4) else _new_t
-            if mlib.hint_ok(_old_p, 8) and len(_old_p) >= max(10, int(len(_new_p) * 0.6)):
+            _title = _old_t if (mlib.hint_ok(_old_t, 4) and mlib.lang_ok(_old_t)) else _new_t
+            if (mlib.hint_ok(_old_p, 8) and mlib.lang_ok(_old_p)
+                    and len(_old_p) >= max(10, int(len(_new_p) * 0.6))):
                 _plot = _old_p
             else:
                 _plot = _new_p or _old_p
@@ -3164,6 +3165,17 @@ class H(BaseHTTPRequestHandler):
                 return self._json(stats())
             if p == '/api/items':
                 return self._json(items(q))
+            if p == '/api/series':
+                _q = q.get('q') or ''
+                _lim = max(1, min(1000, int(q.get('limit') or 300)))
+                mlib.ensure_series()
+                _d = mlib.db()
+                _rows = [dict(x) for x in _d.execute(
+                    "SELECT series,has_code,sem_kind,note,publisher FROM series "
+                    "WHERE series LIKE ? OR IFNULL(note,'') LIKE ? OR IFNULL(publisher,'') LIKE ? "
+                    "ORDER BY series LIMIT ?",
+                    ('%' + _q + '%', '%' + _q + '%', '%' + _q + '%', _lim))]
+                return self._json({'rows': _rows})
             if p == '/api/organize/plan':
                 _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 return self._json(_organize_plan(_ids,
@@ -3448,6 +3460,19 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': open_image(int(p.rsplit('/', 1)[1]))})
             elif p.startswith('/api/open/'):
                 return self._json({'ok': open_item(int(p.rsplit('/', 1)[1]))})
+            if p == '/api/series/save':
+                try:
+                    _ln = int(self.headers.get('Content-Length') or 0)
+                    _b = json.loads(self.rfile.read(_ln).decode('utf-8') or '{}')
+                except Exception:
+                    return self._json({'ok': False, 'error': 'bad json'}, 400)
+                _s = (_b.get('series') or '').strip()
+                if not _s:
+                    return self._json({'ok': False, 'error': '系列名为空'}, 400)
+                mlib.series_upsert(_s, bool(_b.get('has_code')),
+                                   _b.get('sem_kind') or '', _b.get('note') or '',
+                                   _b.get('publisher') or '')
+                return self._json({'ok': True})
             elif p == '/api/organize/apply':
                 try:
                     _ln = int(self.headers.get('Content-Length') or 0)
@@ -3608,6 +3633,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted">|</span>
     <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
     <button id="a-open">打开目录</button>
+    <button id="a-series" title="编辑语义/系列表：系列、是否有番号、语义、备注、出版商">系列表</button>
     <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
     <button id="a-queue" title="把选中条目加入队列（用左侧模式），之后点「跑队列」才执行">加入队列</button>
   </div>
@@ -3644,6 +3670,17 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
+<div class="modal" id="modal9"><div class="box" style="max-width:1080px">
+  <div class="bar"><b>系列表</b>
+    <input id="sr-q" placeholder="搜索系列 / 备注 / 出版商" style="width:240px">
+    <button id="sr-find">搜索</button><span class="muted" id="sr-sum"></span>
+    <button class="right" id="md9-close">关闭</button></div>
+  <div style="max-height:62vh;overflow:auto"><table id="sr-tbl"><thead><tr>
+    <th style="width:200px">系列</th><th style="width:72px">有番号</th><th style="width:110px">语义</th>
+    <th>备注</th><th style="width:150px">出版商</th><th style="width:58px"></th>
+  </tr></thead><tbody id="sr-rows"></tbody></table></div>
+  <div class="muted" style="padding:8px 4px">改完点行末「保存」；系列名作为键，不建议改。</div>
+</div></div>
 <div class="modal" id="modal8"><div class="box" style="max-width:1280px">
   <div class="bar"><b>整理 + 改名</b><span class="muted" id="rn-sum"></span><button class="right" id="md8-close">关闭</button></div>
   <div class="muted" id="rn-flat" style="padding:0 4px 8px"></div>
@@ -3820,6 +3857,31 @@ $('#a-queue').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));let
   for(const id of SEL){const r=await post('/api/queue/'+id+'?mode='+$('#qmode').value);n=r.queue;}
   $('#qcount').textContent=n;};
 $('#md8-close').onclick=()=>$('#modal8').classList.remove('on');
+$('#md9-close').onclick=()=>$('#modal9').classList.remove('on');
+async function loadSeries(q){
+  const j=await(await fetch('/api/series?limit=300&q='+encodeURIComponent(q||''))).json();
+  const rows=j.rows||[];
+  $('#sr-rows').innerHTML=rows.map(r=>'<tr>'
+   +'<td class="muted" title="'+esc(r.series)+'">'+esc(r.series)+'</td>'
+   +'<td><input type="checkbox" class="sr-hc" '+(r.has_code?'checked':'')+'></td>'
+   +'<td><select class="sr-k">'+['coded','uncensored','none',''].map(k=>'<option'+(k===(r.sem_kind||'')?' selected':'')+'>'+k+'</option>').join('')+'</select></td>'
+   +'<td><input class="sr-note" value="'+esc(r.note||'')+'"></td>'
+   +'<td><input class="sr-pub" value="'+esc(r.publisher||'')+'"></td>'
+   +'<td><button class="sr-save" data-s="'+esc(r.series)+'">保存</button></td></tr>').join('');
+  $('#sr-sum').textContent='共 '+rows.length+' 条';
+}
+$('#a-series').onclick=async()=>{$('#modal9').classList.add('on');loadSeries($('#sr-q').value);};
+$('#sr-find').onclick=()=>loadSeries($('#sr-q').value);
+$('#sr-q').onkeydown=e=>{if(e.key==='Enter')loadSeries($('#sr-q').value);};
+$('#sr-rows').onclick=async e=>{
+  const b=e.target.closest('.sr-save'); if(!b)return;
+  const tr=b.closest('tr');
+  const body={series:b.dataset.s, has_code:tr.querySelector('.sr-hc').checked?1:0,
+    sem_kind:tr.querySelector('.sr-k').value, note:tr.querySelector('.sr-note').value,
+    publisher:tr.querySelector('.sr-pub').value};
+  const r=await(await fetch('/api/series/save',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  b.textContent=r.ok?'已存':'失败'; setTimeout(()=>b.textContent='保存',1200);};
 async function openRenamePlan(){
   if(!SEL.size)return alert(T('先选条目'));
   const ids=[...SEL].join(',');
