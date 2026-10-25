@@ -1009,7 +1009,8 @@ def _job_media(ids=None, force=False, nested=False):
                 _log('  id=%s %s 码率读取失败' % (it['id'], base[:36]))
                 _tick(i)
                 continue
-            dbc.execute('INSERT OR REPLACE INTO media VALUES(?,?,?,?,?,?,?,?,?)',
+            dbc.execute('INSERT OR REPLACE INTO media(item_id,file,size,dur,w,h,fps,vbr,ts) '
+                        'VALUES(?,?,?,?,?,?,?,?,?)',
                         (it['id'], base, sz, m['dur'], m['w'], m['h'], m['fps'],
                          m['vbr'], mlib.now()))
             n_new += 1
@@ -1932,16 +1933,20 @@ def _job_vdetect(ids=None):
                 _tick(i + 1)
                 continue
             vids = sorted(vids, key=lambda p: os.path.getsize(p), reverse=True)
-            vp = vids[0]
-            fb = os.path.basename(vp)
             try:
-                dur = mlib.video_duration(vp)
-                _log('[%d/%d] id=%s 初筛 %s (%.0fs)' % (i + 1, len(its), it['id'], fb, dur or 0))
-                segs, ratio = mlib.detect_no_woman(vp, dur, log=lambda m: _log('  ' + m))
-                mlib.save_segs(it['id'], fb, 'invalid', segs)
-                _log('    -> %d 段无效 %s' % (len(segs), segs))
-                if ratio >= 0.8:
-                    _log('    ! 整片无女性占比 %.0f%%，未自动删除；请人工确认是否删整片' % (ratio * 100))
+                for _fi, vp in enumerate(vids, 1):
+                    if _stop_req():
+                        break
+                    fb = os.path.basename(vp)
+                    dur = mlib.video_duration(vp)
+                    _log('[%d/%d] id=%s 初筛 %s (%.0fs)（%d/%d）'
+                         % (i + 1, len(its), it['id'], fb, dur or 0, _fi, len(vids)))
+                    segs, ratio = mlib.detect_no_woman(vp, dur, log=lambda m: _log('  ' + m))
+                    mlib.save_segs(it['id'], fb, 'invalid', segs)
+                    _log('    -> %d 段无效 %s' % (len(segs), segs))
+                    if ratio >= 0.8:
+                        _log('    ! 整片无女性占比 %.0f%%，未自动删除；请人工确认是否删整片'
+                             % (ratio * 100))
                 ok += 1
             except Exception as e:
                 _log('    ERR %s' % str(e)[:180])
@@ -3966,8 +3971,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 <div class="modal" id="modal2"><div class="box">
   <div class="bar"><b id="md2-title">档案</b><button class="right" id="md2-close">关闭</button></div>
   <div id="md2-body"></div></div></div>
-<div class="modal" id="modal5"><div class="box">
-  <div class="bar"><b>无效段编辑</b><span class="muted" id="seg-info"></span><button class="right" id="md5-close">关闭</button></div>
+<div class="modal" id="modalseg"><div class="box">
+  <div class="bar"><b>无效段编辑</b><span class="muted" id="seg-info"></span><button class="right" id="mdseg-close">关闭</button></div>
   <p class="muted">广告按秒、无效内容按 5 秒；可多段。保存后「删除无效段」会按这些区间切。</p>
   <table id="seg-tbl"></table>
   <div class="bar"><button id="seg-add">+ 添加一段</button><button class="primary" id="seg-save">保存</button></div>
@@ -4274,9 +4279,9 @@ $('#a-segs').onclick=async()=>{
       window.SEGFIRST=(_it.files||[])[0]||'';}catch(_e){}
   }
   segRender(d.rows||[]);
-  $('#modal5').classList.add('on');
+  $('#modalseg').classList.add('on');
 };
-$('#md5-close').onclick=()=>$('#modal5').classList.remove('on');
+$('#mdseg-close').onclick=()=>$('#modalseg').classList.remove('on');
 function segRender(rows){
   const flat=[];
   (rows||[]).forEach(r=>(r.segs||[]).forEach(x=>flat.push({file:r.file,kind:r.kind,a:x[0],b:x[1]})));
@@ -4319,7 +4324,7 @@ $('#seg-save').onclick=async()=>{
       body:JSON.stringify({item:+iid,file:key.slice(0,i),kind:key.slice(i+1),segs:groups[key]})});
   }
   $('#seg-info').textContent='已保存';
-  $('#modal5').classList.remove('on');
+  $('#modalseg').classList.remove('on');
 };
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
