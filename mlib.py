@@ -1829,7 +1829,7 @@ VIDEO_PROMPT = """下面是一部影片的若干截图（按时间顺序）。�
 def ai_video_scan(item, model=None, n=None):
     """看视频截图 -> {title, plot, tags}；失败返回 None。
 
-    抽帧密度：全片约每 3 分钟一帧（最短 4 帧，最多 40 帧）。
+    抽帧密度：<30 分钟固定 10 帧；>=30 分钟按每 3 分钟一帧（最多 40 帧）。
     """
     model = model or ai_model()
     v = biggest_video(item.get('path') or '')
@@ -1841,7 +1841,7 @@ def ai_video_scan(item, model=None, n=None):
             _d = video_duration(vp)
         except Exception:
             _d = 0
-        n = max(4, min(40, int(_d // 180) + 1))
+        n = 10 if _d < 1800 else max(10, min(40, int(_d // 180) + 1))
     frames = video_frames(vp, n=n)
     if not frames:
         return None
