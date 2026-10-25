@@ -667,6 +667,7 @@ def series_key(raw):
     """番号 -> 系列：JUR-212 -> JUR；FC2-PPV-4544125 -> FC2。"""
     t = strip_noise(raw or '')
     t = re.sub(r'\.(mp4|mkv|avi|wmv|mov|ts|m2ts)$', '', t, flags=re.I)
+    t = normalize_code(t)                             # OSTP10016 -> OSTP-10016
     t = re.sub(r'^\d{2,5}\s*[-_]\s*', '', t)      # 去掉目录序号 0005-
     head = re.split(r'[\s\-_—.:：|/\\]+', t)[0] if t else ''
     head = head.strip(' .-_')
