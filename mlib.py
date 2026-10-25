@@ -1283,6 +1283,7 @@ SITES = [
     ('netflav',     'Netflav',     '聚合', 'https://netflav.com',             1),
     ('javtrailers', 'JAVTrailers', '资料', 'https://javtrailers.com',         1),
     ('fc2',         'FC2 官方',    'FC2',  'https://adult.contents.fc2.com',  0),
+    ('avfan',       'AVFan',       '资料', 'https://avfan.com',               1),
 ]
 DEFAULT_SITES = 'javbus,javdb,missav,fc2'
 
@@ -1384,6 +1385,63 @@ def fc2_num(item):
         if m:
             return m.group(1)
     return ''
+
+
+def fetch_avfan(item):
+    """avfan.com：番号 -> 标题/简介/制作商/发售日/标签（公开页，无海报）。"""
+    if 'avfan' not in sites_enabled():
+        return None
+    code = (item.get('sem_code') or item.get('code') or '').strip().upper()
+    if not code:
+        return None
+    try:
+        url = ''
+        for h in searxng_search('site:avfan.com "%s"' % code, 6):
+            u = h.get('url') or ''
+            if '/movies/' in u:
+                url = u
+                break
+        if not url:
+            return None
+        t = _http_get(url)
+        if not t:
+            return None
+        title = ''
+        mm = re.search(r'<h1[^>]*>(.*?)</h1>', t, re.S)
+        if mm:
+            title = strip_noise(re.sub(r'<[^>]+>', ' ', mm.group(1)))
+        if not title:
+            mm = re.search(r'og:title"[^>]*content="([^"]+)"', t, re.I)
+            if mm:
+                title = strip_noise(mm.group(1))
+        plot = ''
+        mm = re.search(r'<dt>\s*(?:Description|Story|Synopsis)\s*</dt>\s*<dd>(.*?)</dd>', t, re.S)
+        if mm:
+            plot = strip_noise(re.sub(r'<[^>]+>', ' ', mm.group(1)))
+        maker = ''
+        mm = re.search(r'\{"@type":"ListItem","position":2,"name":"([^"]+)"', t)
+        if mm:
+            maker = clean_publisher(strip_noise(mm.group(1)))
+        released = ''
+        mm = re.search(r'<dt>\s*Released Date\s*</dt>\s*<dd>\s*(\d{2})/(\d{2})/(\d{4})', t)
+        if mm:
+            released = '%s-%s-%s' % (mm.group(3), mm.group(1), mm.group(2))
+        tags = []
+        mm = re.search(r'<dt>\s*Tags\s*</dt>\s*<dd>(.*?)</dd>', t, re.S)
+        if mm:
+            for x in re.split(r'[,、]', re.sub(r'<[^>]+>', ' ', mm.group(1))):
+                x = strip_noise(x)
+                if x and x not in tags:
+                    tags.append(x)
+        if not title:
+            return None
+        return {'source': 'avfan', 'code': code, 'title': title,
+                'plot': plot or title, 'studio': maker, 'cover': '', 'samples': [],
+                'url': url, 'genres': tags[:8], 'actors': [],
+                'released': released, 'year': (released[:4] if released else ''),
+                'note': released}
+    except Exception:
+        return None
 
 
 def fetch_fc2(item):
@@ -1897,6 +1955,10 @@ def scrape_website(item):
     if not code:
         return None
     on = sites_enabled()
+    if 'avfan' in on:
+        _d = fetch_avfan(item)
+        if _d and _d.get('title') and _d.get('plot'):
+            return _d
     if 'fc2' in on and re.match(r'(?i)fc2[-_ ]?ppv', code):
         d = fetch_fc2(item)          # FC2 官方：官方标题 + 样张封面
         if d and d.get('title'):
