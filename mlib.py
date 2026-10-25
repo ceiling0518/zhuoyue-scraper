@@ -2095,11 +2095,21 @@ def scrape_website(item):
             continue
         used.append(d.get('source') or _k)
         got += 1
-        for f in ('code', 'title', 'plot', 'studio', 'cover', 'actors', 'genres',
+        for f in ('code', 'title', 'plot', 'studio', 'cover', 'actors',
                   'released', 'year', 'note', 'url'):
             if not merged.get(f) and d.get(f):
                 merged[f] = d[f]
-        if merged.get('title') and merged.get('plot') and merged.get('cover'):
+        # 标签取并集：avfan/javbus/javdb 各有一部分（字符串先按逗号拆）
+        _gv = d.get('genres') or d.get('tags') or []
+        if isinstance(_gv, str):
+            _gv = re.split(r'[,，、]', _gv)
+        for _g in _gv:
+            _g = str(_g).strip()
+            if _g and _g not in merged.setdefault('genres', []):
+                merged['genres'].append(_g)
+        # 标题/简介/封面/标签都齐了才提前停；否则继续下一站（javdb 兜底）
+        if (merged.get('title') and merged.get('plot') and merged.get('cover')
+                and merged.get('genres')):
             break
         if got >= 3:
             break
