@@ -1013,8 +1013,12 @@ def _media_refresh(item_id, log=None):
         sz = os.path.getsize(f)
         m = _media_probe(f)
         if m and m.get('vbr'):
-            dbc.execute('INSERT OR REPLACE INTO media(item_id,file,size,dur,w,h,fps,vbr,ts) '
-                        'VALUES(?,?,?,?,?,?,?,?,?)',
+            dbc.execute('INSERT INTO media(item_id,file,size,dur,w,h,fps,vbr,ts) '
+                        'VALUES(?,?,?,?,?,?,?,?,?) '
+                        'ON CONFLICT(item_id) DO UPDATE SET file=excluded.file, '
+                        'size=excluded.size, dur=excluded.dur, w=excluded.w, '
+                        'h=excluded.h, fps=excluded.fps, vbr=excluded.vbr, '
+                        'ts=excluded.ts',
                         (item_id, base, sz, m['dur'], m['w'], m['h'], m['fps'], m['vbr'],
                          mlib.now()))
         else:
@@ -1088,8 +1092,12 @@ def _job_media(ids=None, force=False, nested=False):
                 _log('  id=%s %s 码率读取失败' % (it['id'], base[:36]))
                 _tick(i)
                 continue
-            dbc.execute('INSERT OR REPLACE INTO media(item_id,file,size,dur,w,h,fps,vbr,ts) '
-                        'VALUES(?,?,?,?,?,?,?,?,?)',
+            dbc.execute('INSERT INTO media(item_id,file,size,dur,w,h,fps,vbr,ts) '
+                        'VALUES(?,?,?,?,?,?,?,?,?) '
+                        'ON CONFLICT(item_id) DO UPDATE SET file=excluded.file, '
+                        'size=excluded.size, dur=excluded.dur, w=excluded.w, '
+                        'h=excluded.h, fps=excluded.fps, vbr=excluded.vbr, '
+                        'ts=excluded.ts',
                         (it['id'], base, sz, m['dur'], m['w'], m['h'], m['fps'],
                          m['vbr'], mlib.now()))
             n_new += 1
