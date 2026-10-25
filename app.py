@@ -3961,7 +3961,7 @@ def stats():
         out['lowbpp'] = dbc.execute(
             "SELECT COUNT(*) c FROM items i JOIN media m ON m.item_id=i.id "
             "WHERE i.present=1 AND m.vbr>0 AND m.w>0 AND m.h>0 AND m.fps>0 "
-            "AND (m.vbr*1000.0/(MIN(m.w*m.h,2073600)*m.fps))<0.08").fetchone()['c']
+            "AND (m.vbr*1.0/(MIN(m.w*m.h,2073600)*m.fps))<0.08").fetchone()['c']
     except Exception:
         out.setdefault('hbad', 0); out.setdefault('adbad', 0); out.setdefault('lowbpp', 0)
     for r in dbc.execute("SELECT COALESCE(NULLIF(quality,''),'无') q, COUNT(*) c "
@@ -4040,7 +4040,7 @@ def items(params):
         where.append('COALESCE(items.subs_burn,0)=1')
     pq = params.get('pq')
     if pq in ('良好', '一般', '差'):
-        _b = ("(COALESCE(m.vbr,0)*1000.0/(MIN(m.w*m.h,2073600)*COALESCE(m.fps,0)))")
+        _b = ("(COALESCE(m.vbr,0)*1.0/(MIN(m.w*m.h,2073600)*COALESCE(m.fps,0)))")
         where.append('m.vbr>0 AND m.w>0 AND m.h>0 AND m.fps>0')
         if pq == '良好':
             where.append(_b + '>=0.08')
@@ -4725,9 +4725,15 @@ def save_item(iid, kv):
 
 def sites_info():
     on = set(mlib.sites_enabled())
-    return [{'k': k, 'n': n, 't': t, 'u': u, 'has': h, 'on': k in on,
-             'note': mlib.SITE_NOTES.get(k, '')}
-            for (k, n, t, u, h) in mlib.SITES]
+    out = []
+    for (k, n, t, u, h) in mlib.SITES:
+        eff = mlib.site_type(k)                      # 有效类型（可被用户改判）
+        note = mlib.SITE_NOTES.get(k, '')
+        out.append({'k': k, 'n': n, 't': eff, 'tdef': mlib.site_type_default(k),
+                    'tovr': mlib.site_type_map().get(k, ''), 'u': u, 'has': h,
+                    'on': k in on,
+                    'note': (eff + '；' + note) if note else eff})
+    return out
 
 
 def set_cookie(txt):
@@ -5204,6 +5210,9 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/covers/drop':
                 tids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 return self._json({'ok': True, 'n': drop_covers(tids) if tids else 0})
+            elif p == '/api/sites/type':
+                ok = mlib.set_site_type(q.get('key') or '', q.get('type') or '')
+                return self._json({'ok': ok, 'sites': sites_info()})
             elif p == '/api/sites':
                 mlib.set_sites([x for x in (q.get('on') or '').split(',') if x])
                 return self._json({'ok': True, 'on': mlib.sites_enabled()})
@@ -6239,10 +6248,21 @@ async function stLoad(){
   const d=await(await fetch('/api/sites')).json();
   $('#st-tbl').innerHTML='<thead><tr><th style="width:44px">启用</th><th style="width:110px">站点</th><th style="width:76px">类型</th><th>备注</th><th style="width:150px">状态</th><th style="width:64px">顺序</th></tr></thead><tbody>'
    +d.sites.map(s=>'<tr><td><input type="checkbox" class="ston" data-k="'+s.k+'"'+(s.on?' checked':'')+'></td>'
-     +'<td>'+esc(s.n)+(s.has?'':' <span class="muted">(待接入)</span>')+'</td><td>'+esc(s.t)+'</td>'
+     +'<td>'+esc(s.n)+(s.has?'':' <span class="muted">(待接入)</span>')+'</td><td>'
+     +(s.k==='fc2'?'<span class="muted" title="FC2 固定类型，不改判">FC2</span>'
+       :'<select class="sttype" data-k="'+s.k+'" title="站点类型：自动=按内置判断">'
+        +['自动','有码','无码','资料'].map(o=>'<option'+(o===(s.tovr||'自动')?' selected':'')+'>'+o+'</option>').join('')
+        +'</select>')+'</td>'
      +'<td class="muted" style="font-size:11px">'+esc(s.note||'')+'</td>'
      +'<td class="st-'+s.k+'">—</td>'
      +'<td><button class="st-up" data-k="'+s.k+'">↑</button><button class="st-dn" data-k="'+s.k+'">↓</button></td></tr>').join('')+'</tbody>';}
+document.addEventListener('change',async e=>{
+  const el=e.target.closest?e.target.closest('.sttype'):null;
+  if(!el)return;
+  const d=await(await fetch('/api/sites/type?key='+encodeURIComponent(el.dataset.k)
+      +'&type='+encodeURIComponent(el.value),{method:'POST'})).json();
+  if(!d.ok){alert(T('保存失败'));return;}
+  await stLoad();$('#st-info').textContent='类型已保存：'+el.dataset.k+' → '+el.value;});
 document.addEventListener('click',e=>{
   const up=e.target.closest?e.target.closest('.st-up'):null;
   const dn=e.target.closest?e.target.closest('.st-dn'):null;

@@ -1360,33 +1360,73 @@ def fetch_javdb(code, cookie=None):
 # ------------------------------------------------------------------ 站点管理
 # (key, 名称, 类型, 入口, 是否已有专属解析器)
 SITES = [
-    ('javbus',      'JavBus',      '有码', 'https://www.javbus.com',          1),
-    ('javdb',       'JavDB',       '有码', 'https://javdb.com',               1),
-    ('jav321',      'JAV321',      '有码', 'https://www.jav321.com',          1),   # 源站 522（CF 源站超时），站点不可用，暂不接入
-    ('missav',      'MissAV',      '有码+无码', 'https://missav123.com',       1),
-    ('avsox',       'avsox 系',    '无码', 'https://avsox.click',             1),
-    ('123av',       '123AV',       '无码', 'https://123av.com',               1),
-    ('njav',        'NJAV',        '无码', 'https://njav.tv',                 1),
-    ('netflav',     'Netflav',     '聚合', 'https://netflav.com',             1),
-    ('javtrailers', 'JAVTrailers', '资料', 'https://javtrailers.com',         1),
-    ('fc2',         'FC2 官方',    'FC2',  'https://adult.contents.fc2.com',  1),
-    ('avfan',       'AVFan',       '资料', 'https://avfan.com',               1),
+    ('javbus',      'JavBus',      '有码+无码', 'https://www.javbus.com',          1),
+    ('javdb',       'JavDB',       '有码+无码', 'https://javdb.com',               1),
+    ('missav',      'MissAV',      '有码+无码', 'https://missav123.com',           1),
+    ('jav321',      'JAV321',      '有码+无码', 'https://www.jav321.com',          1),
+    ('avsox',       'avsox 系',    '无码', 'https://avsox.click',                 1),
+    ('123av',       '123AV',       '无码', 'https://123av.com',                   1),
+    ('njav',        'NJAV',        '无码', 'https://njav.tv',                     1),
+    ('netflav',     'Netflav',     '聚合', 'https://netflav.com',                 1),
+    ('javtrailers', 'JAVTrailers', '资料', 'https://javtrailers.com',             1),
+    ('fc2',         'FC2 官方',    'FC2',  'https://adult.contents.fc2.com',      1),
+    ('avfan',       'AVFan',       '资料', 'https://avfan.com',                   1),
 ]
 SITE_NOTES = {
-    'javbus': '标题/封面/演员/类型；有码；需过年龄验证',
-    'javdb': '标题/封面/演员/类型；有码；详情要登录 cookie',
-    'jav321': '标题/封面/演员；有码；曾 522，现可访问，默认关',
-    'missav': '标题/封面/演员；有码+无码；无标签，建议排后',
-    'avsox': '标题/封面；无码；页面较薄，易被墙',
-    '123av': '标题/简介/封面；无码',
-    'njav': '标题/封面；无码；会跳 123AV 品牌页',
-    'netflav': '标题/封面/简介；聚合站，有码无码都可能收录',
-    'javtrailers': '标题/封面/时长/演员；资料站',
-    'fc2': '标题/发售日/标签/卖家；FC2 官方；不下海报',
-    'avfan': '标题/简介/制作商/发售日/标签；资料站；不下海报',
+    'javbus': '标题/封面/演员/类型；需过年龄验证',
+    'javdb': '标题/封面/演员/类型；详情要登录 cookie',
+    'missav': '标题/封面/演员；无标签，建议排后',
+    'jav321': '标题/封面/演员/简介；曾 522，现可访问',
+    'avsox': '标题/封面；页面较薄，易被墙',
+    '123av': '标题/简介/封面',
+    'njav': '标题/封面；会跳 123AV 品牌页',
+    'netflav': '标题/封面/简介；有码无码都可能收录',
+    'javtrailers': '标题/封面/时长/演员',
+    'fc2': '标题/发售日/标签/卖家；不下海报',
+    'avfan': '标题/简介/制作商/发售日/标签；不下海报',
 }
 
-DEFAULT_SITES = 'javbus,javdb,missav,fc2' 
+DEFAULT_SITES = 'javbus,javdb,missav,jav321,fc2'
+SITE_TYPES = ('自动', '有码', '无码', '资料')      # 备注里的有效类型自动拼接
+
+
+def site_type_map():
+    """用户对站点类型的覆盖：{key: 有码|无码|资料}"""
+    try:
+        j = json.loads(cfg_get('site_types') or '{}')
+        return j if isinstance(j, dict) else {}
+    except Exception:
+        return {}
+
+
+def site_type(key):
+    """站点有效类型：用户覆盖优先；FC2 固定 FC2，不参与改判。"""
+    if key == 'fc2':
+        return 'FC2'
+    t = (site_type_map().get(key) or '').strip()
+    if t in ('有码', '无码', '资料'):
+        return t
+    return dict((x[0], x[2]) for x in SITES).get(key, '')
+
+
+def site_type_default(key):
+    return dict((x[0], x[2]) for x in SITES).get(key, '')
+
+
+def set_site_type(key, typ):
+    """自动/空 = 清除覆盖，回到内置判断。"""
+    if key == 'fc2':
+        return False
+    m = site_type_map()
+    typ = (typ or '').strip()
+    if typ in ('', '自动'):
+        m.pop(key, None)
+    elif typ in ('有码', '无码', '资料'):
+        m[key] = typ
+    else:
+        return False
+    cfg_set('site_types', json.dumps(m, ensure_ascii=False))
+    return True
 
 
 def sites_enabled():
@@ -1452,7 +1492,7 @@ DEEP_CODE = {'有码': 'SSIS-001', '无码': 'HEYZO-3957', '聚合': 'SSIS-001',
 
 def site_deep(key, timeout=40):
     """深度自检：用固定试号真跑一次该站抓取，回报命中与字段数。"""
-    typ = dict((s[0], s[2]) for s in SITES).get(key, '')
+    typ = site_type(key)
     code = DEEP_CODE.get(typ, 'SSIS-001')
     item = {'code': code, 'sem_code': '', 'name': code, 'path': '', 'title': '', 'plot': ''}
     t = time.time()
