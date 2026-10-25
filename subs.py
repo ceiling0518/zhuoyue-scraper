@@ -194,7 +194,7 @@ def main():
                 vad.accept_waveform(samples)
                 while not vad.empty():
                     s = vad.front
-                    st = (offset * win + s.start) / 16000.0
+                    st = s.start / 16000.0
                     dur = len(s.samples) / 16000.0
                     stream = rec.create_stream()
                     stream.accept_waveform(16000, s.samples)
@@ -210,7 +210,7 @@ def main():
         vad.flush()
         while not vad.empty():
             s = vad.front
-            st = (offset * win + s.start) / 16000.0
+            st = s.start / 16000.0
             dur = len(s.samples) / 16000.0
             stream = rec.create_stream()
             stream.accept_waveform(16000, s.samples)
@@ -220,6 +220,8 @@ def main():
                 segs.append((st, st + dur, txt))
             vad.pop()
 
+        total_dur = total_samples / 16000.0
+        segs = [(st, min(en, total_dur), tx) for st, en, tx in segs if 0 <= st < total_dur]
         segs.sort(key=lambda x: x[0])
         merged = []
         for st, en, tx in segs:
