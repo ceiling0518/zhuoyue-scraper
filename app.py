@@ -2897,6 +2897,12 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False):
                 if not mlib.commit_back(tmp, out_path, _log):
                     _log('    ! 字幕回拷失败')
                     continue
+                try:
+                    _d2 = mlib.db()
+                    _d2.execute('UPDATE items SET subs=1 WHERE id=?', (it['id'],))
+                    _d2.commit()
+                except Exception:
+                    pass
                 if burn:
                     try:
                         _esc = tmp.replace('\\', '/').replace(':', '\\:')
@@ -3646,7 +3652,7 @@ def items(params):
     total = dbc.execute('SELECT COUNT(*) c FROM items WHERE ' + ws, args).fetchone()['c']
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
-    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,series,status,site,path,'
+    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,series,status,site,path,items.subs AS subs,'
                        'm.vbr AS vbr, m.size AS fsize, m.file AS mfile, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads, m.ads_ts AS ads_ts,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT COUNT(*) FROM segs_file s WHERE s.item_id=items.id AND s.kind='invalid' AND IFNULL(s.segs,'') NOT IN ('','[]')) AS nw, "
@@ -3725,7 +3731,22 @@ def items(params):
         bad = sum(1 for r in recs if (r['cls'] or '') not in ('ok',))
         deep_ok = sum(1 for r in recs if int(r['deep'] or 0) >= 1)
         d['hstate'] = 4 if stale else (2 if bad else (3 if deep_ok == len(recs) else 1))
-    return {'total': total, 'limit': limit, 'offset': offset, 'rows': out}
+    try:
+        _hs = dbc.execute(
+            "SELECT COUNT(DISTINCT item_id) t, "
+            "SUM(CASE WHEN bad>0 THEN 1 ELSE 0 END) b, "
+            "SUM(CASE WHEN bad=0 AND deep=1 THEN 1 ELSE 0 END) d "
+            "FROM (SELECT item_id, MAX(CASE WHEN cls<>'ok' THEN 1 ELSE 0 END) bad, "
+            "MIN(CASE WHEN COALESCE(deep,0)>=1 THEN 1 ELSE 0 END) deep "
+            "FROM health GROUP BY item_id)").fetchone()
+        _tested = int(_hs['t'] or 0)
+        _present = int(dbc.execute('SELECT COUNT(*) c FROM items WHERE present=1').fetchone()['c'])
+        _hstats = {'tested': _tested, 'bad': int(_hs['b'] or 0), 'deep': int(_hs['d'] or 0),
+                   'untested': max(0, _present - _tested)}
+    except Exception:
+        _hstats = {'tested': 0, 'bad': 0, 'deep': 0, 'untested': 0}
+    return {'total': total, 'limit': limit, 'offset': offset, 'rows': out,
+            'hstats': _hstats}
 
 
 def item_detail(iid):
@@ -4010,6 +4031,11 @@ def set_cell(iid, field, value):
     if field in ('sem_kind', 'sem_code'):
         c.execute('UPDATE items SET %s=?, sem_manual=1, last_update=? WHERE id=?' % field,
                   (value, mlib.now(), iid))
+        if field == 'sem_code' and (value or '').strip():
+            r0 = c.execute('SELECT name, sem_kind FROM items WHERE id=?', (iid,)).fetchone()
+            if r0 and not (r0['sem_kind'] or '').strip():
+                c.execute('UPDATE items SET sem_kind=? WHERE id=?',
+                          (mlib.kind_by_rule(r0['name'] or ''), iid))
     else:
         c.execute('UPDATE items SET %s=?, last_update=? WHERE id=?' % field,
                   (value, mlib.now(), iid))
@@ -4033,6 +4059,11 @@ def save_item(iid, kv):
         return False
     if ('sem_kind' in kv) or ('sem_code' in kv):
         sets.append('sem_manual=1')
+        if ('sem_kind' not in kv) and (kv.get('sem_code') or '').strip():
+            r0 = c.execute('SELECT name, sem_kind FROM items WHERE id=?', (iid,)).fetchone()
+            if r0 and not (r0['sem_kind'] or '').strip():
+                sets.append('sem_kind=?')
+                vals.append(mlib.kind_by_rule(r0['name'] or ''))
     sets.append('last_update=?')
     vals.append(mlib.now())
     vals.append(iid)
@@ -4773,6 +4804,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted" id="count"></span>
     <span class="muted" id="page"></span>
     <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 <b style="color:var(--bad)">⛔</b>有无效段 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测</span>
+    <span class="muted">体检 <b id="hstat">—</b></span>
     <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
@@ -4979,11 +5011,12 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
   quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,
   sort:$('#f-sort').value,order:$('#f-order').value});
   const d=await(await fetch('/api/items?'+qs)).json();
+  if(d.hstats){const h=d.hstats;$('#hstat').textContent='深检'+(h.deep||0)+'｜通过'+Math.max(0,(h.tested||0)-(h.bad||0))+'｜问题'+(h.bad||0)+'｜未测'+(h.untested||0);}
   $('#rows').innerHTML=d.rows.map(r=>{
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
-    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
+    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="color:var(--ok)">字</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
     +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'')+'" title="双击修改系列">'+esc(r.series||r.skey||'—')+'</span></div>'
     +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'—')+'</span></div>'
