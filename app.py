@@ -4217,7 +4217,7 @@ $('#a-deep').onclick=async()=>{
   if(!confirm(T('深检会逐个读取视频文件找数据洞（NAS 上约 11MB/s）。继续？')))return;
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
   await post('/api/health'+(ids?'?ids='+ids:'')+fq+((fq||ids)?'&':'?')+'deep=1');};
-$('#a-vdetect').onclick=async()=>{const ids=[...SEL].join(',');await post('/api/vdetect'+(ids?'?ids='+ids:''));};
+$('#a-vdetect').onclick=async()=>{const ids=[...SEL].join(',');if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做无效段初筛（逐条抽帧，较慢），继续？')))return;await post('/api/vdetect'+(ids?'?ids='+ids:''));};
 $('#a-segs').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!ids){alert(T('先选条目'));return;}
