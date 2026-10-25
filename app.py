@@ -4872,7 +4872,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
     <span class="muted" id="count"></span>
     <span class="muted" id="page"></span>
-    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 <b style="color:var(--bad)">⛔</b>有无效段 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测</span>
+    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 <b style="color:var(--bad)">⛔</b>有无效段 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">字</b>有 <b style="color:var(--ok)">字🔥</b>烧录</span>
     <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
@@ -5085,7 +5085,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
-    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="color:var(--ok)">字</span>':'')+(r.subs_burn?' <span title="字幕已烧录" style="color:var(--ok)">字🔥</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
+    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字</span>':'')+(r.subs_burn?' <span title="字幕已烧录" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字🔥</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
     +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'')+'" title="双击修改系列">'+esc(r.series||r.skey||'—')+'</span></div>'
     +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'—')+'</span></div>'
