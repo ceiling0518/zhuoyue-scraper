@@ -2588,6 +2588,18 @@ def _refine(vpath, t_ad, t_nonad, model=None, n=8):
     return hi
 
 
+AD_MIN_SEC = 10.0      # 短于此的"广告"直接忽略（误判/闪标，切了得不偿失）
+
+
+def set_ad_min(v):
+    global AD_MIN_SEC
+    try:
+        AD_MIN_SEC = max(0.0, min(600.0, float(v)))
+    except Exception:
+        pass
+    return AD_MIN_SEC
+
+
 def detect_ads(vpath, dur=None, model=None, log=None, mode='headtail', edge_sec=240):
     """广告检测 v2：30s 网格 + 广告快照库(dhash) + 0.25s dhash 边界精定位。
     - 网格帧先算 dhash 查快照库，命中直接判广告（0 次模型调用）
@@ -2720,6 +2732,15 @@ def detect_ads(vpath, dur=None, model=None, log=None, mode='headtail', edge_sec=
             else:
                 _log('  丢弃中段区间 [%.1f-%.1f]（头尾模式）' % (x0, x1))
         out = keep2
+    if AD_MIN_SEC > 0:
+        keep3 = []
+        for x0, x1 in out:
+            if (x1 - x0) >= AD_MIN_SEC:
+                keep3.append([x0, x1])
+            else:
+                _log('  忽略 %.1f 秒的广告段 [%.1f-%.1f]（阈值 %.0f 秒）'
+                     % (x1 - x0, x0, x1, AD_MIN_SEC))
+        out = keep3
     return out
 
 def video_bitrate(vpath):

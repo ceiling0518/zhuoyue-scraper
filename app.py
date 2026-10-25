@@ -2519,12 +2519,12 @@ def cover_image(iid):
 
 
 def thumb(iid):
-    """SMALL cached thumbnail (width 160) -> jpeg bytes.
+    """SMALL cached thumbnail (width 320) -> jpeg bytes.
 
     若条目在缩略图生成之后又被重跑过（last_update 更新），则重建——
     否则重跑完网格里还是旧图。
     """
-    cp = os.path.join(THUMB_DIR, '%d.jpg' % iid)
+    cp = os.path.join(THUMB_DIR, '%d@320.jpg' % iid)
     if os.path.exists(cp):
         try:
             row = mlib.db().execute('SELECT last_update FROM items WHERE id=?',
@@ -2545,8 +2545,8 @@ def thumb(iid):
         if img is None:
             return None
         h, w = img.shape[:2]
-        if w > 160:
-            img = cv2.resize(img, (160, max(1, int(round(h * 160.0 / w)))),
+        if w > 320:
+            img = cv2.resize(img, (320, max(1, int(round(h * 320.0 / w)))),
                              interpolation=cv2.INTER_AREA)
         ok, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         if not ok:
@@ -2796,6 +2796,7 @@ class H(BaseHTTPRequestHandler):
                 _n['enc_crf'] = repair.ENC_CRF
                 _n['enc_kbps'] = repair.ENC_KBPS
                 _n['enc_scale'] = repair.ENC_SCALE
+                _n['ad_min_sec'] = mlib.AD_MIN_SEC
                 return self._json(_n)
             if p == '/api/lang':
                 return self._json({'lang': mlib.ui_lang(), 'out_lang': mlib.out_lang()})
@@ -3002,6 +3003,13 @@ class H(BaseHTTPRequestHandler):
                         _bd = 7
                     mlib.cfg_set('bak_keep_days', str(_bd))
                     repair.set_backup_policy(days=_bd)
+                if q.get('ad_min') not in (None, ''):
+                    try:
+                        _am = float(q.get('ad_min'))
+                        mlib.cfg_set('ad_min_sec', str(_am))
+                        mlib.set_ad_min(_am)
+                    except Exception:
+                        pass
                 _em = q.get('enc_mode')
                 if _em in ('crf', 'kbps', 'scale'):
                     _ev = (q.get('enc_val') or '').strip()
@@ -3028,7 +3036,8 @@ class H(BaseHTTPRequestHandler):
                                    'enc_mode': repair.ENC_MODE,
                                    'enc_crf': repair.ENC_CRF,
                                    'enc_kbps': repair.ENC_KBPS,
-                                   'enc_scale': repair.ENC_SCALE})
+                                   'enc_scale': repair.ENC_SCALE,
+                                   'ad_min_sec': mlib.AD_MIN_SEC})
             elif p == '/api/lang':
                 if q.get('lang') is not None:
                     mlib.cfg_set('lang', mlib.norm_lang(q.get('lang')))
@@ -3096,7 +3105,11 @@ th{color:var(--dim);background:#171c25;font-weight:600}
 tr:hover td{background:#1f2531}
 .q-有{color:var(--ok);font-weight:600}.q-有误{color:var(--bad);font-weight:600}.q-无{color:var(--dim)}
 .s-Web{color:var(--ok)}.s-AI{color:var(--warn)}
-.thumb{width:66px;height:38px;object-fit:cover;border-radius:5px;background:#0b0e13}
+.thumb{width:120px;height:68px;object-fit:cover;border-radius:5px;background:#0b0e13}
+#rows td{height:84px;vertical-align:middle}
+.cellclip{max-height:78px;overflow:hidden}
+.cellclip .lk{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cellclip .meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 tr.sel td{background:#22314a}
 .selbtn{background:#26303f;color:var(--fg);border:1px solid #39455a;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px}
 tr.sel .selbtn{background:var(--acc);border-color:var(--acc);color:#08121f;font-weight:600}
@@ -3125,6 +3138,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
   <span class="muted">修复码率</span><select id="cfg-encmode" title="重编码时的码率策略"><option value="crf">CRF</option><option value="kbps">固定 kbps</option><option value="scale">源码率×N</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数">
+  <span class="muted">最短广告</span><input id="cfg-admin" type="number" min="0" step="1" style="width:56px" title="短于这个秒数的广告段直接忽略（默认 10 秒）"> <span class="muted">秒</span>
   <button id="cfg-save">保存设置</button>
   <span id="ollama" class="muted right">ollama …</span>
 </header>
@@ -3199,7 +3213,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   </div>
   <table><thead><tr>
-    <th style="width:104px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
+    <th style="width:136px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
     <th style="width:92px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数">属性</th>
     <th style="width:80px">番号</th><th style="width:74px">语义</th>
     <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
@@ -3333,11 +3347,11 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
       +'<div class="meta" style="color:'+((r.bpp&&r.bpp<0.04)?'var(--bad)':(r.bpp&&r.bpp<0.08)?'var(--warn)':'var(--ok)')     +'">'+(r.bpp?'bpp '+r.bpp.toFixed(3):'')+'</div>'
       +'<div class="meta">'+r.mw+'×'+r.mh+' @'+(Math.round((r.mfps||0)*10)/10)+'</div>'
       :'—')+'</td>'
-    +'<td><a href="#" data-id="'+r.id+'" class="lk" style="color:var(--fg)">'+esc(r.title||r.name)+'</a>'
+    +'<td><div class="cellclip"><a href="#" data-id="'+r.id+'" class="lk" style="color:var(--fg)">'+esc(r.title||r.name)+'</a>'
     +'<div class="meta">简介: '+esc((r.plot||'').slice(0,70))+'</div>'
     +'<div class="meta">标签: <span class="tags">'+esc(tagsOf(r.tags))+'</span></div>'
     +'<div class="meta">作者: '+esc(tagsOf(r.actors))+' ｜ 年份: '+esc(r.year||'')+' ｜ 制作: '+esc(r.studio||'')+'</div>'
-    +'</td>'
+    +'</div></td>'
     +'<td><button class="selbtn" data-id="'+r.id+'">选择</button></td></tr>';}).join('');
   $('#count').textContent='共 '+d.total+' 条';
   stripWinOnly();
@@ -3571,7 +3585,8 @@ $('#cfg-save').onclick=async()=>{await fetch('/api/config?root='+encodeURICompon
   +'&model='+encodeURIComponent($('#cfg-model').value),{method:'POST'});
   const n=await(await fetch('/api/net?port='+($('#cfg-port').value||0)+'&lan='+($('#cfg-lan').checked?1:0)
     +'&bak_days='+($('#cfg-bakdays').value||0)
-    +'&enc_mode='+($('#cfg-encmode').value)+'&enc_val='+encodeURIComponent($('#cfg-encval').value||''),{method:'POST'})).json();
+    +'&enc_mode='+($('#cfg-encmode').value)+'&enc_val='+encodeURIComponent($('#cfg-encval').value||'')
+    +'&ad_min='+encodeURIComponent($('#cfg-admin').value||''),{method:'POST'})).json();
   if(n.msg)console.log(n.msg); if(n.urls&&n.urls.length)console.log(T('访问地址: ')+n.urls.join('  '));
   cfg();};
 (async()=>{try{const n=await(await fetch('/api/net')).json();
@@ -3579,6 +3594,7 @@ $('#cfg-save').onclick=async()=>{await fetch('/api/config?root='+encodeURICompon
   if(n.bak_days!==undefined)$('#cfg-bakdays').value=n.bak_days;
   if(n.enc_mode!==undefined){$('#cfg-encmode').value=n.enc_mode;
     $('#cfg-encval').value=(n.enc_mode==='crf')?n.enc_crf:((n.enc_mode==='kbps')?n.enc_kbps:n.enc_scale);}
+  if(n.ad_min_sec!==undefined)$('#cfg-admin').value=n.ad_min_sec;
   if(n.lan)console.log(T('局域网已开启: ')+(n.urls||[]).join('  '));}catch(e){}})();
 $('#b-pipeline').onclick=()=>post('/api/pipeline?limit='+$('#limit').value+'&group='+$('#semg').value+'&ai_group='+$('#aig').value);
 $('#b-rebuild').onclick=()=>{ if(!confirm(T('【建库】会清空并重建全部档案！\n当前所有行的状态/语义/元信息都会被重置，旧记录先进入“档案”。\n\n确定继续？')))return;
@@ -3836,6 +3852,9 @@ def main():
         _st = repair.set_backup_policy(mlib.cfg_get('bak_dir') or None, _bd)
         repair.purge_backups(lambda m: print('    ' + m))
         print('    backup : %s  (%d 天)' % (_st['dir'], _st['days']))
+        _am0 = mlib.cfg_get('ad_min_sec')
+        mlib.set_ad_min(10 if _am0 in (None, '') else _am0)
+        print('    ad min : %.0f 秒（短于此的广告段忽略）' % mlib.AD_MIN_SEC)
         _es = repair.set_encode(mlib.cfg_get('enc_mode') or 'crf',
                                 mlib.cfg_get('enc_crf') or 20,
                                 mlib.cfg_get('enc_kbps') or 0,
