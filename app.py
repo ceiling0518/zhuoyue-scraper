@@ -1126,6 +1126,52 @@ def _topaz_path():
 
 
 # ---------------------------------------------------------------- 改名
+def _organize_plan(ids):
+    """AI 模式：平铺计划 + 改名计划（只读）。"""
+    its = [dict(x) for x in _items_by_ids(ids)]
+    fl = _flatten_plan(ids)
+    rows = mlib.rename_plan(its)
+    return {'flat': {'total': fl.get('total', 0), 'files': fl.get('files', 0),
+                     'bad': fl.get('bad', [])},
+            'rows': rows}
+
+
+def _organize_apply(rows):
+    """先平铺再改名；平铺失败则跳过该条的改名。"""
+    dbc = mlib.db()
+    tdir = os.path.join(HERE, 'trash')
+    ok = fail = 0
+    errs = []
+    for r in rows:
+        iid = int(r.get('id'))
+        row = dbc.execute('SELECT id,path FROM items WHERE id=?', (iid,)).fetchone()
+        if not row:
+            fail += 1
+            errs.append('id=%s 条目不存在' % iid)
+            continue
+        try:
+            p = flatten.build_plan(row['path'])
+            if p.get('ok') and (p.get('items') or p.get('subs')):
+                flatten.apply_plan(row['path'], p['items'], tdir, p['subs'],
+                                   tag=iid, log=_log)
+                _log('  id=%s 平铺完成（改名 %d / 子目录 %d）'
+                     % (iid, p.get('count', 0), len(p.get('subs') or [])))
+            elif not p.get('ok'):
+                _log('  id=%s 平铺跳过（%s），继续改名'
+                     % (iid, (p.get('error') or '重名/撞名')[:60]))
+        except Exception as e:
+            fail += 1
+            errs.append('id=%s 平铺失败 %s' % (iid, str(e)[:60]))
+            continue
+        res = _rename_one(dbc, iid, r.get('new_dir') or '', r.get('new_file') or '')
+        if res.get('ok'):
+            ok += 1
+        else:
+            fail += 1
+            errs.append('id=%s %s' % (iid, res.get('error')))
+    return {'ok': ok, 'fail': fail, 'errors': errs[:20]}
+
+
 def _nfo_set_title(folder, title):
     for nm in ('movie.nfo', 'tvshow.nfo'):
         p = os.path.join(folder, nm)
@@ -2944,6 +2990,9 @@ class H(BaseHTTPRequestHandler):
                 return self._json(stats())
             if p == '/api/items':
                 return self._json(items(q))
+            if p == '/api/organize/plan':
+                _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                return self._json(_organize_plan(_ids) if _ids else {'flat': {}, 'rows': []})
             if p == '/api/rename/plan':
                 _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 if not _ids:
@@ -3218,6 +3267,13 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': open_image(int(p.rsplit('/', 1)[1]))})
             elif p.startswith('/api/open/'):
                 return self._json({'ok': open_item(int(p.rsplit('/', 1)[1]))})
+            elif p == '/api/organize/apply':
+                try:
+                    _ln = int(self.headers.get('Content-Length') or 0)
+                    _body = json.loads(self.rfile.read(_ln).decode('utf-8') or '{}')
+                except Exception:
+                    return self._json({'ok': 0, 'fail': 0, 'error': 'bad json'}, 400)
+                return self._json(_organize_apply(_body.get('rows') or []))
             elif p == '/api/rename/apply':
                 try:
                     _ln = int(self.headers.get('Content-Length') or 0)
@@ -3364,7 +3420,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
     <button id="a-open">打开目录</button>
 <span id="hb-legend" style="margin-left:10px;font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 深检 · <b style="color:#1565c0">✓</b> 浅检 · <b style="color:var(--bad)">⚠</b> 有问题 · <b style="color:var(--muted)">↻</b> 需重测　｜　属性：<b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--muted)">○</b>无 <b style="color:var(--bad)">✕</b>有误 <b style="color:#777">–</b>删除　<b>🌐</b>网站 <b>🤖</b>AI　<b style="color:var(--warn)">📢n</b>广告段数</span>
-    <label class="muted" title="勾上后用 AI 生成改名计划（目录名=番号-标题，文件同名）；不勾就是原来的平铺整理"><input type="checkbox" id="flat-ai"> AI</label> <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
+    <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label> <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
     <button id="a-selall">全选本页</button>
@@ -3396,7 +3452,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><span id="page" class="muted"></span><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
 <div class="modal" id="modal8"><div class="box" style="max-width:1280px">
-  <div class="bar"><b>改名计划</b><span class="muted" id="rn-sum"></span><button class="right" id="md8-close">关闭</button></div>
+  <div class="bar"><b>整理 + 改名</b><span class="muted" id="rn-sum"></span><button class="right" id="md8-close">关闭</button></div>
+  <div class="muted" id="rn-flat" style="padding:0 4px 8px"></div>
   <div style="max-height:62vh;overflow:auto"><table id="rn-tbl"><thead><tr>
     <th style="width:52px">id</th><th>现目录</th><th>新目录</th><th>现文件</th><th>新文件</th><th style="width:110px">说明</th>
   </tr></thead><tbody id="rn-rows"></tbody></table></div>
@@ -3578,7 +3635,10 @@ async function openRenamePlan(){
   const ids=[...SEL].join(',');
   $('#rn-sum').textContent='生成中…';
   $('#modal8').classList.add('on');
-  const j=await(await fetch('/api/rename/plan?ids='+ids)).json();
+  const j=await(await fetch('/api/organize/plan?ids='+ids)).json();
+  const f=j.flat||{};
+  $('#rn-flat').textContent='结构：'+f.total+' 个目录待整理，共 '+f.files+' 个文件'
+    +((f.bad&&f.bad.length)?('（跳过 id '+f.bad.join(', ')+'）'):'');
   renderRn(j.rows||[]);}
 function renderRn(rows){
   $('#rn-rows').innerHTML=rows.map(r=>'<tr><td>'+r.id+'</td>'
@@ -3596,7 +3656,7 @@ $('#rn-apply').onclick=async()=>{
     new_file:tr.querySelector('.rn-file').value}));
   if(!rows.length)return;
   if(!confirm(T('确认改名 ')+rows.length+T(' 条？会同时更新 nfo 标题')))return;
-  const r=await(await fetch('/api/rename/apply',{method:'POST',
+  const r=await(await fetch('/api/organize/apply',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({rows})})).json();
   if(r.errors&&r.errors.length)alert(T('完成 ')+r.ok+T('，失败 ')+r.fail+'\n'+r.errors.join('\n'));
   $('#modal8').classList.remove('on');list();};
