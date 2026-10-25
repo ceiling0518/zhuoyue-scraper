@@ -297,6 +297,14 @@ def _sem_pass(limit, force=False, group=None):
             code = (s or {}).get('code') or ''
             dbc.execute('UPDATE items SET sem_kind=?, sem_code=?, last_update=? WHERE id=?',
                         (kind, code, mlib.now(), r['id']))
+            try:
+                _su = dbc.execute('SELECT studio FROM items WHERE id=?',
+                                  (r['id'],)).fetchone()
+                mlib.series_upsert(mlib.series_of_item(dict(r, sem_code=code)),
+                                   1 if code else 0, kind,
+                                   (_su['studio'] if _su else '') or '', dbc)
+            except Exception:
+                pass
             if (s or {}).get('nested'):
                 dbc.execute("UPDATE items SET quality='有误' WHERE id=?", (r['id'],))
             dbc.commit()
@@ -1210,14 +1218,40 @@ def _topaz_path():
 
 
 # ---------------------------------------------------------------- 改名
-def _organize_plan(ids):
+def _organize_plan(ids, root=False):
     """AI 模式：平铺计划 + 改名计划（只读）。"""
     its = [dict(x) for x in _items_by_ids(ids)]
     fl = _flatten_plan(ids)
-    rows = mlib.rename_plan(its)
+    rows = mlib.rename_plan(its, root=root)
     return {'flat': {'total': fl.get('total', 0), 'files': fl.get('files', 0),
                      'bad': fl.get('bad', [])},
             'rows': rows}
+
+
+def _apply_root(dbc, iid, new_root):
+    """把条目所在目录的上一级（系列/根目录）改名；不碰扫描根与盘符。"""
+    row = dbc.execute('SELECT path FROM items WHERE id=?', (iid,)).fetchone()
+    if not row or not row['path']:
+        return False
+    p = row['path'].rstrip('\\/')
+    old_root = os.path.dirname(p)
+    if not old_root:
+        return False
+    if os.path.abspath(old_root) == os.path.abspath(mlib.scan_root()):
+        return False
+    parent = os.path.dirname(old_root)
+    if not parent or os.path.abspath(parent) == os.path.abspath(old_root):
+        return False
+    tgt = os.path.join(parent, new_root)
+    if os.path.abspath(tgt) == os.path.abspath(old_root):
+        return False
+    if os.path.exists(tgt):
+        raise RuntimeError('根目录已存在: %s' % new_root[:40])
+    os.replace(old_root, tgt)
+    new_path = os.path.join(tgt, os.path.basename(p))
+    dbc.execute('UPDATE items SET path=? WHERE id=?', (new_path, iid))
+    dbc.commit()
+    return True
 
 
 def _organize_apply(rows):
@@ -1250,6 +1284,13 @@ def _organize_apply(rows):
         res = _rename_one(dbc, iid, r.get('new_dir') or '', r.get('new_file') or '')
         if res.get('ok'):
             ok += 1
+            _nr = (r.get('new_root') or '').strip()
+            if _nr:
+                try:
+                    if _apply_root(dbc, iid, _nr):
+                        _log('  id=%s 根目录 -> %s' % (iid, _nr))
+                except Exception as e:
+                    errs.append('id=%s 根目录 %s' % (iid, str(e)[:60]))
         else:
             fail += 1
             errs.append('id=%s %s' % (iid, res.get('error')))
@@ -3083,7 +3124,9 @@ class H(BaseHTTPRequestHandler):
                 return self._json(items(q))
             if p == '/api/organize/plan':
                 _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                return self._json(_organize_plan(_ids) if _ids else {'flat': {}, 'rows': []})
+                return self._json(_organize_plan(_ids,
+                                                 (q.get('root') or '') in ('1', 'true', 'yes'))
+                                  if _ids else {'flat': {}, 'rows': []})
             if p == '/api/rename/plan':
                 _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 if not _ids:
@@ -3513,6 +3556,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <label class="muted" title="勾选后：信息无效/不足时抽帧看片补全（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
     <button id="a-fill">AI 补全</button>
     <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
+    <label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
     <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
     <span class="muted">|</span>
     <button class="danger" id="a-del">删除</button>
@@ -3562,7 +3606,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="bar"><b>整理 + 改名</b><span class="muted" id="rn-sum"></span><button class="right" id="md8-close">关闭</button></div>
   <div class="muted" id="rn-flat" style="padding:0 4px 8px"></div>
   <div style="max-height:62vh;overflow:auto"><table id="rn-tbl"><thead><tr>
-    <th style="width:52px">id</th><th>现目录</th><th>新目录</th><th>现文件</th><th>新文件</th><th style="width:110px">说明</th>
+    <th style="width:52px">id</th><th>现目录</th><th>新目录</th><th>现文件</th><th>新文件</th><th style="width:120px">新根目录</th><th style="width:110px">说明</th>
   </tr></thead><tbody id="rn-rows"></tbody></table></div>
   <div class="bar"><button id="rn-apply" class="primary">应用改名</button>
     <span class="muted">可直接编辑「新目录 / 新文件」；应用后同步更新 nfo 标题</span></div>
@@ -3739,7 +3783,8 @@ async function openRenamePlan(){
   const ids=[...SEL].join(',');
   $('#rn-sum').textContent='生成中…';
   $('#modal8').classList.add('on');
-  const j=await(await fetch('/api/organize/plan?ids='+ids)).json();
+  const j=await(await fetch('/api/organize/plan?ids='+ids
+    +'&root='+($('#flat-root').checked?1:0))).json();
   const f=j.flat||{};
   $('#rn-flat').textContent='结构：'+f.total+' 个目录待整理，共 '+f.files+' 个文件'
     +((f.bad&&f.bad.length)?('（跳过 id '+f.bad.join(', ')+'）'):'');
@@ -3750,6 +3795,7 @@ function renderRn(rows){
     +'<td><input class="rn-dir" data-id="'+r.id+'" value="'+esc(r.new_dir||'')+'"></td>'
     +'<td class="muted" title="'+esc(r.old_file)+'">'+esc((r.old_file||'').slice(0,36))+'</td>'
     +'<td><input class="rn-file" data-id="'+r.id+'" value="'+esc(r.new_file||'')+'"></td>'
+    +'<td><input class="rn-root" data-id="'+r.id+'" value="'+esc(r.new_root||'')+'" placeholder="不改"></td>'
     +'<td class="muted">'+esc(r.why||'')+'</td></tr>').join('');
   $('#rn-sum').textContent='共 '+rows.length+' 条';
   $('#modal8').classList.add('on');}
@@ -3757,7 +3803,8 @@ $('#rn-apply').onclick=async()=>{
   const rows=[...document.querySelectorAll('#rn-rows tr')].map(tr=>({
     id:+tr.children[0].textContent,
     new_dir:tr.querySelector('.rn-dir').value,
-    new_file:tr.querySelector('.rn-file').value}));
+    new_file:tr.querySelector('.rn-file').value,
+    new_root:(tr.querySelector('.rn-root')||{}).value||''}));
   if(!rows.length)return;
   if(!confirm(T('确认改名 ')+rows.length+T(' 条？会同时更新 nfo 标题')))return;
   const r=await(await fetch('/api/organize/apply',{method:'POST',

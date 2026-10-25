@@ -380,6 +380,62 @@ def web_complete(item, model=None, log=None):
         return None
 
 
+# ---------------------------------------------------------------- 系列表
+# 4 列：系列 / 番号有无 / 语义 / 备注
+# 语义识别与改名共用：7Boss 这类国产系列没有番号，靠 series 归类。
+def ensure_series(dbc=None):
+    d = dbc or db()
+    d.execute("""CREATE TABLE IF NOT EXISTS series(
+        series TEXT PRIMARY KEY,
+        has_code INTEGER DEFAULT 0,
+        sem_kind TEXT,
+        note TEXT,
+        updated TEXT)""")
+    d.commit()
+    return d
+
+
+def series_upsert(series, has_code, sem_kind='', note='', dbc=None):
+    """有则更新；空值不覆盖已有语义/备注。"""
+    series = (series or '').strip()
+    if not series:
+        return None
+    d = dbc or db()
+    ensure_series(d)
+    d.execute("""INSERT INTO series(series,has_code,sem_kind,note,updated)
+                 VALUES(?,?,?,?,?)
+                 ON CONFLICT(series) DO UPDATE SET
+                   has_code=excluded.has_code,
+                   sem_kind=CASE WHEN excluded.sem_kind<>'' THEN excluded.sem_kind
+                                 ELSE series.sem_kind END,
+                   note=CASE WHEN excluded.note<>'' THEN excluded.note
+                             ELSE series.note END,
+                   updated=excluded.updated""",
+              (series, 1 if has_code else 0, sem_kind or '', note or '', now()))
+    d.commit()
+    return series
+
+
+def series_get(name, dbc=None):
+    try:
+        r = (dbc or db()).execute('SELECT * FROM series WHERE series=?',
+                                  ((name or '').strip(),)).fetchone()
+        return dict(r) if r else None
+    except Exception:
+        return None
+
+
+def series_of_item(item, dbc=None):
+    """从条目推断系列：优先番号，其次公司/中文名前缀。"""
+    code = (item.get('sem_code') or item.get('code') or '').strip()
+    if code:
+        return code
+    name = (item.get('name') or '').strip()
+    t = strip_noise(name)
+    head = re.split(r'[\s\-_—|:：]+', t)[0] if t else ''
+    return head[:20]
+
+
 # ---------------------------------------------------------------- 改名
 _RENAME_BAD = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
@@ -414,7 +470,7 @@ def _rn_vids(p):
         return []
 
 
-def rename_plan(items, model=None, log=None):
+def rename_plan(items, model=None, log=None, root=False):
     """AI 生成改名计划；失败时退回模板。返回 [{id,dir,file,why,old_dir,old_file}]"""
 
     def _log(m):
@@ -468,8 +524,19 @@ def rename_plan(items, model=None, log=None):
                 ne = os.path.splitext(nf2)[1]
                 nf = nf2 if ne else (nf2 + ext)
             why = (a.get('why') or '')[:60] or 'AI'
+        old_root = os.path.basename(os.path.dirname(os.path.normpath(p))) if p else ''
+        new_root = ''
+        if root and p:
+            try:
+                _sr = os.path.abspath(scan_root())
+                if os.path.abspath(os.path.dirname(os.path.normpath(p))) != _sr:
+                    _sr_row = series_get(series_of_item(it))
+                    new_root = safe_name((_sr_row or {}).get('series') or code or old_root, 40)
+            except Exception:
+                new_root = ''
         out.append({'id': it.get('id'), 'old_dir': old_dir, 'new_dir': nd,
                     'old_file': main, 'new_file': nf, 'why': why,
+                    'old_root': old_root, 'new_root': new_root,
                     'videos': [os.path.basename(x) for x in vids]})
     return out
 
