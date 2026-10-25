@@ -1174,11 +1174,15 @@ def scan(root=None, mode='incr', dbc=None):
             _has_burn = 1 if any('.hardsub' in f.lower() for f in _ls) else 0
         except Exception:
             _has_sub, _has_burn = 0, 0
-        # 番号/目录名尾部带 C（中文字幕版）-> 视为烧录字幕
+        # 番号/目录名尾部带 C 或 CX（中文字幕版）-> 视为烧录字幕
         try:
             _nm = (name or '').strip().upper()
             _cd = (code or '').strip().upper()
-            if _nm.endswith('C') or _cd.endswith('C'):
+            _hit = bool(re.search(r'(?<=[0-9])CX?$', _cd)) or \
+                   bool(re.search(r'(?<=[0-9])CX?$', _nm))
+            if not _hit and _cd:
+                _hit = bool(re.search(re.escape(_cd) + r'[-_\s]?CX?(?![A-Z0-9])', _nm))
+            if _hit:
                 _has_burn = 1
         except Exception:
             pass
