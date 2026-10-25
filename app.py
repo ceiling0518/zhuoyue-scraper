@@ -3880,9 +3880,9 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
     +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+'<div class="meta">'+fsize(r.fsize)+' · '+fext(r.mfile)+'</div></td>'
-    +'<td style="white-space:nowrap"><div>'
-    +'<span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'—')+'" title="双击修改系列">'+esc(r.series||r.skey||'')+'</span>'
-    +'-<span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'—')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'')+'</span></div>'
+    +'<td style="white-space:nowrap">'
+    +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'')+'" title="双击修改系列">'+esc(r.series||r.skey||'—')+'</span></div>'
+    +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'—')+'</span></div>'
     +'<div class="meta"><span class="ed" data-f="sem_kind" data-id="'+r.id+'" data-v="'+(r.sem_kind||'')+'" title="双击修改语义">'+kindLabel(r.sem_kind)+'</span>'
     +(r.sem_manual?' <span class="muted">(人工)</span>':'')+'</div></td>'
     
