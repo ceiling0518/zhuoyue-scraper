@@ -4366,11 +4366,17 @@ def _poster_ai_frame(vp):
     from PIL import Image
     import cover as _cv
     det = _cv.face_detector()
+    try:
+        _dur = mlib.video_duration(vp)
+    except Exception:
+        _dur = 0.0
+    _ms = _cv.MIN_START if (_dur and _dur / 3.0 > _cv.MIN_START) else 0.0
     best = None
     for n in (12, 24, 36):
         tmpf = os.path.join(tempfile.gettempdir(), 'pai_%d.jpg' % n)
         try:
-            r = _cv.pick(vp, tmpf, n=n, width=0, verbose=False, rand=True)
+            r = _cv.pick(vp, tmpf, n=n, width=0, verbose=False, rand=True,
+                         min_start=_ms)
         except Exception:
             r = None
         if not r:
