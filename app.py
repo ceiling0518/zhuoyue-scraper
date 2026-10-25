@@ -486,27 +486,47 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
     limit = int(limit or 0)
     ai_group = int(ai_group or 0)
     if web or scan:
-        # 勾了来源：范围扩大到「缺简介/缺标签/缺标题/质量未定或无」
-        q = ("SELECT id,name,title,plot,code,sem_code,path,actors,studio,year "
-             "FROM items WHERE present=1 AND COALESCE(kind,'')<>'nested' "
-             "AND (COALESCE(plot,'')='' OR COALESCE(tags,'')='' OR COALESCE(title,'')='' "
-             "OR COALESCE(quality,'') IN ('','无','有误'))")
+        # 勾了来源：按内容判断是否真的需要补全（tags 可能是 '[]'，也可能是垃圾标题）
+        q = ("SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality "
+             "FROM items WHERE present=1 AND COALESCE(kind,'')<>'nested' ORDER BY id")
+        _all = [dict(r) for r in dbc.execute(q).fetchall()]
+
+        def _need(x):
+            tg = (x.get('tags') or '').strip()
+            if tg in ('', '[]', 'null') or not tg.strip('[] ,"'):
+                return True
+            if not (x.get('plot') or '').strip():
+                return True
+            if not (x.get('title') or '').strip():
+                return True
+            if (x.get('quality') or '') in ('', '无', '有误', '缺'):
+                return True
+            if not mlib.hint_ok(x.get('title') or '', 4):
+                return True
+            if not mlib.hint_ok(x.get('plot') or '', 8):
+                return True
+            return False
+
+        rows = [x for x in _all if _need(x)]
+        if ids:
+            _ids = set(ids)
+            rows = [x for x in rows if x['id'] in _ids]
+        if limit > 0:
+            rows = rows[:limit]
     else:
         q = ("SELECT id,name,title,plot,code,sem_code,path,actors,studio,year "
              "FROM items WHERE present=1 AND COALESCE(plot,'')<>''")
-    args = []
-    if ids:
-        # 选中项：按简介重补（允许覆盖旧标签，也不看 kind）
-        q += ' AND id IN (%s)' % ','.join('?' * len(ids))
-        args += list(ids)
-    elif not (web or scan):
-        # 未选中且没勾来源：只补没标签、且不是嵌套目录的
-        q += " AND COALESCE(kind,'')<>'nested' AND COALESCE(tags,'')=''"
-    q += ' ORDER BY id'
-    if limit > 0:
-        q += ' LIMIT ?'
-        args.append(limit)
-    rows = [dict(r) for r in dbc.execute(q, tuple(args)).fetchall()]
+        args = []
+        if ids:
+            q += ' AND id IN (%s)' % ','.join('?' * len(ids))
+            args += list(ids)
+        else:
+            q += " AND COALESCE(kind,'')<>'nested' AND COALESCE(tags,'')=''"
+        q += ' ORDER BY id'
+        if limit > 0:
+            q += ' LIMIT ?'
+            args.append(limit)
+        rows = [dict(r) for r in dbc.execute(q, tuple(args)).fetchall()]
     if not rows:
         _log('AI 补全: 没有需要补全的条目（%s）'
              % ('简介/标签/标题/质量都齐全' if (web or scan) else '有简介且无标签'))
