@@ -913,6 +913,8 @@ def _items_by_ids(ids=None):
 
 
 def _ensure_media(dbc):
+    dbc.execute('CREATE TABLE IF NOT EXISTS media_files(item_id INTEGER, file TEXT, size INTEGER, '
+                'ext TEXT, PRIMARY KEY(item_id,file))')
     dbc.execute("CREATE TABLE IF NOT EXISTS media("
                 "item_id INTEGER PRIMARY KEY, file TEXT, size INTEGER, dur REAL, "
                 "w INTEGER, h INTEGER, fps REAL, vbr INTEGER, ts TEXT, ads TEXT, ads_ts TEXT)")
@@ -982,6 +984,16 @@ def _job_media(ids=None, force=False, nested=False):
                 f = max(vids, key=lambda x: os.path.getsize(x))
                 base = os.path.basename(f)
                 sz = os.path.getsize(f)
+                for _v in vids:
+                    try:
+                        _b = os.path.basename(_v)
+                        dbc.execute('INSERT INTO media_files(item_id,file,size,ext) VALUES(?,?,?,?) '
+                                    'ON CONFLICT(item_id,file) DO UPDATE SET size=excluded.size, ext=excluded.ext',
+                                    (it['id'], _b, os.path.getsize(_v),
+                                     os.path.splitext(_b)[1].lower().lstrip('.')))
+                    except Exception:
+                        pass
+                dbc.commit()
             except Exception:
                 n_err += 1
                 _tick(i)
@@ -2794,6 +2806,7 @@ def items(params):
                        'm.vbr AS vbr, m.size AS fsize, m.file AS mfile, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads, m.ads_ts AS ads_ts,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT COUNT(*) FROM segs_file s WHERE s.item_id=items.id AND s.kind='invalid' AND IFNULL(s.segs,'') NOT IN ('','[]')) AS nw, "
+                       "(SELECT SUM(size) FROM media_files mf WHERE mf.item_id=items.id) AS tsize, "
                        "(SELECT CASE WHEN COUNT(*)=0 THEN 0 "
                        "WHEN SUM(CASE WHEN cls<>'ok' THEN 1 ELSE 0 END)>0 THEN 2 "
                        "WHEN MIN(deep)=1 THEN 3 ELSE 1 END "
@@ -2813,6 +2826,23 @@ def items(params):
             o['bpp'] = round(v / (w * h * fps), 4) if (v and w and h and fps) else 0
         except Exception:
             o['bpp'] = 0
+    # 类型计数：MP4(2), AVI(1)
+    _ids = [o['id'] for o in out]
+    _tm = {}
+    if _ids:
+        try:
+            _ph = ','.join(['?'] * len(_ids))
+            for _r in dbc.execute('SELECT item_id, ext, COUNT(*) c FROM media_files WHERE item_id IN (' + _ph + ') '
+                                  'GROUP BY item_id, ext ORDER BY c DESC, ext', _ids):
+                _tm.setdefault(_r['item_id'], []).append('%s(%d)' % ((_r['ext'] or '?').upper(), _r['c']))
+        except Exception:
+            pass
+    for o in out:
+        _ext = os.path.splitext(o.get('mfile') or '')[1].lower().lstrip('.')
+        o['types'] = ', '.join(_tm.get(o['id']) or ([_ext.upper()] if _ext else []))
+        if not o.get('tsize'):
+            o['tsize'] = o.get('fsize') or 0
+
     # 记录过期检查：文件体积变了（例如刚修过）就不能再算「已检」-> hstate=4
     for d in out:
         if not d.get('hstate'):
@@ -4038,7 +4068,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
-    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔</span>':'')+'<div class="meta">'+fsize(r.fsize)+' · '+fext(r.mfile)+'</div></td>'
+    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+' · '+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
     +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'')+'" title="双击修改系列">'+esc(r.series||r.skey||'—')+'</span></div>'
     +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'—')+'</span></div>'
