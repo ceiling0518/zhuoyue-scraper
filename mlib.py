@@ -304,11 +304,40 @@ def _parse_google(html, n):
     return out
 
 
+SEARXNG = (os.environ.get('MS_SEARXNG') or 'http://127.0.0.1:8888').rstrip('/')
+
+
+def searxng_search(q, n=5, engines='google,yandex'):
+    """本地 SearxNG（只开 google/yandex）-> [{title,snippet,url}]"""
+    try:
+        r = requests.get(SEARXNG + '/search',
+                         params={'q': q, 'format': 'json', 'engines': engines,
+                                 'language': 'zh-CN'},
+                         timeout=60)
+        if r.status_code != 200:
+            return []
+        j = r.json()
+        out = []
+        for x in (j.get('results') or [])[:n]:
+            t = (x.get('title') or '').strip()
+            if not t:
+                continue
+            out.append({'title': t,
+                        'snippet': (x.get('content') or '').strip(),
+                        'url': x.get('url') or ''})
+        return out
+    except Exception:
+        return []
+
+
 def web_search(q, n=5):
-    """Yandex -> Google 兜底；返回 [{title,snippet,url}]。"""
+    """SearxNG(google+yandex) -> 直连 Yandex -> 直连 Google -> DDG。"""
     q = (q or '').strip()
     if not q:
         return []
+    out = searxng_search(q, n)
+    if out:
+        return out
     from urllib.parse import quote_plus
     out = _parse_yandex(
         _http_get('https://yandex.com/search/?text=%s&lr=87' % quote_plus(q)), n)
@@ -318,7 +347,6 @@ def web_search(q, n=5):
         _http_get('https://www.google.com/search?q=%s&hl=zh-CN&num=10' % quote_plus(q)), n)
     if out:
         return out
-    # 最后兜底：DuckDuckGo
     html = _http_get('https://html.duckduckgo.com/html/?q=%s' % quote_plus(q))
     for m in re.finditer(r'<a rel="nofollow" class="result__a" href="([^"]+)">(.*?)</a>'
                          r'.*?<a class="result__snippet"[^>]*>(.*?)</a>', html or '', re.S):
