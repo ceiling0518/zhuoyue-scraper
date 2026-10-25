@@ -2004,11 +2004,14 @@ def _job_vdetect(ids=None):
                 _tick(i + 1)
                 continue
             vids = sorted(vids, key=lambda p: os.path.getsize(p), reverse=True)
-            try:
-                for _fi, vp in enumerate(vids, 1):
-                    if _stop_req():
-                        break
-                    fb = os.path.basename(vp)
+            n_ok_f = 0
+            for _fi, vp in enumerate(vids, 1):
+                if _stop_req():
+                    _log('    ! 已请求停止，剩余文件未检测')
+                    break
+                fb = os.path.basename(vp)
+                # 单个文件失败不影响同条目其他文件（之前一个异常会中断整批）
+                try:
                     dur = mlib.video_duration(vp)
                     _log('[%d/%d] id=%s 初筛 %s (%.0fs)（%d/%d）'
                          % (i + 1, len(its), it['id'], fb, dur or 0, _fi, len(vids)))
@@ -2018,9 +2021,11 @@ def _job_vdetect(ids=None):
                     if ratio >= 0.8:
                         _log('    ! 整片无女性占比 %.0f%%，未自动删除；请人工确认是否删整片'
                              % (ratio * 100))
+                    n_ok_f += 1
+                except Exception as e:
+                    _log('    ERR %s: %s' % (fb[:40], str(e)[:150]))
+            if n_ok_f == len(vids):
                 ok += 1
-            except Exception as e:
-                _log('    ERR %s' % str(e)[:180])
             _tick(i + 1)
         _end('vdetect %d/%d' % (ok, len(its)))
     except Exception:
