@@ -4780,7 +4780,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-thumbs">刷新缩略图</button>
     <button id="a-coverdel">删除封面图</button>
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
-    <button id="a-deep" title="数据级深检：逐文件扫 mdat 找洞 + 抽窗解码。慢（NAS ~11MB/s），用于查“能打开但花屏/跳帧”的文件">深检</button>
+    <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
      <select id="admode" style="min-width:86px" title="头尾：只扫开头/结尾各 4 分钟（能只重封装，秒级）；全片：30 秒全网扫（可能命中中插广告）"><option value="headtail">头尾</option><option value="full">全片</option></select>
     <button id="a-adtect" title="抽帧判断广告：头尾模式只扫首尾各 4 分钟并 15 秒取样；全片模式 30 秒全网扫。结果写在列表「属性」列">广告检测</button>
@@ -5171,12 +5171,7 @@ function rpShow(title,sum,html,btns){
     if(b.primary)el.className='primary';el.textContent=b.label;el.onclick=b.fn;$('#rp-btns').appendChild(el);});
   $('#modal6').classList.add('on');}
 $('#md6-close').onclick=()=>$('#modal6').classList.remove('on');
-$('#a-deep').onclick=async()=>{
-  const ids=[...SEL].join(',');
-  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做数据级深检（要扫整个文件，很慢；不写媒体文件），继续？')))return;
-  if(!confirm(T('深检会逐个读取视频文件找数据洞（NAS 上约 11MB/s）。继续？')))return;
-  const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
-  await post('/api/health'+(ids?'?ids='+ids:'')+fq+((fq||ids)?'&':'?')+'deep=1');};
+;
 $('#a-vdetect').onclick=async()=>{const ids=[...SEL].join(',');if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做无效段初筛（逐条抽帧，较慢），继续？')))return;await post('/api/vdetect'+(ids?'?ids='+ids:''));};
 $('#a-segs').onclick=async()=>{
   const ids=[...SEL].join(',');
@@ -5299,9 +5294,12 @@ $('#a-media').onclick=async()=>{
   await post('/api/media'+(ids?'?ids='+ids:'')+fq);};
 $('#a-health').onclick=async()=>{
   const ids=[...SEL].join(',');
-  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做只读体检（逐文件探测，较慢；不写任何文件），继续？')))return;
+  const _dp=!!(($('#deep-chk')||{}).checked);
+  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做'
+    +(_dp?'数据级深检（很慢）':'只读体检（逐文件探测，较慢）')+'；不写任何文件，继续？')))return;
+  if(_dp&&!confirm(T('深检会逐个读取视频文件找数据洞（NAS 上约 11MB/s）。继续？')))return;
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
-  await post('/api/health'+(ids?'?ids='+ids:'')+fq);};
+  await post('/api/health'+(ids?'?ids='+ids:'')+fq+((fq||ids)?'&':'?')+'deep='+(_dp?1:0));};
 $('#a-repair').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
