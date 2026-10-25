@@ -49,7 +49,7 @@ def _cur():
     """当前线程所属车道的状态对象（不在作业线程里时返回 heavy/STATE）。"""
     n = getattr(_LANE, 'name', None)
     return LANES.get(n, STATE)
-QUEUE = []                                    # [(item_id, mode)]  -- persisted in `queue`
+QUEUE = []                                    # [{batch,task,item,params,mode}]  -- persisted in `queue`
 _LOGDB = None
 _LOGBUF = []
 
@@ -108,41 +108,81 @@ def _flush_log():
                     del _LOGBUF[:len(_LOGBUF) - 4000]
 
 
-def q_load():
+def q_schema():
+    """queue 表补列：batch / task / params（旧库自动迁移）。"""
     try:
-        QUEUE[:] = [(r['item_id'], r['mode'] or 'auto') for r in
-                    mlib.db().execute('SELECT item_id, mode FROM queue ORDER BY added_at, item_id')]
+        c = mlib.db()
+        c.execute('CREATE TABLE IF NOT EXISTS queue(item_id INTEGER PRIMARY KEY, '
+                  'mode TEXT, added_at TEXT)')
+        for _col, _ddl in (('batch', 'TEXT'), ('task', 'TEXT'), ('params', 'TEXT')):
+            try:
+                c.execute('ALTER TABLE queue ADD COLUMN %s %s' % (_col, _ddl))
+            except Exception:
+                pass
+        c.execute("UPDATE queue SET batch=COALESCE(NULLIF(batch,''),'legacy')")
+        c.execute("UPDATE queue SET task=COALESCE(NULLIF(task,''),'run')")
+        c.execute("UPDATE queue SET params=COALESCE(NULLIF(params,''),'{}')")
+        c.commit()
     except Exception:
         pass
 
 
-def q_add(iid, mode='auto'):
+def q_load():
+    q_schema()
+    try:
+        QUEUE[:] = [{'batch': r['batch'] or 'legacy', 'task': r['task'] or 'run',
+                     'item': r['item_id'], 'mode': r['mode'] or 'auto',
+                     'params': json.loads(r['params'] or '{}')}
+                    for r in mlib.db().execute(
+                        'SELECT item_id, mode, added_at, batch, task, params '
+                        'FROM queue ORDER BY added_at, item_id')]
+    except Exception:
+        QUEUE[:] = []
+
+
+def q_add(iid, mode='auto', task='run', params=None, batch=None):
+    q_load()
+    batch = batch or ('%s-%s' % (task, time.strftime('%H%M%S')))
     with _LOCK:
-        if any(q[0] == iid for q in QUEUE):
+        if any(q['item'] == iid and q['batch'] == batch for q in QUEUE):
             return len(QUEUE)
-        QUEUE.append((iid, mode))
+        QUEUE.append({'batch': batch, 'task': task, 'item': iid, 'mode': mode,
+                      'params': params or {}})
     try:
         c = mlib.db()
-        c.execute('INSERT OR REPLACE INTO queue(item_id, mode, added_at) VALUES(?,?,?)',
-                  (iid, mode, mlib.now()))
+        c.execute('INSERT OR REPLACE INTO queue(item_id, mode, added_at, batch, task, params) '
+                  'VALUES(?,?,?,?,?,?)',
+                  (iid, mode, mlib.now(), batch, task,
+                   json.dumps(params or {}, ensure_ascii=False)))
         c.commit()
     except Exception:
         pass
     return len(QUEUE)
 
 
-def q_pop():
+def q_batches():
+    q_load()
+    out = {}
+    for e in QUEUE:
+        b = out.setdefault(e['batch'], {'batch': e['batch'], 'task': e['task'],
+                                        'mode': e.get('mode') or 'auto',
+                                        'params': e.get('params') or {}, 'items': []})
+        b['items'].append(e['item'])
+    return sorted(out.values(), key=lambda x: x['batch'])
+
+
+def q_del_batches(batches):
+    q_load()
+    batches = set(batches or [])
     with _LOCK:
-        if not QUEUE:
-            return None
-        iid, mode = QUEUE.pop(0)
+        QUEUE[:] = [e for e in QUEUE if e['batch'] not in batches]
     try:
         c = mlib.db()
-        c.execute('DELETE FROM queue WHERE item_id=?', (iid,))
+        for b in batches:
+            c.execute('DELETE FROM queue WHERE batch=?', (b,))
         c.commit()
     except Exception:
         pass
-    return iid, mode
 
 
 def q_clear():
@@ -154,6 +194,21 @@ def q_clear():
         c.commit()
     except Exception:
         pass
+
+
+def q_pop():
+    with _LOCK:
+        if not QUEUE:
+            return None
+        e = QUEUE.pop(0)
+    try:
+        c = mlib.db()
+        c.execute('DELETE FROM queue WHERE batch=? AND item_id=?',
+                  (e['batch'], e['item']))
+        c.commit()
+    except Exception:
+        pass
+    return e
 
 
 _ERRTAG = '  ERR '
@@ -796,24 +851,64 @@ def _job_runset(ids, mode='auto'):
         _tick(n)
     mlib.unload_ai()
     _end('runset %d/%d' % (ok, n))
-def _job_queue():
-    _begin('queue', len(QUEUE))
+def _job_queue(batches=None):
+    """跑队列：按批次派发（run/fill/down/addel/subs/adtect）。"""
+    q_load()
+    sel = [e for e in QUEUE if (not batches or e['batch'] in set(batches))]
+    _begin('queue', max(1, len(sel)))
     dbc = mlib.db()
-    n, ok = 0, 0
-    while True:
-        ent = q_pop()
-        if not ent:
-            break
+    ok = 0
+    for i, e in enumerate(sel):
         if _stop_req():
-            _log('! 已请求停止')
-            q_add(ent[0], ent[1])          # 没跑的放回队列
+            _log('! 已请求停止（剩余队列保留）')
             break
-        iid, mode = ent
-        n += 1
-        ok += 1 if _one(dbc, iid, mode, force=True) else 0
-        _tick(n)
+        task = e['task'] or 'run'
+        iid = e['item']
+        p = e.get('params') or {}
+        try:
+            if task in ('run', 'auto', 'website', 'ai'):
+                mode = p.get('mode') or e.get('mode') or 'auto'
+                ok += 1 if _one(dbc, iid, mode, force=True) else 0
+            else:
+                # 批次级任务：同一批只跑一次
+                if i > 0 and sel[i - 1]['batch'] == e['batch']:
+                    _tick(i + 1)
+                    continue
+                ids = [x['item'] for x in sel if x['batch'] == e['batch']]
+                _log('  [%s] 批任务 %s（%d 条）' % (e['batch'], task, len(ids)))
+                if task == 'fill':
+                    ok += 1
+                    _job_fill(0, p.get('ai_group') or None, ids,
+                              bool(p.get('web')), bool(p.get('scan')))
+                elif task == 'down':
+                    _job_down(ids, p.get('target') or 'auto', bool(p.get('fix')),
+                              bool(p.get('ad')), int(p.get('fps') or 0))
+                    ok += 1
+                elif task == 'addel':
+                    _job_addel(ids, nested=True)
+                    ok += 1
+                elif task == 'subs':
+                    _job_subs(ids, p.get('lang') or 'zh',
+                              bool(p.get('force')), bool(p.get('enhance', True)),
+                              bool(p.get('burn')))
+                    ok += 1
+                elif task == 'adtect':
+                    _job_adtect(ids, p.get('mode') or 'headtail', True)
+                    ok += 1
+                else:
+                    _log('  ! 未知任务 %s，跳过' % task)
+        except Exception as ex:
+            _log('  ! %s 失败: %s' % (task, str(ex)[:120]))
+        # 跑完的从库里删掉
+        try:
+            c = mlib.db()
+            c.execute('DELETE FROM queue WHERE batch=? AND item_id=?', (e['batch'], iid))
+            c.commit()
+        except Exception:
+            pass
+        _tick(i + 1)
     mlib.unload_ai()
-    _end('queue %d/%d' % (ok, n))
+    _end('queue %d/%d' % (ok, len(sel)))
 
 
 def _flatten_targets(ids=None):
@@ -4188,6 +4283,8 @@ class H(BaseHTTPRequestHandler):
                     _snap['lanes'] = {'heavy': bool(STATE['running']),
                                       'light': bool(LANES['light']['running'])}
                     return self._json(_snap)
+            if p == '/api/queue/list':
+                return self._json({'ok': True, 'batches': q_batches()})
             if p == '/api/ollama':
                 return self._json(_ollama())
             return self._json({'error': 'bad path'}, 404)
@@ -4320,7 +4417,25 @@ class H(BaseHTTPRequestHandler):
                     return self._json({'ok': False, 'error': 'ids 为空'}, 400)
                 ok = start_job(_job_runset, ids, mode)
             elif p == '/api/queue/run':
-                ok = start_job(_job_queue, lane='heavy')
+                _b = [x for x in (q.get('batches') or '').split(',') if x.strip()]
+                ok = start_job(_job_queue, _b or None, lane='heavy')
+            elif p == '/api/queue/list':
+                return self._json({'ok': True, 'batches': q_batches()})
+            elif p == '/api/queue/add':
+                _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                _task = q.get('task') or 'run'
+                try:
+                    _p = json.loads(q.get('params') or '{}')
+                except Exception:
+                    _p = {}
+                _batch = '%s-%s' % (_task, time.strftime('%H%M%S'))
+                for _i in _ids:
+                    q_add(_i, _p.get('mode') or mode, _task, _p, _batch)
+                return self._json({'ok': True, 'batch': _batch, 'queue': len(QUEUE)})
+            elif p == '/api/queue/del':
+                _b = [x for x in (q.get('batches') or '').split(',') if x.strip()]
+                q_del_batches(_b)
+                return self._json({'ok': True, 'queue': len(QUEUE)})
             elif p == '/api/queue/clear':
                 q_clear()
                 return self._json({'ok': True, 'queue': 0})
@@ -4612,7 +4727,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="b-sem">语义识别</button>
     <button id="b-fetch">抓取</button>
     <button id="b-qrun">跑队列</button>
-    <button id="b-qclear">清空队列</button>
+    <button id="b-qview">队列详情</button>
 
     <button class="danger" id="b-stop">停止</button>
     <span class="muted">上限(0=全部)</span><input id="limit" type="number" value="0" style="width:104px">
@@ -4655,7 +4770,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-open">打开目录</button>
     <button id="a-series" title="编辑语义/系列表：系列、是否有番号、语义、备注、出版商">系列表</button>
     <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
-    <button id="a-queue" title="把选中条目加入队列（用左侧模式），之后点「跑队列」才执行">加入队列</button>
+     <label class="muted" title="勾上后：降分辨率/裁剪/字幕/检测/补全 等按钮只把条目加入队列，不立即执行；可边跑边攒批次"><input type="checkbox" id="qadd-chk"> 加入队列</label>
+     <button id="a-queue" title="把选中条目加入队列（用左侧模式），之后点「跑队列」或队列详情里执行">加入队列</button>
   </div>
   <div class="bar" id="infobar" style="background:#141922">
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
@@ -4712,6 +4828,17 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th>备注</th><th style="width:150px">出版商</th><th style="width:150px">索引词</th><th style="width:96px"></th>
   </tr></thead><tbody id="sr-rows"></tbody></table></div>
   <div class="muted" style="padding:8px 4px">改完点行末「保存」；系列名作为键，不建议改。</div>
+</div></div>
+<div class="modal" id="modal10"><div class="box" style="max-width:820px">
+  <div class="bar"><b>队列详情</b><span class="muted" id="q-sum"></span><button class="right" id="md10-close">关闭</button></div>
+  <div style="max-height:56vh;overflow:auto"><table id="q-tbl"><thead><tr>
+    <th style="width:44px">选</th><th style="width:110px">任务</th><th style="width:90px">模式</th>
+    <th style="width:70px">条目数</th><th>批次</th>
+  </tr></thead><tbody id="q-rows"></tbody></table></div>
+  <div class="bar"><button id="q-run-sel" class="primary">执行选定</button>
+    <button id="q-del-sel" style="color:var(--bad)">删除选定</button>
+    <button id="q-clear-all" class="danger">清空队列</button>
+    <span class="muted">执行时会按批次顺序跑；跑完的批次自动移除</span></div>
 </div></div>
 <div class="modal" id="modal8"><div class="box" style="max-width:1280px">
   <div class="bar"><b>整理 + 改名</b><span class="muted" id="rn-sum"></span><button class="right" id="md8-close">关闭</button></div>
@@ -4909,12 +5036,15 @@ function selSet(b,on){const id=b.dataset.id,tr=b.closest('tr');
 $('#a-selall').onclick=()=>{document.querySelectorAll('.selbtn').forEach(b=>selSet(b,true));selinfo();};
 $('#a-selnone').onclick=()=>{SEL.clear();document.querySelectorAll('.selbtn').forEach(b=>selSet(b,false));selinfo();};
 function batchRun(mode){return async()=>{if(!SEL.size)return alert(T('先选条目'));
+  if($('#qadd-chk').checked){await qAdd('run',[...SEL],{mode});return;}
   await post('/api/runset?mode='+mode+'&ids='+[...SEL].join(','));};}
 $('#a-web').onclick=batchRun('website');
 $('#a-ai').onclick=batchRun('ai');
 $('#a-fill').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部需要补全】的条目执行（勾选 Web/看片 时会联网或看片），继续？')))return;
+  if($('#qadd-chk').checked&&SEL.size){await qAdd('fill',[...SEL],
+    {web:$('#fill-web').checked,scan:$('#fill-scan').checked,ai_group:+$('#aig').value});return;}
   await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value
     +(ids?'&ids='+ids:'')+'&web='+($('#fill-web').checked?1:0)
     +'&scan='+($('#fill-scan').checked?1:0));};
@@ -5140,23 +5270,29 @@ $('#a-subs').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('给选中条目的每个视频生成字幕（SenseVoice，输出 .srt 到原目录；已有字幕会跳过）。继续？')))return;
-  await post('/api/subs?'+(ids?'ids='+ids+'&':'')+'lang='+($('#sublang').value)
+    if($('#qadd-chk').checked){await qAdd('subs',[...SEL],
+      {lang:$('#sublang').value,enhance:$('#subenh').checked,burn:$('#subburn').checked});return;}
+    await post('/api/subs?'+(ids?'ids='+ids+'&':'')+'lang='+($('#sublang').value)
     +'&enhance='+($('#subenh').checked?'1':'0')+'&burn='+($('#subburn').checked?'1':'0'));};
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
-  await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+($('#admode').value));};
+    if($('#qadd-chk').checked&&SEL.size){await qAdd('adtect',[...SEL],{mode:$('#admode').value});return;}
+    await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+($('#admode').value));};
 $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('删除选中条目的广告区间？会【替换原片】：先校验时长/抽帧，再原子换名，原文件备份为 .orig 回滚点，临时文件自动清理')))return;
-  await post('/api/addel?ids='+ids);};
+    if($('#qadd-chk').checked){await qAdd('addel',[...SEL],{});return;}
+    await post('/api/addel?ids='+ids);};
 $('#logjump').onclick=()=>{const L=$('#log');if(L){L.scrollTop=L.scrollHeight;_logFollow=true;}$('#logjump').style.display='none';};
 $('#a-down').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('降分辨率会在 backup 本地工作区重编码，完成后回拷替换 NAS 原片（源文件保留在 backup）。继续？')))return;
-  await post('/api/downscale?'+(ids?'ids='+ids+'&':'')+'target='+($('#downtgt').value)
+    if($('#qadd-chk').checked){await qAdd('down',[...SEL],
+      {target:$('#downtgt').value,fix:$('#downfix').checked,ad:$('#downad').checked,fps:+$('#downfps').value});return;}
+    await post('/api/downscale?'+(ids?'ids='+ids+'&':'')+'target='+($('#downtgt').value)
     +'&fix='+($('#downfix').checked?1:0)+'&ad='+($('#downad').checked?1:0)
     +'&fps='+($('#downfps').value));};
 $('#a-proteus').onclick=async()=>{
@@ -5416,8 +5552,44 @@ $('#st-save').onclick=async()=>{
   if(!on)return alert(T('至少勾一个站点'));
   const d=await(await fetch('/api/sites?on='+encodeURIComponent(on),{method:'POST'})).json();
   $('#st-info').textContent='已保存：'+d.on.join(', ');};
+async function qAdd(task, ids, params){
+  if(!ids||!ids.length)return alert(T('先选条目'));
+  const r=await post('/api/queue/add?task='+encodeURIComponent(task)
+    +'&ids='+ids.join(',')+'&params='+encodeURIComponent(JSON.stringify(params||{})));
+  $('#qcount').textContent=r.queue||0;
+  return r;
+}
+async function loadQueue(){
+  const j=await(await fetch('/api/queue/list')).json();
+  const rows=j.batches||[];
+  $('#q-rows').innerHTML=rows.map(b=>'<tr>'
+    +'<td><input type="checkbox" class="q-sel" data-b="'+esc(b.batch)+'"></td>'
+    +'<td>'+esc(b.task)+'</td>'
+    +'<td>'+(b.task==='run'?esc(b.mode||'auto'):'<span class="muted">—</span>')+'</td>'
+    +'<td>'+b.items.length+'</td>'
+    +'<td class="muted">'+esc(b.batch)+'</td></tr>').join('')
+    || '<tr><td colspan="5" class="muted">队列为空</td></tr>';
+  $('#q-sum').textContent='共 '+rows.length+' 批 / '
+    +rows.reduce((a,b)=>a+b.items.length,0)+' 条';
+}
+function qSel(){return [...document.querySelectorAll('.q-sel')].filter(c=>c.checked).map(c=>c.dataset.b);}
+$('#b-qview').onclick=async()=>{$('#modal10').classList.add('on');await loadQueue();};
+$('#md10-close').onclick=()=>$('#modal10').classList.remove('on');
 $('#b-qrun').onclick=()=>post('/api/queue/run');
-$('#b-qclear').onclick=async()=>{await post('/api/queue/clear');$('#qcount').textContent=0;};
+$('#q-run-sel').onclick=async()=>{
+  const b=qSel();
+  if(!b.length)return alert(T('先勾选批次'));
+  await post('/api/queue/run?batches='+encodeURIComponent(b.join(',')));
+  $('#modal10').classList.remove('on');};
+$('#q-del-sel').onclick=async()=>{
+  const b=qSel();
+  if(!b.length)return alert(T('先勾选批次'));
+  if(!confirm(T('删除选定的 ')+b.length+T(' 个批次？（只删队列记录，不动文件）')))return;
+  const r=await post('/api/queue/del?batches='+encodeURIComponent(b.join(',')));
+  $('#qcount').textContent=r.queue||0;await loadQueue();};
+$('#q-clear-all').onclick=async()=>{
+  if(!confirm(T('清空整个队列？')))return;
+  await post('/api/queue/clear');$('#qcount').textContent=0;await loadQueue();};
 $('#b-stop').onclick=()=>post('/api/stop');
 $('#b-refresh').onclick=()=>list();
 $('#b-reload').onclick=()=>list();   // 只重拉列表，不动整页
