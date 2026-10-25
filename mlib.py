@@ -1174,6 +1174,14 @@ def scan(root=None, mode='incr', dbc=None):
             _has_burn = 1 if any('.hardsub' in f.lower() for f in _ls) else 0
         except Exception:
             _has_sub, _has_burn = 0, 0
+        # 番号/目录名尾部带 C（中文字幕版）-> 视为烧录字幕
+        try:
+            _nm = (name or '').strip().upper()
+            _cd = (code or '').strip().upper()
+            if _nm.endswith('C') or _cd.endswith('C'):
+                _has_burn = 1
+        except Exception:
+            pass
         if kk == 'nested':
             q = '有误'                    # 多重嵌套目录 -> 建档就判有误（人工调目录后重跑）
         nf = {}
