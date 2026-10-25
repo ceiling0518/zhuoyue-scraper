@@ -491,11 +491,21 @@ def series_build(dbc=None, log=None):
         # 只按【有番号值】的条目建系列（无番号的请手工在界面加）
         if not _code:
             continue
+        if not series_valid(k):
+            continue
         gk = k.lower()
         groups.setdefault(gk, []).append(r)
         spell[gk] = spell.get(gk, {})
         spell[gk][k] = spell[gk].get(k, 0) + 1
     n = 0
+    # 清掉随机串/超长系列
+    try:
+        for _r in [dict(x) for x in d.execute('SELECT series FROM series')]:
+            if not series_valid(_r['series']):
+                d.execute('DELETE FROM series WHERE series=?', (_r['series'],))
+        d.commit()
+    except Exception:
+        pass
     # 清掉历史遗留的纯数字系列
     try:
         d.execute("DELETE FROM series WHERE has_code=0 AND series GLOB '*[^ -~]*'")
@@ -663,6 +673,25 @@ def normalize_code(c):
     return x
 
 
+def series_valid(k):
+    """系列名合法性：拒绝随机串（NCXJUIQW21）、纯数字、过长。"""
+    k = (k or '').strip()
+    if not k or len(k) > 8 or re.fullmatch(r'\d+', k):
+        return False
+    core = re.sub(r'[^A-Za-z0-9]', '', k)
+    if not core:
+        return False
+    low = core.lower()
+    if re.search(r'[bcdfghjklmnpqrstvwxyz]{5,}', low):
+        return False
+    if core.isalpha():
+        if len(core) >= 5:
+            v = sum(low.count(c) for c in 'aeiou')
+            if v / float(len(core)) < 0.2:
+                return False
+    return True
+
+
 def series_key(raw):
     """番号 -> 系列：JUR-212 -> JUR；FC2-PPV-4544125 -> FC2。"""
     t = strip_noise(raw or '')
@@ -684,7 +713,8 @@ def series_of_item(item, dbc=None):
         if k:
             return k
     name = (item.get('name') or '').strip()
-    return series_key(name)
+    k = series_key(name)
+    return k if series_valid(k) else ''
 
 def safe_name(s, maxlen=60):
     """去掉非法字符与控制符，压缩空格，限长。"""
