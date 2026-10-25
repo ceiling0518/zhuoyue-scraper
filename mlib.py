@@ -493,6 +493,8 @@ def series_build(dbc=None, log=None):
             continue
         if not series_valid(k):
             continue
+        if (r.get('sem_kind') or '') == 'none':
+            continue
         gk = k.lower()
         groups.setdefault(gk, []).append(r)
         spell[gk] = spell.get(gk, {})
@@ -673,6 +675,12 @@ def normalize_code(c):
     return x
 
 
+SERIES_ALIAS = {
+    'FC2PPV': 'FC2', 'FC2-PPV': 'FC2', 'FC2PPV-': 'FC2',
+    'CARIBBEANCOM': 'CARIB', 'CARIBBEAN': 'CARIB', 'CARIBBEANCOM.': 'CARIB',
+}
+
+
 def series_valid(k):
     """系列名合法性：拒绝随机串（NCXJUIQW21）、纯数字、过长。"""
     k = (k or '').strip()
@@ -683,6 +691,8 @@ def series_valid(k):
         return False
     low = core.lower()
     if re.search(r'[bcdfghjklmnpqrstvwxyz]{5,}', low):
+        return False
+    if re.search(r'\d$', core) and len(k) > 6 and '-' not in k and '_' not in k:
         return False
     if core.isalpha():
         if len(core) >= 5:
@@ -702,7 +712,8 @@ def series_key(raw):
     head = head.strip(' .-_')
     if not head or re.fullmatch(r'\d+', head):
         return ''
-    return head[:20]
+    head = head[:20]
+    return SERIES_ALIAS.get(head.upper(), head)
 
 
 def series_of_item(item, dbc=None):
