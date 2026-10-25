@@ -16,6 +16,7 @@ CLI:
   python mlib.py auto  [--limit N] [--mode website|ai|auto] [--workers N]
   python mlib.py stats
 """
+import re
 import struct
 import argparse, base64, io, json, os, re, shutil, sqlite3, subprocess, sys, time
 import requests
@@ -202,6 +203,100 @@ def now():
 
 
 # ------------------------------------------------------------------ scan
+# ---------------------------------------------------------------- 改名
+_RENAME_BAD = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+
+
+def safe_name(s, maxlen=60):
+    """去掉非法字符与控制符，压缩空格，限长。"""
+    s = _RENAME_BAD.sub(' ', s or '')
+    s = re.sub(r'[\u200b-\u200f\ufeff]', '', s)
+    s = re.sub(r'\s+', ' ', s).strip(' .')
+    if len(s) > maxlen:
+        s = s[:maxlen].rstrip(' .')
+    return s
+
+
+RENAME_PROMPT = (
+    '你是媒体库命名助手。按下面规范为每条影片生成新的【目录名】和【视频文件名】：\n'
+    '1) 目录名格式：番号-标题（番号优先用 sem_code，没有就用 code；都没有就只用标题）\n'
+    '2) 文件名：与目录名相同 + 原扩展名；同一目录有多个视频时依次加 -1、-2\n'
+    '3) 标题去掉网址、广告词、emoji、多余符号和空格，保留中文，总长不超过 60 字\n'
+    '4) 不得包含 \\ / : * ? " < > | 这些字符，不要带路径\n'
+    '严格只输出 JSON 数组，长度必须为 {N}，每项形如 '
+    '{{"dir":"番号-标题","file":"番号-标题.mp4","why":"一句话理由"}}，不要任何解释。\n\n{ITEMS}'
+)
+
+
+def _rn_vids(p):
+    try:
+        return sorted([os.path.join(p, f) for f in os.listdir(p)
+                       if os.path.splitext(f)[1].lower() in VIDEO_EXT],
+                      key=os.path.getsize, reverse=True)
+    except Exception:
+        return []
+
+
+def rename_plan(items, model=None, log=None):
+    """AI 生成改名计划；失败时退回模板。返回 [{id,dir,file,why,old_dir,old_file}]"""
+
+    def _log(m):
+        if log:
+            try:
+                log(m)
+            except Exception:
+                pass
+
+    model = model or ai_model()
+    lines = []
+    for i, it in enumerate(items, 1):
+        p = it.get('path') or ''
+        d = os.path.basename(os.path.normpath(p)) if p else ''
+        code = (it.get('sem_code') or it.get('code') or '').strip()
+        title = (it.get('title') or it.get('name') or '').strip()
+        vids = _rn_vids(p) if p else []
+        vn = ', '.join(os.path.basename(x) for x in vids[:4])
+        lines.append('%d. 现目录: %s | 番号: %s | 标题: %s | 视频: %s'
+                     % (i, d, code, title[:70], vn[:120]))
+    prompt = (RENAME_PROMPT.replace('{N}', str(len(items)))
+              .replace('{ITEMS}', '\n'.join(lines)))
+    arr = None
+    try:
+        arr = extract_json_array(_chat(prompt, model, 4000, 0.2))
+    except Exception as e:
+        _log('  AI 改名失败，使用模板: %s' % str(e)[:80])
+    if not isinstance(arr, list) or len(arr) != len(items):
+        arr = None
+
+    out = []
+    for i, it in enumerate(items):
+        p = it.get('path') or ''
+        old_dir = os.path.basename(os.path.normpath(p)) if p else ''
+        vids = _rn_vids(p) if p else []
+        main = os.path.basename(vids[0]) if vids else ''
+        ext = os.path.splitext(main)[1] or '.mp4'
+        code = (it.get('sem_code') or it.get('code') or '').strip()
+        title = (it.get('title') or it.get('name') or '').strip()
+        base = safe_name(('%s-%s' % (code, title)) if code else title)
+        if not base:
+            base = safe_name(old_dir, 60) or ('item-%s' % it.get('id'))
+        nd, nf, why = base, base + ext, '模板'
+        if arr:
+            a = arr[i] if isinstance(arr[i], dict) else {}
+            nd2 = safe_name(a.get('dir') or '')
+            nf2 = safe_name(a.get('file') or '')
+            if nd2:
+                nd = nd2
+            if nf2:
+                ne = os.path.splitext(nf2)[1]
+                nf = nf2 if ne else (nf2 + ext)
+            why = (a.get('why') or '')[:60] or 'AI'
+        out.append({'id': it.get('id'), 'old_dir': old_dir, 'new_dir': nd,
+                    'old_file': main, 'new_file': nf, 'why': why,
+                    'videos': [os.path.basename(x) for x in vids]})
+    return out
+
+
 def read_nfo(folder):
     """Parse movie.nfo in a folder -> dict, or None if absent."""
     p = None

@@ -1125,6 +1125,91 @@ def _topaz_path():
     return r'F:\Topaz Video\ffmpeg.exe'
 
 
+# ---------------------------------------------------------------- 改名
+def _nfo_set_title(folder, title):
+    for nm in ('movie.nfo', 'tvshow.nfo'):
+        p = os.path.join(folder, nm)
+        if not os.path.isfile(p):
+            continue
+        try:
+            txt = io.open(p, encoding='utf-8', errors='replace').read()
+            if '<title>' in txt:
+                _t = (title or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                txt = re.sub(r'<title>.*?</title>', '<title>%s</title>' % _t, txt,
+                             count=1, flags=re.S)
+                io.open(p, 'w', encoding='utf-8').write(txt)
+        except Exception as e:
+            _log('    nfo 标题更新失败 %s: %s' % (nm, str(e)[:60]))
+
+
+def _rename_one(dbc, iid, new_dir, new_file):
+    row = dbc.execute('SELECT id,path,name,title FROM items WHERE id=?', (iid,)).fetchone()
+    if not row:
+        return {'ok': False, 'error': '条目不存在'}
+    old_abs = (row['path'] or '').rstrip('\\/')
+    parent = os.path.dirname(old_abs)
+    old_name = os.path.basename(old_abs)
+    nd = mlib.safe_name(new_dir)
+    nf = mlib.safe_name(new_file)
+    if not nd or not nf:
+        return {'ok': False, 'error': '新名称为空'}
+    new_abs = os.path.join(parent, nd)
+    if os.path.abspath(new_abs) != os.path.abspath(old_abs) and os.path.exists(new_abs):
+        return {'ok': False, 'error': '目标目录已存在'}
+
+    vids = sorted([os.path.join(old_abs, f) for f in os.listdir(old_abs)
+                   if os.path.splitext(f)[1].lower() in mlib.VIDEO_EXT],
+                  key=os.path.getsize, reverse=True)
+    if not vids:
+        return {'ok': False, 'error': '没有视频文件'}
+    base, ext0 = os.path.splitext(nf)
+    ext0 = ext0 or '.mp4'
+    renamed = []
+    try:
+        for i, vp in enumerate(vids):
+            ext = os.path.splitext(vp)[1]
+            target = nf if i == 0 else '%s - %d%s' % (base, i + 1, ext)
+            tgt = os.path.join(old_abs, target)
+            if os.path.abspath(tgt) == os.path.abspath(vp):
+                renamed.append((os.path.basename(vp), target))
+                continue
+            if os.path.exists(tgt):
+                raise RuntimeError('文件名冲突: %s' % target[:50])
+            os.replace(vp, tgt)
+            renamed.append((os.path.basename(vp), target))
+        if os.path.abspath(new_abs) != os.path.abspath(old_abs):
+            os.replace(old_abs, new_abs)
+    except Exception as e:
+        for old, new in renamed:
+            try:
+                os.replace(os.path.join(old_abs, new), os.path.join(old_abs, old))
+            except Exception:
+                pass
+        return {'ok': False, 'error': str(e)[:120]}
+
+    try:
+        _nfo_set_title(new_abs, nd)
+        old_nfo = os.path.join(new_abs, old_name + '.nfo')
+        if os.path.exists(old_nfo):
+            os.replace(old_nfo, os.path.join(new_abs, nd + '.nfo'))
+    except Exception as e:
+        _log('    nfo 处理失败: %s' % str(e)[:80])
+
+    main_new = os.path.basename(renamed[0][1])
+    try:
+        dbc.execute('UPDATE items SET path=?, name=? WHERE id=?', (new_abs, nd, iid))
+        dbc.execute('UPDATE media SET file=? WHERE item_id=?', (main_new, iid))
+        for old, new in renamed:
+            dbc.execute('UPDATE ads_file SET file=? WHERE item_id=? AND file=?',
+                        (os.path.basename(new), iid, old))
+        dbc.execute('DELETE FROM health WHERE item_id=?', (iid,))
+        dbc.execute('DELETE FROM deepscan WHERE item_id=?', (iid,))
+        dbc.commit()
+    except Exception as e:
+        return {'ok': False, 'error': '文件已改，库更新失败: %s' % str(e)[:80]}
+    return {'ok': True, 'path': new_abs, 'file': main_new}
+
+
 def _job_down(ids=None, target='auto', fix=False, ad=False):
     """降分辨率：按 bpp/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
     _begin('downscale', 1)
@@ -2859,6 +2944,13 @@ class H(BaseHTTPRequestHandler):
                 return self._json(stats())
             if p == '/api/items':
                 return self._json(items(q))
+            if p == '/api/rename/plan':
+                _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                if not _ids:
+                    return self._json({'rows': []})
+                _its = [dict(x) for x in _items_by_ids(_ids)]
+                _rows = mlib.rename_plan(_its)
+                return self._json({'rows': _rows})
             if p == '/api/paths':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 rows = _items_by_ids(ids) if ids else []
@@ -3126,6 +3218,28 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': open_image(int(p.rsplit('/', 1)[1]))})
             elif p.startswith('/api/open/'):
                 return self._json({'ok': open_item(int(p.rsplit('/', 1)[1]))})
+            elif p == '/api/rename/apply':
+                try:
+                    _ln = int(self.headers.get('Content-Length') or 0)
+                    _body = json.loads(self.rfile.read(_ln).decode('utf-8') or '{}')
+                except Exception:
+                    return self._json({'ok': 0, 'fail': 0, 'error': 'bad json'}, 400)
+                _dbc = mlib.db()
+                _ok = _fail = 0
+                _errs = []
+                for _r in (_body.get('rows') or []):
+                    try:
+                        _res = _rename_one(_dbc, int(_r.get('id')),
+                                           _r.get('new_dir') or '', _r.get('new_file') or '')
+                        if _res.get('ok'):
+                            _ok += 1
+                        else:
+                            _fail += 1
+                            _errs.append('id=%s %s' % (_r.get('id'), _res.get('error')))
+                    except Exception as _e:
+                        _fail += 1
+                        _errs.append('id=%s %s' % (_r.get('id'), str(_e)[:80]))
+                return self._json({'ok': _ok, 'fail': _fail, 'errors': _errs[:20]})
             elif p == '/api/stop':
                 with _LOCK:
                     STATE['stop'] = True
@@ -3250,7 +3364,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
     <button id="a-open">打开目录</button>
 <span id="hb-legend" style="margin-left:10px;font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 深检 · <b style="color:#1565c0">✓</b> 浅检 · <b style="color:var(--bad)">⚠</b> 有问题 · <b style="color:var(--muted)">↻</b> 需重测　｜　属性：<b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--muted)">○</b>无 <b style="color:var(--bad)">✕</b>有误 <b style="color:#777">–</b>删除　<b>🌐</b>网站 <b>🤖</b>AI　<b style="color:var(--warn)">📢n</b>广告段数</span>
-    <button id="a-flatten" title="把嵌套子目录平铺成 app 可自动刮削的结构：图片 P_、视频 V_，具名目录 序号_名字_；子目录移入 trash 可回滚">整理嵌套目录</button>
+    <label class="muted" title="勾上后用 AI 生成改名计划（目录名=番号-标题，文件同名）；不勾就是原来的平铺整理"><input type="checkbox" id="flat-ai"> AI</label> <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
     <button id="a-selall">全选本页</button>
@@ -3281,6 +3395,14 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><span id="page" class="muted"></span><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
+<div class="modal" id="modal8"><div class="box" style="max-width:1280px">
+  <div class="bar"><b>改名计划</b><span class="muted" id="rn-sum"></span><button class="right" id="md8-close">关闭</button></div>
+  <div style="max-height:62vh;overflow:auto"><table id="rn-tbl"><thead><tr>
+    <th style="width:52px">id</th><th>现目录</th><th>新目录</th><th>现文件</th><th>新文件</th><th style="width:110px">说明</th>
+  </tr></thead><tbody id="rn-rows"></tbody></table></div>
+  <div class="bar"><button id="rn-apply" class="primary">应用改名</button>
+    <span class="muted">可直接编辑「新目录 / 新文件」；应用后同步更新 nfo 标题</span></div>
+</div></div>
 <div class="modal" id="modal6"><div class="box">
   <div class="bar"><b id="rp-title">修复</b><span class="muted" id="rp-sum"></span><button class="right" id="md6-close">关闭</button></div>
   <div id="rp-body"></div>
@@ -3450,6 +3572,34 @@ $('#a-auto').onclick=batchRun('auto');
 $('#a-queue').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));let n=0;
   for(const id of SEL){const r=await post('/api/queue/'+id+'?mode='+$('#qmode').value);n=r.queue;}
   $('#qcount').textContent=n;};
+$('#md8-close').onclick=()=>$('#modal8').classList.remove('on');
+async function openRenamePlan(){
+  if(!SEL.size)return alert(T('先选条目'));
+  const ids=[...SEL].join(',');
+  $('#rn-sum').textContent='生成中…';
+  $('#modal8').classList.add('on');
+  const j=await(await fetch('/api/rename/plan?ids='+ids)).json();
+  renderRn(j.rows||[]);}
+function renderRn(rows){
+  $('#rn-rows').innerHTML=rows.map(r=>'<tr><td>'+r.id+'</td>'
+    +'<td class="muted" title="'+esc(r.old_dir)+'">'+esc((r.old_dir||'').slice(0,46))+'</td>'
+    +'<td><input class="rn-dir" data-id="'+r.id+'" value="'+esc(r.new_dir||'')+'"></td>'
+    +'<td class="muted" title="'+esc(r.old_file)+'">'+esc((r.old_file||'').slice(0,36))+'</td>'
+    +'<td><input class="rn-file" data-id="'+r.id+'" value="'+esc(r.new_file||'')+'"></td>'
+    +'<td class="muted">'+esc(r.why||'')+'</td></tr>').join('');
+  $('#rn-sum').textContent='共 '+rows.length+' 条';
+  $('#modal8').classList.add('on');}
+$('#rn-apply').onclick=async()=>{
+  const rows=[...document.querySelectorAll('#rn-rows tr')].map(tr=>({
+    id:+tr.children[0].textContent,
+    new_dir:tr.querySelector('.rn-dir').value,
+    new_file:tr.querySelector('.rn-file').value}));
+  if(!rows.length)return;
+  if(!confirm(T('确认改名 ')+rows.length+T(' 条？会同时更新 nfo 标题')))return;
+  const r=await(await fetch('/api/rename/apply',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({rows})})).json();
+  if(r.errors&&r.errors.length)alert(T('完成 ')+r.ok+T('，失败 ')+r.fail+'\n'+r.errors.join('\n'));
+  $('#modal8').classList.remove('on');list();};
 $('#a-copy').onclick=async()=>{
   if(!SEL.size)return alert(T('先选条目'));
   const j=await(await fetch('/api/paths?ids='+[...SEL].join(','))).json();
@@ -3472,6 +3622,7 @@ function flRow(x){
   return '<tr><td>'+x.id+'</td><td>'+esc(String(x.name||'').slice(0,42))+'</td><td>'+(x.mode==='type'?'P/V 桶':'具名')+'</td><td>'+x.count
     +'</td><td>'+x.depth+'</td><td>'+x.max_pre_len+'</td><td>'+st+'</td></tr>';}
 $('#a-flatten').onclick=async()=>{
+  if($('#flat-ai').checked)return openRenamePlan();
   const ids=[...SEL].join(',');
   const r=await(await fetch('/api/flatten/preview'+(ids?'?ids='+ids:''),{method:'POST'})).json();
   if(!r.total)return alert(T('没有需要整理的嵌套目录（kind=nested 为空）'));
