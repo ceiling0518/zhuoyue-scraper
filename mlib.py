@@ -830,6 +830,9 @@ def series_of_item(item, dbc=None):
     k = series_key(name)
     return k if series_valid(k) else ''
 
+_RENAME_BAD = re.compile(r'[\\/:*?"<>|\r\n\t]')
+
+
 def safe_name(s, maxlen=60):
     """去掉非法字符与控制符，压缩空格，限长。"""
     s = _RENAME_BAD.sub(' ', s or '')
@@ -853,9 +856,20 @@ RENAME_PROMPT = (
 
 def _rn_vids(p):
     try:
-        return sorted([os.path.join(p, f) for f in os.listdir(p)
-                       if os.path.splitext(f)[1].lower() in VIDEO_EXT],
-                      key=os.path.getsize, reverse=True)
+        top = [os.path.join(p, f) for f in os.listdir(p)
+               if os.path.splitext(f)[1].lower() in VIDEO_EXT]
+        if top:
+            return sorted(top, key=os.path.getsize, reverse=True)
+        found = []
+        base = len(os.path.normpath(p).rstrip(os.sep))
+        for root, dirs, files in os.walk(p):
+            if len(os.path.normpath(root)) - base > 3 * 60:
+                dirs[:] = []
+                continue
+            for f in files:
+                if os.path.splitext(f)[1].lower() in VIDEO_EXT:
+                    found.append(os.path.join(root, f))
+        return sorted(found, key=os.path.getsize, reverse=True)
     except Exception:
         return []
 
