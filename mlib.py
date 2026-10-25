@@ -3490,6 +3490,164 @@ def set_ad_min(v):
     return AD_MIN_SEC
 
 
+NO_WOMAN_PROMPT = (
+    '你是视频内容初筛助手。下面是按时间顺序截取的 {N} 张画面，编号 1..{N}。'
+    '请判断每张画面里是否有【真人女性】（海报、照片、雕像、动漫人物不算）。'
+    '只输出 JSON：{{"w":[[1,1],[2,0],...]}}，1=有真人女性，0=没有。不要解释。'
+)
+
+
+def vis_batch(vpath, times, prompt_tpl, model=None, log=None, width=320):
+    """通用视觉批处理：返回与 times 等长的 bool 列表（True=肯定）。"""
+    model = model or ai_model()
+    out = [False] * len(times)
+    try:
+        chunk = max(1, min(24, int(os.environ.get('MS_AD_BATCH') or 20)))
+    except Exception:
+        chunk = 20
+    for st in range(0, len(times), chunk):
+        ts = times[st:st + chunk]
+        imgs, keep = [], []
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            _w = min(8, max(1, (os.cpu_count() or 4)))
+            with ThreadPoolExecutor(max_workers=_w) as _ex:
+                bs = list(_ex.map(lambda _t: frame_at(vpath, _t, width=width), ts))
+        except Exception:
+            bs = [frame_at(vpath, t, width=width) for t in ts]
+        for i, b in enumerate(bs):
+            if b:
+                imgs.append(base64.b64encode(b).decode('ascii'))
+                keep.append(i)
+        if not imgs:
+            continue
+        prompt = prompt_tpl.replace('{N}', str(len(imgs)))
+        try:
+            r = requests.post(OLLAMA + '/api/chat', timeout=900,
+                              json={'model': model, 'stream': False,
+                                    'keep_alive': AI_KEEP_ALIVE, 'think': False,
+                                    'options': {'temperature': 0.1, 'num_predict': 200},
+                                    'messages': [{'role': 'user', 'content': prompt,
+                                                  'images': imgs}]})
+            txt = ((r.json() or {}).get('message') or {}).get('content') or ''
+        except Exception as e:
+            if log:
+                log('    视觉批次失败: %s' % str(e)[:80])
+            continue
+        arr = extract_json_array(txt) or []
+        vals = {}
+        for it in arr:
+            if isinstance(it, (list, tuple)) and len(it) >= 2:
+                try:
+                    vals[int(it[0])] = int(it[1])
+                except Exception:
+                    pass
+        for j, idx in enumerate(keep):
+            out[st + idx] = bool(vals.get(j + 1, 0))
+    return out
+
+
+def ensure_segs():
+    d = db()
+    d.execute('CREATE TABLE IF NOT EXISTS segs_file(item_id INTEGER, file TEXT, kind TEXT, '
+              'segs TEXT, ts TEXT, PRIMARY KEY(item_id,file,kind))')
+    d.commit()
+    return d
+
+
+def save_segs(item_id, file, kind, segs):
+    d = ensure_segs()
+    d.execute('INSERT INTO segs_file(item_id,file,kind,segs,ts) VALUES(?,?,?,?,?) '
+              'ON CONFLICT(item_id,file,kind) DO UPDATE SET segs=excluded.segs, ts=excluded.ts',
+              (item_id, file, kind, json.dumps(segs or []), now()))
+    d.commit()
+
+
+def load_segs(item_id, file=None):
+    d = ensure_segs()
+    if file:
+        rows = d.execute('SELECT file,kind,segs,ts FROM segs_file WHERE item_id=? AND file=?',
+                         (item_id, file)).fetchall()
+    else:
+        rows = d.execute('SELECT file,kind,segs,ts FROM segs_file WHERE item_id=?',
+                         (item_id,)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            s = json.loads(r['segs'] or '[]')
+        except Exception:
+            s = []
+        out.append({'file': r['file'], 'kind': r['kind'], 'segs': s, 'ts': r['ts']})
+    return out
+
+
+def detect_no_woman(vpath, dur=None, model=None, log=None, grid=30.0, fine=5.0,
+                    min_sec=60.0, edge=30.0):
+    """每 30s 抽帧判断有无女性；连续 2 点(>=60s)无女性判无效；边界 5s 细化。"""
+    dur = dur or video_duration(vpath)
+    if not dur or dur < 30:
+        return [], 0.0
+
+    def _log(m):
+        if log:
+            try:
+                log(m)
+            except Exception:
+                pass
+
+    times = [float(t) for t in range(0, int(dur), int(grid))]
+    if not times or times[-1] > dur - 5:
+        times.append(max(0.0, dur - 1.0))
+    _log('  无女性检测：%d 个采样点（%ds 网格）' % (len(times), int(grid)))
+    flags = vis_batch(vpath, times, NO_WOMAN_PROMPT, model=model, log=_log)
+    ratio = 1.0 - (sum(1 for x in flags if x) / max(1, len(flags)))
+    _log('  有女性 %d / %d（无女性占比 %.0f%%）'
+         % (sum(1 for x in flags if x), len(flags), ratio * 100))
+
+    # 连续无女性段（2 点以上）
+    segs = []
+    i = 0
+    while i < len(flags):
+        if flags[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(flags) and not flags[j + 1]:
+            j += 1
+        if j - i + 1 >= 2:
+            segs.append((times[i], times[j]))
+        i = j + 1
+    if not segs:
+        return [], ratio
+
+    # 边界 5s 细化
+    refined = []
+    for t0, t1 in segs:
+        a0 = max(0.0, t0 - edge)
+        a1 = min(dur, t0 + edge)
+        b0 = max(0.0, t1 - edge)
+        b1 = min(dur, t1 + edge)
+        ft = sorted(set(round(x, 1) for x in
+                        [a0 + k * fine for k in range(int((a1 - a0) / fine) + 1)] +
+                        [b0 + k * fine for k in range(int((b1 - b0) / fine) + 1)]))
+        ff = vis_batch(vpath, ft, NO_WOMAN_PROMPT, model=model, log=None)
+        # 起点：t0 之前最后一个「有女性」点
+        s0 = t0
+        for t, ok in zip(ft, ff):
+            if ok and t <= t0:
+                s0 = min(t0, t + fine)
+        # 终点：t1 之后第一个「有女性」点
+        s1 = t1
+        for t, ok in zip(ft, ff):
+            if ok and t >= t1:
+                s1 = max(t1, t - fine)
+                break
+        if s1 - s0 >= min_sec:
+            refined.append([round(s0, 1), round(s1, 1)])
+    _log('  细化后 %d 段 %s' % (len(refined), refined))
+    return refined, ratio
+
+
 def detect_ads(vpath, dur=None, model=None, log=None, mode='headtail', edge_sec=240):
     """广告检测 v2：30s 网格 + 广告快照库(dhash) + 0.25s dhash 边界精定位。
     - 网格帧先算 dhash 查快照库，命中直接判广告（0 次模型调用）

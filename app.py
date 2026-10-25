@@ -1855,6 +1855,7 @@ def _job_adtect(ids=None, mode='headtail', nested=False):
                         '只查头尾' if mode == 'headtail' else '全片'))
                 segs = mlib.detect_ads(vids[0], dur, log=lambda m: _log(m), mode=mode)
                 _save_ads(dbc, it['id'], fb, segs, main=True)
+                mlib.save_segs(it['id'], fb, 'ad', segs)
                 _log('    -> %d 段广告 %s' % (len(segs), segs))
                 ok += 1
                 rest = vids[1:]
@@ -1887,6 +1888,44 @@ def _job_adtect(ids=None, mode='headtail', nested=False):
             _end('adtect 失败')
 
 
+def _job_vdetect(ids=None):
+    """无效段初筛：30s 网格判断有无女性；连续 2 点(>=60s)判无效，边界 5s 细化。"""
+    _begin('vdetect', 1)
+    dbc = mlib.db()
+    try:
+        _ensure_media(dbc)
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok = 0
+        for i, it in enumerate(its):
+            if _stop_req():
+                _log('! 已请求停止'); break
+            vids = _video_files(it['path'] or '')
+            if not vids:
+                _log('[%d/%d] id=%s 没有视频' % (i + 1, len(its), it['id']))
+                _tick(i + 1)
+                continue
+            vids = sorted(vids, key=lambda p: os.path.getsize(p), reverse=True)
+            vp = vids[0]
+            fb = os.path.basename(vp)
+            try:
+                dur = mlib.video_duration(vp)
+                _log('[%d/%d] id=%s 初筛 %s (%.0fs)' % (i + 1, len(its), it['id'], fb, dur or 0))
+                segs, ratio = mlib.detect_no_woman(vp, dur, log=lambda m: _log('  ' + m))
+                mlib.save_segs(it['id'], fb, 'invalid', segs)
+                _log('    -> %d 段无效 %s' % (len(segs), segs))
+                if ratio >= 0.8:
+                    _log('    ! 整片无女性占比 %.0f%%，未自动删除；请人工确认是否删整片' % (ratio * 100))
+                ok += 1
+            except Exception as e:
+                _log('    ERR %s' % str(e)[:180])
+            _tick(i + 1)
+        _end('vdetect %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200])
+        _end('vdetect 失败')
+
+
 def _job_addel(ids=None):
     """删除广告：按 ads_file（逐文件）切，校验+深检后原子替换原片。
 
@@ -1904,13 +1943,20 @@ def _job_addel(ids=None):
                 _log('! 已请求停止'); break
             jobs = []
             try:
+                _byfile = {}
+                for _r in mlib.load_segs(it['id']):
+                    _k = _r.get('file') or ''
+                    _byfile.setdefault(_k, []).extend(_r.get('segs') or [])
                 for r in dbc.execute('SELECT file,ads FROM ads_file WHERE item_id=?', (it['id'],)):
                     try:
                         _s = json.loads(r['ads'] or '[]')
                     except Exception:
                         _s = []
                     if _s and r['file']:
-                        jobs.append((r['file'], _s))
+                        _byfile.setdefault(r['file'], []).extend(_s)
+                for _f, _s in _byfile.items():
+                    if _s:
+                        jobs.append((_f, sorted(_s)))
             except Exception:
                 pass
             if not jobs:
@@ -3278,6 +3324,8 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'lang': mlib.ui_lang(), 'out_lang': mlib.out_lang()})
             if p == '/api/stats':
                 return self._json(stats())
+            if p == '/api/segs':
+                return self._json({'rows': mlib.load_segs(int(q.get('item') or 0))})
             if p == '/api/items':
                 return self._json(items(q))
             if p == '/api/series/run':
@@ -3401,6 +3449,18 @@ class H(BaseHTTPRequestHandler):
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_adtect, ids, (q.get('mode') or 'headtail'),
                                lane='heavy')
+            elif p == '/api/vdetect':
+                _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_vdetect, _ids, lane='heavy')
+                return self._json({'ok': ok})
+            elif p == '/api/segs':
+                _iid = int(q.get('item') or 0)
+                return self._json({'rows': mlib.load_segs(_iid)})
+            elif p == '/api/segs/save':
+                _kv = json.loads(self._body() or '{}')
+                mlib.save_segs(int(_kv.get('item') or 0), _kv.get('file') or '',
+                               _kv.get('kind') or 'invalid', _kv.get('segs') or [])
+                return self._json({'ok': True})
             elif p == '/api/addel':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_addel, ids, lane='heavy')
@@ -3791,7 +3851,9 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
      <select id="admode" style="min-width:86px" title="头尾：只扫开头/结尾各 4 分钟（能只重封装，秒级）；全片：30 秒全网扫（可能命中中插广告）"><option value="headtail">头尾</option><option value="full">全片</option></select>
     <button id="a-adtect" title="抽帧判断广告：头尾模式只扫首尾各 4 分钟并 15 秒取样；全片模式 30 秒全网扫。结果写在列表「属性」列">广告检测</button>
-     <button id="a-addel" title="按检测结果切掉广告区间（帧级精确重编码），【替换原片】；原文件留 .orig 回滚点，临时文件自动清理">删除广告</button>
+    <button id="a-vdetect" title="每 30 秒抽帧判断是否有女性；连续 2 点（≥60 秒）无女性判无效，边界 5 秒细化。仅初筛，需人工核实">检测无效段</button>
+    <button id="a-segs" title="查看/编辑无效段（含广告段）：可改起止、加段、删段；广告为秒级、无效内容为 5 秒级">无效段编辑</button>
+     <button id="a-addel" title="按无效段（广告+无女性段）切掉区间，【替换原片】；原文件留 .orig 回滚点，临时文件自动清理">删除无效段</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 同时修复</label>
@@ -3855,6 +3917,12 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 <div class="modal" id="modal2"><div class="box">
   <div class="bar"><b id="md2-title">档案</b><button class="right" id="md2-close">关闭</button></div>
   <div id="md2-body"></div></div></div>
+<div class="modal" id="modal5"><div class="box">
+  <div class="bar"><b>无效段编辑</b><span class="muted" id="seg-info"></span><button class="right" id="md5-close">关闭</button></div>
+  <p class="muted">广告按秒、无效内容按 5 秒；可多段。保存后「删除无效段」会按这些区间切。</p>
+  <table id="seg-tbl"></table>
+  <div class="bar"><button id="seg-add">+ 添加一段</button><button class="primary" id="seg-save">保存</button></div>
+</div></div>
 <div class="modal" id="modal4"><div class="box">
   <div class="bar"><b>站点设置</b><span class="muted" id="st-info"></span><button class="right" id="md4-close">关闭</button></div>
   <p class="muted">勾选要使用的站点（抓取时按此顺序尝试）。javbus / javdb / MissAV 已有专属解析器，其余为待接入站点。</p>
@@ -4144,6 +4212,61 @@ $('#a-deep').onclick=async()=>{
   if(!confirm(T('深检会逐个读取视频文件找数据洞（NAS 上约 11MB/s）。继续？')))return;
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
   await post('/api/health'+(ids?'?ids='+ids:'')+fq+((fq||ids)?'&':'?')+'deep=1');};
+$('#a-vdetect').onclick=async()=>{const ids=selIds();await post('/api/vdetect'+(ids?'?ids='+ids:''));};
+$('#a-segs').onclick=async()=>{
+  const ids=selIds();
+  if(!ids){alert(T('先选条目'));return;}
+  const iid=ids.split(',')[0];
+  window.SEGIID=iid;
+  const d=await(await fetch('/api/segs?item='+iid)).json();
+  segRender(d.rows||[]);
+  $('#modal5').classList.add('on');
+};
+$('#md5-close').onclick=()=>$('#modal5').classList.remove('on');
+function segRender(rows){
+  const flat=[];
+  (rows||[]).forEach(r=>(r.segs||[]).forEach(x=>flat.push({file:r.file,kind:r.kind,a:x[0],b:x[1]})));
+  $('#seg-tbl').innerHTML='<thead><tr><th>文件</th><th style="width:86px">类型</th><th style="width:90px">起(s)</th><th style="width:90px">止(s)</th><th style="width:60px">删</th></tr></thead><tbody>'
+    +flat.map(x=>'<tr><td class="seg-f" style="font-size:11px">'+esc(x.file)+'</td>'
+      +'<td><select class="seg-k"><option value="ad"'+(x.kind==='ad'?' selected':'')+'>广告</option><option value="invalid"'+(x.kind==='invalid'?' selected':'')+'>无效</option></select></td>'
+      +'<td><input class="seg-a" type="number" step="0.1" value="'+x.a+'" style="width:80px"></td>'
+      +'<td><input class="seg-b" type="number" step="0.1" value="'+x.b+'" style="width:80px"></td>'
+      +'<td><button class="seg-del">×</button></td></tr>').join('')+'</tbody>';
+  $('#seg-tbl').querySelectorAll('.seg-del').forEach(b=>b.onclick=()=>b.closest('tr').remove());
+}
+$('#seg-add').onclick=()=>{
+  const tb=$('#seg-tbl').querySelector('tbody');
+  if(!tb){$('#seg-tbl').innerHTML='<thead><tr><th>文件</th><th style="width:86px">类型</th><th style="width:90px">起(s)</th><th style="width:90px">止(s)</th><th style="width:60px">删</th></tr></thead><tbody></tbody>';}
+  const tbody=$('#seg-tbl').querySelector('tbody');
+  const first=(window.SEGFIRST||'');
+  const tr=document.createElement('tr');
+  tr.innerHTML='<td class="seg-f" style="font-size:11px">'+esc(first)+'</td>'
+    +'<td><select class="seg-k"><option value="invalid">无效</option><option value="ad">广告</option></select></td>'
+    +'<td><input class="seg-a" type="number" step="0.1" value="0" style="width:80px"></td>'
+    +'<td><input class="seg-b" type="number" step="0.1" value="60" style="width:80px"></td>'
+    +'<td><button class="seg-del">×</button></td>';
+  tr.querySelector('.seg-del').onclick=()=>tr.remove();
+  tbody.appendChild(tr);
+};
+$('#seg-save').onclick=async()=>{
+  const iid=window.SEGIID;
+  const groups={};
+  $('#seg-tbl').querySelectorAll('tbody tr').forEach(tr=>{
+    const f=tr.querySelector('.seg-f').textContent.trim();
+    const k=tr.querySelector('.seg-k').value;
+    const a=parseFloat(tr.querySelector('.seg-a').value||'0');
+    const b=parseFloat(tr.querySelector('.seg-b').value||'0');
+    if(!f||!(b>a))return;
+    (groups[f+'|'+k]=groups[f+'|'+k]||[]).push([a,b]);
+  });
+  for(const key in groups){
+    const i=key.lastIndexOf('|');
+    await fetch('/api/segs/save',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({item:+iid,file:key.slice(0,i),kind:key.slice(i+1),segs:groups[key]})});
+  }
+  $('#seg-info').textContent='已保存';
+  $('#modal5').classList.remove('on');
+};
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
