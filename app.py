@@ -4488,21 +4488,29 @@ $('#a-segs').onclick=async()=>{
   const iid=ids.split(',')[0];
   window.SEGIID=iid;
   const d=await(await fetch('/api/segs?item='+iid)).json();
-  window.SEGFIRST=(d.rows&&d.rows[0]&&d.rows[0].file)||'';
-  if(!window.SEGFIRST){
-    try{const _it=await(await fetch('/api/item/'+iid)).json();
-      const _vs=(_it.files||[]).filter(function(x){return /\.(avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|mts|rm|rmvb|ts|webm|wmv)$/i.test(x);});
-      window.SEGFIRST=_vs[0]||(_it.files||[])[0]||'';}catch(_e){}
-  }
+  window.SEGFILES=[];
+  try{const _it=await(await fetch('/api/item/'+iid)).json();
+    window.SEGFILES=(_it.files||[]).filter(function(x){return /\.(avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|mts|rm|rmvb|ts|webm|wmv)$/i.test(x);});
+  }catch(_e){}
+  window.SEGFIRST=(d.rows&&d.rows[0]&&d.rows[0].file)||window.SEGFILES[0]||'';
+  if(window.SEGFIRST&&window.SEGFILES.indexOf(window.SEGFIRST)<0)window.SEGFILES.unshift(window.SEGFIRST);
   segRender(d.rows||[]);
   $('#modalseg').classList.add('on');
 };
 $('#mdseg-close').onclick=()=>$('#modalseg').classList.remove('on');
+function segFileSel(cur){
+  const list=(window.SEGFILES||[]).slice();
+  if(cur&&list.indexOf(cur)<0)list.unshift(cur);
+  if(!list.length)list.push(cur||'');
+  return '<select class="seg-f" style="font-size:11px;max-width:230px">'
+    +list.map(function(f){return '<option value="'+esc(f)+'"'+(f===cur?' selected':'')+'>'+esc(f)+'</option>';}).join('')
+    +'</select>';
+}
 function segRender(rows){
   const flat=[];
   (rows||[]).forEach(r=>(r.segs||[]).forEach(x=>flat.push({file:r.file,kind:r.kind,a:x[0],b:x[1]})));
   $('#seg-tbl').innerHTML='<thead><tr><th>文件</th><th style="width:86px">类型</th><th style="width:90px">起(s)</th><th style="width:90px">止(s)</th><th style="width:60px">删</th></tr></thead><tbody>'
-    +flat.map(x=>'<tr><td class="seg-f" style="font-size:11px">'+esc(x.file)+'</td>'
+    +flat.map(x=>'<tr><td>'+segFileSel(x.file)+'</td>'
       +'<td><select class="seg-k"><option value="ad"'+(x.kind==='ad'?' selected':'')+'>广告</option><option value="invalid"'+(x.kind==='invalid'?' selected':'')+'>无效</option></select></td>'
       +'<td><input class="seg-a" type="number" step="0.1" value="'+x.a+'" style="width:80px"></td>'
       +'<td><input class="seg-b" type="number" step="0.1" value="'+x.b+'" style="width:80px"></td>'
@@ -4513,9 +4521,10 @@ $('#seg-add').onclick=()=>{
   const tb=$('#seg-tbl').querySelector('tbody');
   if(!tb){$('#seg-tbl').innerHTML='<thead><tr><th>文件</th><th style="width:86px">类型</th><th style="width:90px">起(s)</th><th style="width:90px">止(s)</th><th style="width:60px">删</th></tr></thead><tbody></tbody>';}
   const tbody=$('#seg-tbl').querySelector('tbody');
-  const first=(window.SEGFIRST||'');
+  const _lastS=document.querySelector('#seg-tbl tbody tr:last-child .seg-f');
+  const first=(_lastS&&_lastS.value)||window.SEGFIRST||'';
   const tr=document.createElement('tr');
-  tr.innerHTML='<td class="seg-f" style="font-size:11px">'+esc(first)+'</td>'
+  tr.innerHTML='<td>'+segFileSel(first)+'</td>'
     +'<td><select class="seg-k"><option value="invalid">无效</option><option value="ad">广告</option></select></td>'
     +'<td><input class="seg-a" type="number" step="0.1" value="0" style="width:80px"></td>'
     +'<td><input class="seg-b" type="number" step="0.1" value="60" style="width:80px"></td>'
@@ -4527,7 +4536,8 @@ $('#seg-save').onclick=async()=>{
   const iid=window.SEGIID;
   const groups={};
   $('#seg-tbl').querySelectorAll('tbody tr').forEach(tr=>{
-    const f=tr.querySelector('.seg-f').textContent.trim();
+    const _fe=tr.querySelector('.seg-f');
+    const f=((_fe&&(_fe.value||_fe.textContent))||'').trim();
     const k=tr.querySelector('.seg-k').value;
     const a=parseFloat(tr.querySelector('.seg-a').value||'0');
     const b=parseFloat(tr.querySelector('.seg-b').value||'0');
