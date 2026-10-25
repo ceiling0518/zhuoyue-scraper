@@ -960,6 +960,75 @@ def _media_probe(path):
             'fps': fps, 'vbr': vbr}
 
 
+def _media_refresh(item_id, log=None):
+    """单条目媒体信息刷新：重扫该条目所有视频的体积/类型 + 主视频时长/宽高/码率。
+
+    替换过文件（降分辨率/画质修复/删除无效段）之后调用，保证列表的总大小、
+    类型计数和时长不过期；磁盘上已不存在的文件会从 media_files 里删掉。
+    """
+    dbc = mlib.db()
+    try:
+        _ensure_media(dbc)
+        r = dbc.execute('SELECT id,path FROM items WHERE id=?', (item_id,)).fetchone()
+        if not r:
+            return False
+        vids = [v for v in _video_files(r['path'] or '')
+                if os.path.splitext(v)[1].lower() in ('.mp4', '.m4v', '.mov')]
+        seen = []
+        for _v in vids:
+            _b = os.path.basename(_v)
+            seen.append(_b)
+            try:
+                dbc.execute('INSERT INTO media_files(item_id,file,size,ext) VALUES(?,?,?,?) '
+                            'ON CONFLICT(item_id,file) DO UPDATE SET size=excluded.size, '
+                            'ext=excluded.ext',
+                            (item_id, _b, os.path.getsize(_v),
+                             os.path.splitext(_b)[1].lower().lstrip('.')))
+            except Exception:
+                pass
+        try:
+            for _x in dbc.execute('SELECT file FROM media_files WHERE item_id=?',
+                                  (item_id,)).fetchall():
+                if (_x['file'] or '') not in seen:
+                    dbc.execute('DELETE FROM media_files WHERE item_id=? AND file=?',
+                                (item_id, _x['file']))
+        except Exception:
+            pass
+        if not vids:
+            dbc.execute('DELETE FROM media WHERE item_id=?', (item_id,))
+            dbc.commit()
+            return False
+        f = max(vids, key=lambda x: os.path.getsize(x))
+        base = os.path.basename(f)
+        sz = os.path.getsize(f)
+        m = _media_probe(f)
+        if m and m.get('vbr'):
+            dbc.execute('INSERT OR REPLACE INTO media(item_id,file,size,dur,w,h,fps,vbr,ts) '
+                        'VALUES(?,?,?,?,?,?,?,?,?)',
+                        (item_id, base, sz, m['dur'], m['w'], m['h'], m['fps'], m['vbr'],
+                         mlib.now()))
+        else:
+            dbc.execute('UPDATE media SET file=?, size=?, ts=? WHERE item_id=?',
+                        (base, sz, mlib.now(), item_id))
+        dbc.commit()
+        if log:
+            try:
+                log('    媒体信息已刷新：%s（%d 个文件 / %.0f MB）'
+                    % (base[:40], len(vids), sz / 1048576.0))
+            except Exception:
+                pass
+        return True
+    except Exception as e:
+        if log:
+            try:
+                log('    ! 媒体信息刷新失败: %s' % str(e)[:100])
+            except Exception:
+                pass
+        return False
+    finally:
+        dbc.close()
+
+
 def _job_media(ids=None, force=False, nested=False):
     """媒体信息扫描：主视频的时长/宽高/帧率/码率 -> media 表（heavy 车道）。"""
     if not nested:
@@ -1709,6 +1778,7 @@ def _job_down(ids=None, target='auto', fix=False, ad=False):
                 except Exception as e:
                     _log('    库更新失败: %s' % str(e)[:90])
                 ok += 1
+            _media_refresh(it['id'], _log)
             _tick(i + 1)
         _end('downscale %d/%d' % (ok, len(its)))
     except Exception:
@@ -1845,6 +1915,7 @@ def _job_proteus(ids=None, ad=False):
             except Exception as e:
                 _log('    库更新失败: %s' % str(e)[:90])
             ok += 1
+            _media_refresh(it['id'], _log)
             _tick(i + 1)
         _end('proteus %d/%d' % (ok, len(its)))
     except Exception:
@@ -2104,6 +2175,7 @@ def _job_addel(ids=None):
                         dbc.commit()
                     except Exception:
                         pass
+            _media_refresh(it['id'], _log)
             _tick(i + 1)
         _end('addel %d/%d' % (ok, len(its)))
     except Exception:
