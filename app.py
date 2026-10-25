@@ -2656,7 +2656,7 @@ def items(params):
     total = dbc.execute('SELECT COUNT(*) c FROM items WHERE ' + ws, args).fetchone()['c']
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
-    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,status,site,path,'
+    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,series,status,site,path,'
                        'm.vbr AS vbr, m.size AS fsize, m.file AS mfile, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads, m.ads_ts AS ads_ts,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT CASE WHEN COUNT(*)=0 THEN 0 "
@@ -2668,6 +2668,7 @@ def items(params):
                        args + [limit, offset]).fetchall()
     out = [dict(r) for r in rows]
     for o in out:
+        o['skey'] = mlib.series_key(o.get('sem_code') or o.get('code') or '')
         v = int(o.get('vbr') or 0)
         o['kbps'] = round(v / 1000.0, 1) if v else 0
         try:
@@ -2990,7 +2991,7 @@ def set_cell(iid, field, value):
 
     sem_* edits also set sem_manual=1 so the semantic pass will not overwrite them.
     """
-    if field not in ('quality', 'source', 'sem_kind', 'sem_code'):
+    if field not in ('quality', 'source', 'sem_kind', 'sem_code', 'series'):
         return False
     c = mlib.db()
     if field in ('sem_kind', 'sem_code'):
@@ -3730,7 +3731,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <table id="tbl"><thead><tr>
     <th style="width:136px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
     <th style="width:92px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数">属性</th>
-    <th style="width:80px">番号</th><th style="width:74px">语义</th>
+    <th style="width:150px" title="系列-番号，下一行语义；均可双击修改">番号 / 语义</th>
     <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
@@ -3879,8 +3880,12 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
     +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+'<div class="meta">'+fsize(r.fsize)+' · '+fext(r.mfile)+'</div></td>'
-    +'<td class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改">'+esc(r.sem_code||r.code||'')+'</td>'
-    +'<td class="ed" data-f="sem_kind" data-id="'+r.id+'" data-v="'+(r.sem_kind||'')+'" title="双击修改">'+kindLabel(r.sem_kind)+(r.sem_manual?' <span class="muted">(人工)</span>':'')+'</td>'
+    +'<td style="white-space:nowrap"><div>'
+    +'<span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'—')+'" title="双击修改系列">'+esc(r.series||r.skey||'')+'</span>'
+    +'-<span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'—')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'')+'</span></div>'
+    +'<div class="meta"><span class="ed" data-f="sem_kind" data-id="'+r.id+'" data-v="'+(r.sem_kind||'')+'" title="双击修改语义">'+kindLabel(r.sem_kind)+'</span>'
+    +(r.sem_manual?' <span class="muted">(人工)</span>':'')+'</div></td>'
+    
     +'<td class="muted">'+(r.mw&&r.mh
       ?resLabel(r.mw,r.mh)+' <span style="color:var(--fg)">'
        +(r.kbps?(r.kbps>=1000?(r.kbps/1000).toFixed(1)+'Mb':r.kbps+'k'):'')+'</span>'
@@ -4142,7 +4147,7 @@ async function _afterOp(){
   }
 }
 document.addEventListener('dblclick',e=>{
-  const td=e.target.closest?e.target.closest('td.ed'):null;
+  const td=e.target.closest?e.target.closest('td.ed,span.ed'):null;
   if(!td)return;
   const f=td.dataset.f,id=td.dataset.id,cur=td.dataset.v||'';
   const OPTS={quality:['有','缺','有误','无','删除'],source:['Web','AI'],
