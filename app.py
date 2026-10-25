@@ -2683,6 +2683,116 @@ def _job_merge(ids=None):
         _end('merge 失败')
 
 
+ASR_PY = r'D:\Python311\python.exe'
+ASR_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'subs.py')
+ASR_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'asr')
+ASR_LANGS = {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韩文', 'yue': '粤语', 'auto': '自动'}
+
+
+def _job_subs(ids=None, lang='zh', force=False):
+    """语音转字幕：逐个视频跑 SenseVoice（Python 3.11 子进程），输出 <视频名>.<lang>.srt。"""
+    global PROG
+    _begin('subs', 1)
+    dbc = mlib.db()
+    try:
+        _ensure_media(dbc)
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok = 0
+        lang = (lang or 'zh').strip() or 'zh'
+        if not os.path.exists(ASR_PY):
+            _log('! 找不到 %s（字幕引擎装在 3.11）' % ASR_PY)
+            _end('subs 失败')
+            return
+        if not os.path.exists(ASR_SCRIPT):
+            _log('! 找不到 subs.py：%s' % ASR_SCRIPT)
+            _end('subs 失败')
+            return
+        for i, it in enumerate(its):
+            if _stop_req():
+                _log('! 已请求停止'); break
+            vids = [v for v in sorted(_video_files(it['path'] or ''))
+                    if os.path.splitext(v)[1].lower() in repair.VIDEO_EXT]
+            if not vids:
+                _log('[%d/%d] id=%s 没有视频' % (i + 1, len(its), it['id']))
+                _tick(i + 1); continue
+            for vp in vids:
+                if _stop_req():
+                    break
+                v = os.path.basename(vp)
+                stem = os.path.splitext(v)[0]
+                out_name = '%s.%s.srt' % (stem, lang)
+                out_path = os.path.join(it['path'], out_name)
+                if os.path.exists(out_path) and not force:
+                    _log('  %s 已有 %s，跳过' % (v[:36], out_name[-12:]))
+                    continue
+                _log('  %s 转写中（%s）...' % (v[:44], ASR_LANGS.get(lang, lang)))
+                tmp = os.path.join(os.environ.get('TEMP') or '.', 'subs_%d_%d.srt'
+                                   % (it['id'], int(time.time())))
+                cmd = [ASR_PY, '-X', 'utf8', '-u', ASR_SCRIPT, vp, tmp,
+                       '--model-dir', ASR_MODEL_DIR, '--lang', lang, '--threads', '6']
+                t0 = time.time()
+                nline = 0
+                total = 0.0
+                try:
+                    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.PIPE)
+                    for raw in iter(p.stderr.readline, b''):
+                        if _stop_req():
+                            try:
+                                p.kill()
+                            except Exception:
+                                pass
+                            break
+                        ln = raw.decode('utf-8', 'replace').strip()
+                        if ln.startswith('AUDIO '):
+                            try:
+                                total = float(ln[6:])
+                            except Exception:
+                                pass
+                        elif ln.startswith('PROG '):
+                            try:
+                                a, b = ln[5:].split('/')
+                                PROG = {'label': '字幕', 'frames': 0, 'fps': 0,
+                                        'cur_fps': 0,
+                                        'pct': round(min(99.0, float(a) / max(1e-6, float(b)) * 100), 1),
+                                        'elapsed': int(time.time() - t0), 'eta': 0}
+                            except Exception:
+                                pass
+                        elif ln.startswith('DONE '):
+                            try:
+                                nline = int(ln[5:])
+                            except Exception:
+                                pass
+                    p.wait(timeout=14400)
+                except Exception as e:
+                    _log('    ! 转写失败: %s' % str(e)[:120])
+                    continue
+                if not os.path.exists(tmp) or os.path.getsize(tmp) < 20:
+                    _log('    ! 没有生成字幕（可能整段无人声）')
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+                    continue
+                if not mlib.commit_back(tmp, out_path, _log):
+                    _log('    ! 字幕回拷失败')
+                    continue
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                _log('    完成：%s（%d 条，%.0fs，%.0f 秒语音）'
+                     % (out_name, nline, time.time() - t0, total))
+                ok += 1
+            _tick(i + 1)
+        PROG = {}
+        _end('subs %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200])
+        _end('subs 失败')
+
+
 def _job_health(ids=None, force=False, deep=False, nested=False):
     """只读体检，结果写入 health 表（下次默认跳过）。
 
@@ -4097,6 +4207,10 @@ class H(BaseHTTPRequestHandler):
                 return self._json(keep_rows(int(q.get('item') or 0)))
             elif p == '/api/keep/save':
                 return self._json(keep_save(json.loads(self._body() or '{}')))
+            elif p == '/api/subs':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_subs, ids, (q.get('lang') or 'zh'),
+                               (q.get('force') or '') in ('1', 'true', 'yes'), lane='heavy')
             elif p == '/api/merge':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_merge, ids, lane='heavy')
@@ -4502,6 +4616,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-vdetect" title="每 30 秒抽帧判断是否有女性；连续 2 点（≥60 秒）无女性判无效，边界 5 秒细化。仅初筛，需人工核实">检测无效段</button>
     <button id="a-segs" title="编辑有效段：每个视频要保留的区间；可改起止、加段、删段，可按文件选择">有效段编辑</button>
      <button id="a-addel" title="按有效段切掉区间（勾了「合并」的视频先拼成一个，用第一个视频的名字替换原片）；原文件留 .orig 回滚点，临时文件自动清理">有效段裁剪（合并）</button>
+     <select id="sublang" style="min-width:64px" title="字幕语言：用 SenseVoice 转写，输出 <视频名>.<语言>.srt"><option value="zh">中文</option><option value="en">英文</option><option value="ja">日文</option><option value="ko">韩文</option><option value="yue">粤语</option></select>
+     <button id="a-subs" title="语音转字幕：每个视频跑一次 SenseVoice（CPU，约 1/10 实时），输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <select id="downfps" style="min-width:96px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">保持帧率</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
@@ -4958,6 +5074,11 @@ $('#seg-save').onclick=async()=>{
   $('#seg-info').textContent=(j&&j.ok)?('已保存（'+j.files+' 个文件）'):'保存失败';
   $('#modalseg').classList.remove('on');
 };
+$('#a-subs').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size)return alert(T('先选条目'));
+  if(!confirm(T('给选中条目的每个视频生成字幕（SenseVoice，输出 .srt 到原目录；已有字幕会跳过）。继续？')))return;
+  await post('/api/subs?'+(ids?'ids='+ids+'&':'')+'lang='+($('#sublang').value));};
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
