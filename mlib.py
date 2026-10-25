@@ -16,6 +16,7 @@ CLI:
   python mlib.py auto  [--limit N] [--mode website|ai|auto] [--workers N]
   python mlib.py stats
 """
+import struct
 import argparse, base64, io, json, os, re, shutil, sqlite3, subprocess, sys, time
 import requests
 try:
@@ -3016,6 +3017,311 @@ def _try_copy_cut_multi(vpath, keep, tmp, log=None, max_shift=5.0):
             os.remove(lst)
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------- MP4 索引裁剪
+# 头：写 elst（media_time 起播点）；尾：截断 mdat + 改样本表/时长。
+# 不读 mdat，不解码；只处理 moov 在文件末尾的普通 MP4。
+_MP4_CONTAINERS = {b'moov', b'trak', b'mdia', b'minf', b'stbl', b'edts',
+                   b'dinf', b'udta', b'mvex'}
+
+
+class _Box(object):
+    __slots__ = ('t', 'payload', 'children')
+
+    def __init__(self, t, payload=b'', children=None):
+        self.t, self.payload, self.children = t, payload, children
+
+    def size(self):
+        return 8 + (len(self.payload) if self.children is None
+                    else sum(c.size() for c in self.children))
+
+    def dump(self):
+        body = (self.payload if self.children is None
+                else b''.join(c.dump() for c in self.children))
+        return struct.pack('>I4s', 8 + len(body), self.t) + body
+
+
+def _mp4_parse(data, start, end):
+    out, p = [], start
+    while p + 8 <= end:
+        size = struct.unpack('>I', data[p:p + 4])[0]
+        t = data[p + 4:p + 8]
+        hdr = 8
+        if size == 1:
+            size = struct.unpack('>Q', data[p + 8:p + 16])[0]
+            hdr = 16
+        elif size == 0:
+            size = end - p
+        if size < hdr or p + size > end:
+            break
+        if t in _MP4_CONTAINERS:
+            out.append(_Box(t, b'', _mp4_parse(data, p + hdr, p + size)))
+        else:
+            out.append(_Box(t, bytes(data[p + hdr:p + size])))
+        p += size
+    return out
+
+
+def _f1(nodes, t):
+    for n in nodes:
+        if n.t == t:
+            return n
+    return None
+
+
+def _u32(b, o):
+    return struct.unpack('>I', b[o:o + 4])[0]
+
+
+def _u64(b, o):
+    return struct.unpack('>Q', b[o:o + 8])[0]
+
+
+def _p32(v):
+    return struct.pack('>I', v)
+
+
+def _mkbox(t, body):
+    return struct.pack('>I4s', 8 + len(body), t) + body
+
+
+def _parse_stsz(b):
+    size, cnt = _u32(b, 4), _u32(b, 8)
+    return [size] * cnt if size else [_u32(b, 12 + 4 * i) for i in range(cnt)]
+
+
+def _parse_stts(b):
+    n = _u32(b, 4)
+    return [(_u32(b, 8 + 8 * i), _u32(b, 12 + 8 * i)) for i in range(n)]
+
+
+def _parse_stsc(b):
+    n = _u32(b, 4)
+    return [(_u32(b, 8 + 12 * i), _u32(b, 12 + 12 * i), _u32(b, 16 + 12 * i))
+            for i in range(n)]
+
+
+def _parse_stco(b, is64):
+    n = _u32(b, 4)
+    w = 8 if is64 else 4
+    return [_u64(b, 8 + w * i) if is64 else _u32(b, 8 + w * i) for i in range(n)]
+
+
+def _build_stsz(sizes):
+    n = len(sizes)
+    return _mkbox(b'stsz', _p32(0) + _p32(0) + _p32(n) +
+                  b''.join(_p32(x) for x in sizes))
+
+
+def _build_stts(ents):
+    return _mkbox(b'stts', _p32(0) + _p32(len(ents)) +
+                  b''.join(_p32(c) + _p32(d) for c, d in ents))
+
+
+def mp4_index_cut(src, dst, head_skip, tail_skip):
+    """只改索引去头尾：返回 (src_bytes, trunc_at, out_bytes)。"""
+    data = open(src, 'rb').read()
+    total = len(data)
+    top = _mp4_parse(data, 0, total)
+    moov = _f1(top, b'moov')
+    if not moov:
+        raise RuntimeError('没有 moov')
+    off, moov_off = 0, None
+    for n in top:
+        if n is moov:
+            moov_off = off
+        off += n.size()
+    if moov_off is None or moov_off + moov.size() != total:
+        raise RuntimeError('moov 不在文件末尾，暂不支持')
+
+    mvhd = _f1(moov.children, b'mvhd')
+    mv_ver = mvhd.payload[0]
+    mv_ts = _u32(mvhd.payload, 12) if mv_ver == 0 else _u32(mvhd.payload, 20)
+    traks = [n for n in moov.children if n.t == b'trak']
+    if not traks:
+        raise RuntimeError('没有 trak')
+
+    trunc_at, keep_movie = 0, 0
+    for tr in traks:
+        mdia = _f1(tr.children, b'mdia')
+        mdhd = _f1(mdia.children, b'mdhd')
+        v = mdhd.payload[0]
+        mts = _u32(mdhd.payload, 12) if v == 0 else _u32(mdhd.payload, 20)
+        mdur = _u32(mdhd.payload, 16) if v == 0 else _u64(mdhd.payload, 24)
+        keep_s = max(0.1, mdur / float(mts) - head_skip - tail_skip)
+        keep_movie = max(keep_movie, int(round(keep_s * mv_ts)))
+
+        stbl = _f1(_f1(mdia.children, b'minf').children, b'stbl')
+        stsz = _f1(stbl.children, b'stsz')
+        stts = _f1(stbl.children, b'stts')
+        stsc = _f1(stbl.children, b'stsc')
+        stco = _f1(stbl.children, b'stco') or _f1(stbl.children, b'co64')
+        if not (stsz and stts and stsc and stco):
+            continue
+        is64 = stco.t == b'co64'
+        sizes = _parse_stsz(stsz.payload)
+        times = _parse_stts(stts.payload)
+        sc = _parse_stsc(stsc.payload)
+        offs = _parse_stco(stco.payload, is64)
+
+        target = int(round((head_skip + keep_s) * mts))
+        acc, keep_n = 0, 0
+        for cnt, delta in times:
+            if acc + cnt * delta <= target:
+                acc += cnt * delta
+                keep_n += cnt
+            else:
+                keep_n += max(0, int((target - acc + delta - 1) // delta))
+                break
+        keep_n = min(keep_n, len(sizes))
+        if keep_n <= 0:
+            raise RuntimeError('保留样本数为 0')
+        keep_sizes = sizes[:keep_n]
+
+        chunk_samples = []
+        for ci in range(len(offs)):
+            cur = 1
+            for first, spc, _d in sc:
+                if first - 1 <= ci:
+                    cur = spc
+                else:
+                    break
+            chunk_samples.append(cur)
+
+        remaining, trunc_off, kept_chunks = keep_n, offs[0], 0
+        for ci, cnt in enumerate(chunk_samples):
+            if remaining <= 0:
+                break
+            take = min(cnt, remaining)
+            start = keep_n - remaining
+            trunc_off = offs[ci] + sum(keep_sizes[start:start + take])
+            remaining -= take
+            kept_chunks = ci + 1
+        trunc_at = max(trunc_at, trunc_off)
+
+        stsz.payload = _build_stsz(keep_sizes)[8:]
+        left, nt = keep_n, []
+        for cnt, delta in times:
+            if left <= 0:
+                break
+            take = min(cnt, left)
+            nt.append((take, delta))
+            left -= take
+        stts.payload = _build_stts(nt)[8:]
+        stsc.payload = _mkbox(b'stsc',
+                              _p32(0) + _p32(len([1 for a, _b, _c in sc if a <= kept_chunks])) +
+                              b''.join(_p32(a) + _p32(bb) + _p32(cc)
+                                       for a, bb, cc in sc if a <= kept_chunks))[8:]
+        stco.payload = _mkbox(stco.t,
+                              _p32(0) + _p32(kept_chunks) +
+                              b''.join((struct.pack('>Q', x) if is64 else _p32(x))
+                                       for x in offs[:kept_chunks]))[8:]
+        stss = _f1(stbl.children, b'stss')
+        if stss:
+            sn = [_u32(stss.payload, 8 + 4 * i) for i in range(_u32(stss.payload, 4))]
+            sn = [x for x in sn if x <= keep_n]
+            stss.payload = _mkbox(b'stss', _p32(0) + _p32(len(sn)) +
+                                  b''.join(_p32(x) for x in sn))[8:]
+
+        mb = bytearray(mdhd.payload)
+        if v == 0:
+            struct.pack_into('>I', mb, 16, int(round(keep_s * mts)))
+        else:
+            struct.pack_into('>Q', mb, 24, int(round(keep_s * mts)))
+        mdhd.payload = bytes(mb)
+
+        tkhd = _f1(tr.children, b'tkhd')
+        if tkhd:
+            tb = bytearray(tkhd.payload)
+            if tb[0] == 0:
+                struct.pack_into('>I', tb, 20, keep_movie)
+            else:
+                struct.pack_into('>Q', tb, 28, keep_movie)
+            tkhd.payload = bytes(tb)
+
+        media_time = int(round(head_skip * mts))
+        elst = _Box(b'elst', _p32(0) + _p32(1) +
+                    struct.pack('>IIhh', keep_movie, media_time, 1, 0))
+        edts = _f1(tr.children, b'edts')
+        if edts:
+            edts.children = [elst]
+        else:
+            idx = tr.children.index(tkhd) + 1 if tkhd else 0
+            tr.children.insert(idx, _Box(b'edts', b'', [elst]))
+
+    mb = bytearray(mvhd.payload)
+    if mv_ver == 0:
+        struct.pack_into('>I', mb, 16, keep_movie)
+    else:
+        struct.pack_into('>Q', mb, 24, keep_movie)
+    mvhd.payload = bytes(mb)
+
+    out = bytearray(data[:trunc_at] + moov.dump())
+    off2 = 0
+    for n in top:
+        if n.t == b'mdat':
+            if struct.unpack('>I', data[off2:off2 + 4])[0] == 1:
+                struct.pack_into('>Q', out, off2 + 8, trunc_at - off2)
+            else:
+                struct.pack_into('>I', out, off2, trunc_at - off2)
+            break
+        off2 += n.size()
+    open(dst, 'wb').write(out)
+    return total, trunc_at, len(out)
+
+
+def cut_ads_index(vpath, segs, log=None):
+    """去头尾广告：只改索引 + 尾部截断；失败返回 {'ok':False,'error':...}。
+
+    只支持「保留区间连续」（头广告 / 尾广告 / 头+尾）。中插广告请走 cut_ads。
+    """
+    def _log(m):
+        if log:
+            try:
+                log(m)
+            except Exception:
+                pass
+
+    dur = video_duration(vpath)
+    if not dur or dur < 10:
+        return {'ok': False, 'error': '读不到时长'}
+    keep, cur = [], 0.0
+    for a, b in sorted(segs):
+        a = max(cur, min(float(a), dur))
+        b = max(a, min(float(b), dur))
+        if a - cur > 0.15:
+            keep.append((cur, a))
+        cur = max(cur, b)
+    if dur - cur > 0.15:
+        keep.append((cur, dur))
+    if len(keep) != 1:
+        return {'ok': False, 'error': '保留区间不连续（中插广告），需重封装'}
+    a0, b0 = keep[0]
+    head_skip, tail_skip = a0, dur - b0
+
+    stem = os.path.splitext(os.path.basename(vpath))[0]
+    tmp = os.path.join(os.path.dirname(vpath), '.%s.idx.%d.mp4' % (stem, os.getpid()))
+    try:
+        t_total, t_cut, t_out = mp4_index_cut(vpath, tmp, head_skip, tail_skip)
+        _log('    索引裁剪：%.1f MB -> %.1f MB（头 %.1f / 尾 %.1f 秒）'
+             % (t_total / 1048576.0, t_out / 1048576.0, head_skip, tail_skip))
+        nd = video_duration(tmp)
+        if not nd or abs(nd - (b0 - a0)) > max(1.5, (b0 - a0) * 0.005):
+            raise RuntimeError('时长校验失败 %.1f != %.1f' % (nd or 0, b0 - a0))
+        for t in (0.5, max(0.5, nd - 1.5)):
+            if not frame_at(tmp, t, width=320):
+                raise RuntimeError('抽帧失败 t=%.1f' % t)
+        os.replace(tmp, vpath)
+        return {'ok': True, 'new_dur': nd, 'old_dur': dur,
+                'old_size': os.path.getsize(tmp) if False else t_total,
+                'new_size': t_out, 'mode': 'index'}
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return {'ok': False, 'error': str(e)[:160]}
 
 
 def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True, stash=True):

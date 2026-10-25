@@ -1125,7 +1125,7 @@ def _topaz_path():
     return r'F:\Topaz Video\ffmpeg.exe'
 
 
-def _job_down(ids=None, target='auto', fix=False):
+def _job_down(ids=None, target='auto', fix=False, ad=False):
     """降分辨率：按 bpp/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
     _begin('downscale', 1)
     dbc = mlib.db()
@@ -1175,15 +1175,41 @@ def _job_down(ids=None, target='auto', fix=False):
                 vf += ':flags=lanczos'
                 if fps > 45:
                     vf += ',fps=30'
+                # 同时去广告：取该文件的广告区间，只支持连续保留区间（头/尾）
+                _ad_skip = None
+                if ad:
+                    try:
+                        _r = dbc.execute('SELECT ads FROM ads_file WHERE item_id=? AND file=?',
+                                         (it['id'], v)).fetchone()
+                        _sg = json.loads((_r['ads'] if _r else '') or '[]')
+                        if _sg:
+                            _d0 = repair.video_duration(vp) or 0
+                            _kk, _cc = [], 0.0
+                            for _x, _y in sorted(_sg):
+                                _x = max(_cc, min(float(_x), _d0))
+                                _y = max(_x, min(float(_y), _d0))
+                                if _x - _cc > 0.15:
+                                    _kk.append((_cc, _x))
+                                _cc = max(_cc, _y)
+                            if _d0 and _d0 - _cc > 0.15:
+                                _kk.append((_cc, _d0))
+                            if len(_kk) == 1:
+                                _ad_skip = (_kk[0][0], _kk[0][1] - _kk[0][0])
+                                _log('    同时去广告：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
+                            else:
+                                _log('    ! 有中插广告，本次只降分辨率（请先单独删除广告）')
+                    except Exception as _e:
+                        _log('    ! 读取广告区间失败: %s' % str(_e)[:80])
+
                 loc = mlib.stage_local(vp, _log)
                 tmp = os.path.splitext(loc)[0] + '.down' + os.path.splitext(loc)[1]
                 _log('  %s  %dx%d@%.0f %.0fkbps bpp=%.4f -> %s%s'
                      % (v[:46], w, h, fps, kbps, bpp,
                         ('%dx%d' % (tw, th)) if not portrait else ('%dx%d' % (th, tw)),
                         ' @30fps' if fps > 45 else ''))
-                cmd = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', loc,
-                       '-vf', vf] + _gpu_enc(loc) + ['-c:a', 'copy',
-                                                     '-movflags', '+faststart', tmp]
+                _pre = (['-ss', '%.3f' % _ad_skip[0], '-t', '%.3f' % _ad_skip[1]]
+                        if _ad_skip else [])
+                cmd = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y'] + _pre +                       ['-i', loc, '-vf', vf] + _gpu_enc(loc) +                       ['-c:a', 'copy', '-movflags', '+faststart', tmp]
                 t0 = time.time()
                 r = subprocess.run(cmd, capture_output=True, timeout=14400)
                 if r.returncode != 0 or not os.path.exists(tmp):
@@ -1259,7 +1285,7 @@ def _job_down(ids=None, target='auto', fix=False):
         _log('ERR ' + traceback.format_exc()[:1200]); _end('downscale 失败')
 
 
-def _job_proteus(ids=None):
+def _job_proteus(ids=None, ad=False):
     """画质修复：Topaz Proteus(prob-4) scale=1，同尺寸修复，按设置的码率重编码。"""
     _begin('proteus', 1)
     dbc = mlib.db()
@@ -1293,9 +1319,34 @@ def _job_proteus(ids=None):
                 dec = 'hevc_cuvid' if (so or '').strip() in ('hevc', 'h265') else 'h264_cuvid'
             except Exception:
                 pass
+            _ad_skip = None
+            if ad:
+                try:
+                    _r = dbc.execute('SELECT ads FROM ads_file WHERE item_id=? AND file=?',
+                                     (it['id'], v)).fetchone()
+                    _sg = json.loads((_r['ads'] if _r else '') or '[]')
+                    if _sg:
+                        _kk, _cc = [], 0.0
+                        for _x, _y in sorted(_sg):
+                            _x = max(_cc, min(float(_x), dur))
+                            _y = max(_x, min(float(_y), dur))
+                            if _x - _cc > 0.15:
+                                _kk.append((_cc, _x))
+                            _cc = max(_cc, _y)
+                        if dur - _cc > 0.15:
+                            _kk.append((_cc, dur))
+                        if len(_kk) == 1:
+                            _ad_skip = (_kk[0][0], _kk[0][1] - _kk[0][0])
+                            _log('    同时去广告：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
+                        else:
+                            _log('    ! 有中插广告，本次只做画质修复（请先单独删除广告）')
+                except Exception as _e:
+                    _log('    ! 读取广告区间失败: %s' % str(_e)[:80])
             loc = mlib.stage_local(vp, _log)
             tmp = os.path.splitext(loc)[0] + '.prob' + os.path.splitext(loc)[1]
-            cmd = [topaz, '-hide_banner', '-v', 'error', '-y', '-c:v', dec, '-i', loc,
+            _pre = (['-ss', '%.3f' % _ad_skip[0], '-t', '%.3f' % _ad_skip[1]]
+                    if _ad_skip else [])
+            cmd = [topaz, '-hide_banner', '-v', 'error', '-y', '-c:v', dec] + _pre + ['-i', loc,
                    '-vf', 'tvai_up=model=prob-4:scale=1:device=0'] + _gpu_enc(loc) + \
                   ['-c:a', 'copy', '-movflags', '+faststart', tmp]
             t0 = time.time()
@@ -1482,10 +1533,14 @@ def _job_addel(ids=None):
                     _keep.append((_cur, _dur0))
 
                 if len(_keep) == 1:
-                    # 头/尾广告：只重封装，直接在 NAS 上做，不暂存、不建备份
-                    _log('  切 %s（头/尾广告）—— 直接在 NAS 重封装，不建备份；操作中请勿中断'
+                    # 头/尾广告：只改索引（elst + 尾部截断），不动视频数据
+                    _log('  切 %s（头/尾广告）—— 只改索引，不重封装；操作中请勿中断'
                          % v[:56])
-                    r = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
+                    r = mlib.cut_ads_index(vp, segs, log=lambda m: _log(m))
+                    if not r.get('ok'):
+                        _log('    索引裁剪不可用（%s）-> 回退重封装'
+                             % str(r.get('error') or '')[:90])
+                        r = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
                     if not r.get('ok'):
                         _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
                         continue
@@ -2896,10 +2951,12 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/downscale':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_down, ids, (q.get('target') or 'auto'),
-                               (q.get('fix') or '') in ('1', 'true', 'yes'), lane='heavy')
+                               (q.get('fix') or '') in ('1', 'true', 'yes'),
+                               (q.get('ad') or '') in ('1', 'true', 'yes'), lane='heavy')
             elif p == '/api/proteus':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                ok = start_job(_job_proteus, ids, lane='heavy')
+                ok = start_job(_job_proteus, ids,
+                               (q.get('ad') or '') in ('1', 'true', 'yes'), lane='heavy')
             elif p == '/api/health':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_health, ids, (q.get('force') or '') in ('1', 'true', 'yes'),
@@ -3208,6 +3265,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 同时修复</label>
+    <label class="muted" title="勾上后先跳过广告区间（只支持头/尾广告；中插请先单独删除广告）"><input type="checkbox" id="downad"> 同时去广告</label>
     <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
     <button id="a-proteus" title="Topaz Proteus(prob-4) 同尺寸修复；速度按输入分辨率，1080p 约 2.3 fps（1 小时片约 8 小时）">画质修复</button>
   </div>
@@ -3466,12 +3524,12 @@ $('#a-down').onclick=async()=>{
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('降分辨率会在 backup 本地工作区重编码，完成后回拷替换 NAS 原片（源文件保留在 backup）。继续？')))return;
   await post('/api/downscale?'+(ids?'ids='+ids+'&':'')+'target='+($('#downtgt').value)
-    +'&fix='+($('#downfix').checked?1:0));};
+    +'&fix='+($('#downfix').checked?1:0)+'&ad='+($('#downad').checked?1:0));};
 $('#a-proteus').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('Topaz Proteus 修复非常慢（1080p 约 2.3 fps，1 小时片约 8 小时），且会【替换原片】。继续？')))return;
-  await post('/api/proteus'+(ids?'?ids='+ids:''));};
+  await post('/api/proteus?'+(ids?'ids='+ids+'&':'')+'ad='+($('#downad').checked?1:0));};
 $('#a-media').onclick=async()=>{
   const ids=[...SEL].join(',');
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
