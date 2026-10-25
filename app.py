@@ -4223,15 +4223,20 @@ def open_image(iid):
         return False
 
 
-def make_poster(iid):
-    """没封面就造一张：优先目录里已有的图，否则从视频里截一帧，写成 poster.jpg。"""
+def make_poster(iid, upgrade=True):
+    """没封面就造一张：优先目录里已有的图，否则从视频里截一帧，写成 poster.jpg。
+
+    upgrade=False：即使已有封面偏小也保留，不重新截（用于「刷新缩略图」默认行为）。
+    """
     dbc = mlib.db()
     r = dbc.execute('SELECT path FROM items WHERE id=?', (iid,)).fetchone()
     if not r or not r['path'] or not os.path.isdir(r['path']):
         return None
     p = r['path']
     dst = os.path.join(p, 'poster.jpg')
-    if os.path.exists(dst):
+    if (not upgrade) and os.path.exists(dst):
+        return dst
+    if upgrade and os.path.exists(dst):
         # 旧封面尺寸比原视频小太多 -> 重新按原分辨率截一帧
         _regen = False
         try:
@@ -4340,7 +4345,202 @@ def drop_covers(ids):
     return n
 
 
-def refresh_thumbs(ids=None, make=False):
+def _esrgan_up(src, dst, scale=2):
+    """Real-ESRGAN 放大一张图；成功返回 True。"""
+    exe = ESRGAN_EXE
+    if not os.path.exists(exe):
+        return False
+    try:
+        subprocess.run([exe, '-i', src, '-o', dst, '-s', str(scale),
+                        '-n', 'realesrgan-x4plus'],
+                       capture_output=True, timeout=600)
+        return os.path.exists(dst) and os.path.getsize(dst) > 2048
+    except Exception:
+        return False
+
+
+def _poster_ai_frame(vp):
+    """抽帧 + 打分，选一张有女性且清晰的；返回 (PIL图, 人脸框)。"""
+    import tempfile
+    import numpy as np
+    from PIL import Image
+    import cover as _cv
+    det = _cv.face_detector()
+    best = None
+    for n in (12, 24, 36):
+        tmpf = os.path.join(tempfile.gettempdir(), 'pai_%d.jpg' % n)
+        try:
+            r = _cv.pick(vp, tmpf, n=n, width=0, verbose=False, rand=True)
+        except Exception:
+            r = None
+        if not r:
+            continue
+        try:
+            im = Image.open(tmpf).convert('RGB')
+        except Exception:
+            continue
+        arr = np.array(im)[:, :, ::-1]
+        h, w = arr.shape[:2]
+        bbox, fa = None, 0
+        if det is not None:
+            try:
+                for (x, y, fw, fh) in det(arr):
+                    a = int(fw) * int(fh)
+                    if a > fa:
+                        fa, bbox = a, (int(x), int(y), int(fw), int(fh))
+            except Exception:
+                pass
+        sc = _cv.score(arr, det)
+        ratio = fa / float(w * h) if bbox else 0.0
+        cand = (ratio, sc.get('sharp') or 0, im, bbox)
+        if best is None or (cand[0], cand[1]) > (best[0], best[1]):
+            best = cand
+        if bbox and ratio >= 0.004 and (sc.get('sharp') or 0) >= 60:
+            break
+    return (best[2], best[3]) if best else (None, None)
+
+
+def _focus_crop(im, bbox):
+    """以人脸为中心裁剪（保持原图比例），没脸就原样返回。"""
+    if not bbox:
+        return im
+    w, h = im.size
+    x, y, fw, fh = bbox
+    cx, cy = x + fw / 2.0, y + fh / 2.0
+    cw = min(w, max(fw * 4.0, w * 0.35))
+    ch = min(h, max(fh * 4.0, h * 0.45))
+    ar = w / float(h)
+    if cw / ch > ar:
+        cw = ch * ar
+    else:
+        ch = cw / ar
+    x0 = max(0, min(w - cw, cx - cw / 2.0))
+    y0 = max(0, min(h - ch, cy - ch / 2.0))
+    return im.crop((int(x0), int(y0), int(x0 + cw), int(y0 + ch)))
+
+
+def _poster_refresh_one(iid, ai=False, enh=False):
+    """刷新一条封面。默认：有封面/目录图就沿用，没有才截帧。"""
+    dbc = mlib.db()
+    r = dbc.execute('SELECT path FROM items WHERE id=?', (iid,)).fetchone()
+    if not r or not r['path'] or not os.path.isdir(r['path']):
+        return '无目录'
+    p = r['path']
+    dst = os.path.join(p, 'poster.jpg')
+    newp = os.path.join(p, 'poster.new.jpg')
+    made = None
+    note = ''
+
+    if ai:
+        vp = mlib.pick_cover_video(p)
+        if not vp:
+            return '没有视频'
+        im, bbox = _poster_ai_frame(vp)
+        if im is None:
+            return '抽帧失败'
+        im = _focus_crop(im, bbox)
+        im.save(newp, 'JPEG', quality=92)
+        made = newp
+        note = 'AI选图' + ('+裁剪' if bbox else '')
+        if enh:
+            up = os.path.join(p, 'poster.up.png')
+            if _esrgan_up(newp, up, 2):
+                try:
+                    from PIL import Image as _Im
+                    _Im.open(up).convert('RGB').save(newp, 'JPEG', quality=93)
+                    note += '+ESRGAN'
+                except Exception:
+                    note += '（ESRGAN失败）'
+                try:
+                    os.remove(up)
+                except Exception:
+                    pass
+            else:
+                note += '（ESRGAN不可用）'
+    else:
+        if not os.path.exists(dst):
+            out = make_poster(iid, upgrade=False)
+            if not out:
+                return '无图可造'
+            made = out
+            note = '新建'
+            if enh:
+                up = os.path.join(p, 'poster.up.png')
+                if _esrgan_up(dst, up, 2):
+                    try:
+                        from PIL import Image as _Im
+                        _Im.open(up).convert('RGB').save(newp, 'JPEG', quality=93)
+                        made = newp
+                        note = '新建+ESRGAN'
+                    except Exception:
+                        note = '新建（ESRGAN失败）'
+                    try:
+                        os.remove(up)
+                    except Exception:
+                        pass
+                else:
+                    note = '新建（ESRGAN不可用）'
+        elif enh:
+            up = os.path.join(p, 'poster.up.png')
+            if _esrgan_up(dst, up, 2):
+                try:
+                    from PIL import Image as _Im
+                    _Im.open(up).convert('RGB').save(newp, 'JPEG', quality=93)
+                    made = newp
+                    note = 'ESRGAN提升'
+                except Exception:
+                    note = 'ESRGAN失败'
+                try:
+                    os.remove(up)
+                except Exception:
+                    pass
+            else:
+                note = 'ESRGAN不可用'
+        else:
+            note = '沿用现有封面'
+
+    if made and os.path.abspath(made) != os.path.abspath(dst):
+        try:
+            if os.path.exists(dst):
+                os.replace(dst, os.path.join(p, 'poster.old.jpg'))
+            os.replace(made, dst)
+        except Exception as e:
+            return '替换失败: %s' % str(e)[:60]
+    for _nm in ('%d.jpg' % iid, '%d@320.jpg' % iid):
+        try:
+            fp = os.path.join(THUMB_DIR, _nm)
+            if os.path.exists(fp):
+                os.remove(fp)
+        except Exception:
+            pass
+    return note
+
+
+def _job_poster_refresh(ids=None, ai=False, enh=False):
+    _begin('poster', 1)
+    try:
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok = 0
+        for i, it in enumerate(its):
+            if _stop_req():
+                _log('! 已请求停止')
+                break
+            try:
+                msg = _poster_refresh_one(it['id'], bool(ai), bool(enh))
+            except Exception as e:
+                msg = 'ERR %s' % str(e)[:100]
+            if not msg.startswith(('无', '抽帧', '替换', 'ERR')):
+                ok += 1
+            _log('[%d/%d] id=%s %s' % (i + 1, len(its), it['id'], msg))
+            _tick(i + 1)
+        _end('poster %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1000])
+        _end('poster 失败')
+
+
+def refresh_thumbs(ids=None, make=False, upgrade=False):
     """删掉缩略图缓存（下次显示时按需重建）。
 
     ids 为空 -> 全删；make=True -> 重建前先确保有封面（没封面就造一张）。
@@ -4350,7 +4550,7 @@ def refresh_thumbs(ids=None, make=False):
         for iid in ids:
             if make:
                 try:
-                    make_poster(iid)
+                    make_poster(iid, upgrade=upgrade)
                 except Exception:
                     pass
             for _nm in ('%d.jpg' % iid, '%d@320.jpg' % iid):
@@ -4989,6 +5189,11 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': save_item(iid2, kv2)})
             elif p == '/api/thumbs/refresh':
                 tids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                _ai = (q.get('ai') or '') in ('1', 'true', 'yes')
+                _enh = (q.get('enh') or '') in ('1', 'true', 'yes')
+                if _ai or _enh:
+                    ok = start_job(_job_poster_refresh, tids or None, _ai, _enh, lane='light')
+                    return self._json({'ok': True, 'queued': bool(ok)})
                 return self._json({'ok': True, 'n': refresh_thumbs(tids or None, make=True)})
             elif p == '/api/covers/drop':
                 tids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
@@ -5279,6 +5484,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="bar" id="actbar2" style="background:#171c25">
     
     <button id="a-thumbs">刷新缩略图</button>
+    <label class="muted" title="AI 自动选帧并裁剪到女性；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI选图</label>
+    <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升封面画质</label>
     <button id="a-coverdel">删除封面图</button>
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
     <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
@@ -6133,9 +6340,11 @@ $('#q-clear-all').onclick=async()=>{
 $('#b-stop').onclick=()=>post('/api/stop');
 $('#b-refresh').onclick=()=>list();
 $('#b-reload').onclick=()=>list();   // 只重拉列表，不动整页
-$('#a-thumbs').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
-  const r=await post('/api/thumbs/refresh?ids='+[...SEL].join(','));
-  THUMBV++;await list();console.log('已重建 %s 张缩略图',r.n);};
+$('#a-thumbs').onclick=async()=>{if(!SEL.size)return;
+  const _ai=$('#thumb-ai').checked?1:0, _enh=$('#thumb-enh').checked?1:0;
+  const r=await post('/api/thumbs/refresh?ids='+[...SEL].join(',')+'&ai='+_ai+'&enh='+_enh);
+  if(r.queued)return;
+  THUMBV++;await list();};
 $('#a-coverdel').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('将删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？')))return;
   const r=await post('/api/covers/drop?ids='+[...SEL].join(','));
