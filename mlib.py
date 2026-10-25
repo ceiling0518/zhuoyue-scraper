@@ -526,7 +526,8 @@ def series_build(dbc=None, log=None):
         note = ''
         if not has_code and kind in ('none', ''):
             note = '无番号系列'
-        series_upsert(k, has_code, kind, note, pub, d)
+        series_upsert(k, has_code, kind, note, pub,
+                      SERIES_INDEXWORD.get(k.upper(), ''), d)
         n += 1
     _log('系列表：重建 %d 个系列（来自 %d 个条目）' % (n, len(rows)))
     return n, len(rows)
@@ -586,11 +587,13 @@ def ensure_series(dbc=None):
         sem_kind TEXT,
         note TEXT,
         publisher TEXT,
+        alias TEXT,
         updated TEXT)""")
-    try:
-        d.execute('ALTER TABLE series ADD COLUMN publisher TEXT')   # 旧库补列
-    except Exception:
-        pass
+    for _col in ('publisher', 'alias'):
+        try:
+            d.execute('ALTER TABLE series ADD COLUMN %s TEXT' % _col)   # 旧库补列
+        except Exception:
+            pass
     d.commit()
     try:
         rows = [dict(x) for x in d.execute('SELECT * FROM series').fetchall()]
@@ -613,15 +616,15 @@ def ensure_series(dbc=None):
     return d
 
 
-def series_upsert(series, has_code, sem_kind='', note='', publisher='', dbc=None):
+def series_upsert(series, has_code, sem_kind='', note='', publisher='', alias='', dbc=None):
     """有则更新；空值不覆盖已有语义/备注。"""
     series = (series or '').strip()
     if not series:
         return None
     d = dbc or db()
     ensure_series(d)
-    d.execute("""INSERT INTO series(series,has_code,sem_kind,note,publisher,updated)
-                 VALUES(?,?,?,?,?,?)
+    d.execute("""INSERT INTO series(series,has_code,sem_kind,note,publisher,alias,updated)
+                 VALUES(?,?,?,?,?,?,?)
                  ON CONFLICT(series) DO UPDATE SET
                    has_code=excluded.has_code,
                    sem_kind=CASE WHEN excluded.sem_kind<>'' THEN excluded.sem_kind
@@ -630,9 +633,11 @@ def series_upsert(series, has_code, sem_kind='', note='', publisher='', dbc=None
                              ELSE series.note END,
                    publisher=CASE WHEN excluded.publisher<>'' THEN excluded.publisher
                                   ELSE series.publisher END,
+                   alias=CASE WHEN excluded.alias<>'' THEN excluded.alias
+                              ELSE series.alias END,
                    updated=excluded.updated""",
               (series, 1 if has_code else 0, sem_kind or '', note or '',
-               publisher or '', now()))
+               publisher or '', alias or '', now()))
     d.commit()
     return series
 
@@ -677,7 +682,14 @@ def normalize_code(c):
 
 SERIES_ALIAS = {
     'FC2PPV': 'FC2', 'FC2-PPV': 'FC2', 'FC2PPV-': 'FC2',
-    'CARIBBEANCOM': 'CARIB', 'CARIBBEAN': 'CARIB', 'CARIBBEANCOM.': 'CARIB',
+    'CARIBBEANCOM': 'CARIB', 'CARIBBEAN': 'CARIB',
+    '1PON': '1PONDO', '1PONDO': '1PONDO',
+}
+# 规范名 -> 索引词（没有就不写）
+SERIES_INDEXWORD = {
+    'FC2': 'FC2PPV',
+    'CARIB': 'CARIBBEANCOM,加勒比',
+    '1PONDO': '1Pon,一本道',
 }
 
 

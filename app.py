@@ -3206,7 +3206,7 @@ class H(BaseHTTPRequestHandler):
                 mlib.ensure_series()
                 _d = mlib.db()
                 _rows = [dict(x) for x in _d.execute(
-                    "SELECT series,has_code,sem_kind,note,publisher FROM series "
+                    "SELECT series,has_code,sem_kind,note,publisher,IFNULL(alias,'') alias FROM series "
                     "WHERE series LIKE ? OR IFNULL(note,'') LIKE ? OR IFNULL(publisher,'') LIKE ? "
                     "ORDER BY series LIMIT ?",
                     ('%' + _q + '%', '%' + _q + '%', '%' + _q + '%', _lim))]
@@ -3495,6 +3495,18 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': open_image(int(p.rsplit('/', 1)[1]))})
             elif p.startswith('/api/open/'):
                 return self._json({'ok': open_item(int(p.rsplit('/', 1)[1]))})
+            if p == '/api/series/del':
+                try:
+                    _ln = int(self.headers.get('Content-Length') or 0)
+                    _b = json.loads(self.rfile.read(_ln).decode('utf-8') or '{}')
+                except Exception:
+                    return self._json({'ok': False, 'error': 'bad json'}, 400)
+                _s = (_b.get('series') or '').strip()
+                if not _s:
+                    return self._json({'ok': False, 'error': '系列名为空'}, 400)
+                mlib.db().execute('DELETE FROM series WHERE series=?', (_s,))
+                mlib.db().commit()
+                return self._json({'ok': True})
             if p == '/api/series/save':
                 try:
                     _ln = int(self.headers.get('Content-Length') or 0)
@@ -3506,7 +3518,8 @@ class H(BaseHTTPRequestHandler):
                     return self._json({'ok': False, 'error': '系列名为空'}, 400)
                 mlib.series_upsert(_s, bool(_b.get('has_code')),
                                    _b.get('sem_kind') or '', _b.get('note') or '',
-                                   _b.get('publisher') or '')
+                                   _b.get('publisher') or '',
+                                   _b.get('alias') or '')
                 return self._json({'ok': True})
             elif p == '/api/organize/apply':
                 try:
@@ -3717,7 +3730,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button class="right" id="md9-close">关闭</button></div>
   <div style="max-height:62vh;overflow:auto"><table id="sr-tbl"><thead><tr>
     <th style="width:200px">系列</th><th style="width:72px">有番号</th><th style="width:110px">语义</th>
-    <th>备注</th><th style="width:150px">出版商</th><th style="width:58px"></th>
+    <th>备注</th><th style="width:150px">出版商</th><th style="width:150px">索引词</th><th style="width:96px"></th>
   </tr></thead><tbody id="sr-rows"></tbody></table></div>
   <div class="muted" style="padding:8px 4px">改完点行末「保存」；系列名作为键，不建议改。</div>
 </div></div>
@@ -3907,7 +3920,9 @@ async function loadSeries(q){
    +'<td><select class="sr-k">'+['coded','uncensored','none',''].map(k=>'<option'+(k===(r.sem_kind||'')?' selected':'')+'>'+k+'</option>').join('')+'</select></td>'
    +'<td><input class="sr-note" value="'+esc(r.note||'')+'"></td>'
    +'<td><input class="sr-pub" value="'+esc(r.publisher||'')+'"></td>'
-   +'<td><button class="sr-save" data-s="'+esc(r.series)+'">保存</button></td></tr>').join('');
+   +'<td><input class="sr-alias" value="'+esc(r.alias||'')+'" placeholder="别名/索引词"></td>'
+   +'<td><button class="sr-save" data-s="'+esc(r.series)+'">保存</button> '
+   +'<button class="sr-del" data-s="'+esc(r.series)+'" style="color:var(--bad)">删</button></td></tr>').join('');
   $('#sr-sum').textContent='共 '+rows.length+' 条';
 }
 $('#a-series').onclick=async()=>{$('#modal9').classList.add('on');loadSeries($('#sr-q').value);};
@@ -3917,11 +3932,17 @@ $('#sr-enrich').onclick=async()=>{await post('/api/series/run?build=0&enrich=1&l
   setTimeout(()=>loadSeries($('#sr-q').value),3000);};
 $('#sr-q').onkeydown=e=>{if(e.key==='Enter')loadSeries($('#sr-q').value);};
 $('#sr-rows').onclick=async e=>{
+  const d=e.target.closest('.sr-del');
+  if(d){if(!confirm(T('删除系列 ')+d.dataset.s+' ?'))return;
+    const r=await(await fetch('/api/series/del',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({series:d.dataset.s})})).json();
+    if(r.ok)loadSeries($('#sr-q').value);return;}
   const b=e.target.closest('.sr-save'); if(!b)return;
   const tr=b.closest('tr');
   const body={series:b.dataset.s, has_code:tr.querySelector('.sr-hc').checked?1:0,
     sem_kind:tr.querySelector('.sr-k').value, note:tr.querySelector('.sr-note').value,
-    publisher:tr.querySelector('.sr-pub').value};
+    publisher:tr.querySelector('.sr-pub').value,
+    alias:(tr.querySelector('.sr-alias')||{}).value||''};
   const r=await(await fetch('/api/series/save',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
   b.textContent=r.ok?'已存':'失败'; setTimeout(()=>b.textContent='保存',1200);};
