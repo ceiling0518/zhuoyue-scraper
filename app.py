@@ -2219,7 +2219,7 @@ def _job_proteus(ids=None, ad=False):
         _log('ERR ' + traceback.format_exc()[:1200]); _end('proteus 失败')
 
 
-def _job_adtect(ids=None, mode='headtail', nested=False):
+def _job_adtect(ids=None, mode='headtail', nested=False, force=False):
     """广告检测：30s 粗扫 + 精修 -> ads_file（逐文件）/ media（最大文件）。
 
     多视频条目：先只测最大的那个。它没有广告就跳过同组其余
@@ -2243,6 +2243,15 @@ def _job_adtect(ids=None, mode='headtail', nested=False):
                 continue
             vids = sorted(vids, key=lambda p: os.path.getsize(p), reverse=True)
             fb = os.path.basename(vids[0])
+            if not force:
+                _done = dbc.execute('SELECT COUNT(*) c FROM ads_file WHERE item_id=? AND file=?',
+                                    (it['id'], fb)).fetchone()['c']
+                if _done:
+                    _log('[%d/%d] id=%s 已检测过（%s），跳过（勾 force 可重测）'
+                         % (i + 1, len(its), it['id'], fb[:32]))
+                    ok += 1
+                    _tick(i + 1)
+                    continue
             try:
                 dur = mlib.video_duration(vids[0])
                 _log('[%d/%d] id=%s 检测 %s (%.0fs，共 %d 个视频，%s)'
@@ -3028,10 +3037,10 @@ def _model_download(mid):
 
     threading.Thread(target=run, daemon=True).start()
     return True
-ASR_LANGS = {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韩文', 'yue': '粤语', 'auto': '自动'}
+ASR_LANGS = {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韩文', 'yue': '粤语', 'es': '西班牙语'}
 
 
-def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False):
+def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False, trans=False):
     """Whisper large-v3-turbo（PotPlayer CUDA main.exe），输出 <视频名>.zh.srt。"""
     _begin('subs', 1)
     dbc = mlib.db()
@@ -3052,7 +3061,9 @@ def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False):
             for vp in vids:
                 v = os.path.basename(vp)
                 stem = os.path.splitext(v)[0]
-                out_path = os.path.join(it['path'], '%s.%s.srt' % (stem, lang))
+                _out_lang = 'zh' if lang == 'ja-zh' else lang
+                _wl = 'ja' if lang == 'ja-zh' else ('auto' if lang == 'auto' else lang)
+                out_path = os.path.join(it['path'], '%s.%s.srt' % (stem, _out_lang))
                 if os.path.exists(out_path) and not force:
                     _log('  %s 已有字幕，跳过' % v[:40]); continue
                 _log('  %s Whisper 转写中...' % v[:44])
@@ -3065,13 +3076,38 @@ def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False):
                                     '-i', vp, '-vn', '-ac', '1', '-ar', '16000', wav],
                                    capture_output=True, timeout=3600)
                     subprocess.run([WHISPER_EXE, '-m', WHISPER_MODEL, '-f', wav,
-                                    '-osrt', '-of', pref, '-l', 'zh', '-t', '8'],
+                                    '-osrt', '-of', pref, '-l', _wl, '-t', '8'],
                                    cwd=os.path.dirname(WHISPER_EXE),
                                    capture_output=True, timeout=14400)
                     srt = pref + '.srt'
                     if os.path.exists(srt):
                         txt = io.open(srt, encoding='utf-8', errors='replace').read()
                         io.open(out_path, 'w', encoding='utf-8').write(txt)
+                        if trans and lang != 'zh':
+                            try:
+                                import re as _re
+                                import subs as _sm
+                                _blocks = _re.split(r'\n\s*\n', txt.strip())
+                                _pairs = []
+                                for _b in _blocks:
+                                    _ls = _b.splitlines()
+                                    if len(_ls) >= 3 and '-->' in _ls[1]:
+                                        _pairs.append((_ls[1], '\n'.join(_ls[2:])))
+                                _src = [t for _, t in _pairs]
+                                _zh = _sm.translate_lines(_src, 'zh', mlib.ai_model(),
+                                                          lambda m: _log('    ' + m))
+                                if _zh and len(_zh) == len(_src):
+                                    _ztxt = '\n\n'.join(
+                                        '%d\n%s\n%s' % (k + 1, _pairs[k][0], _zh[k])
+                                        for k in range(len(_pairs))) + '\n'
+                                    _zf = os.path.join(it['path'], '%s.zh.srt' % stem)
+                                    io.open(_zf, 'w', encoding='utf-8').write(_ztxt)
+                                    _log('    字幕翻译完成：%d 段 -> %s'
+                                         % (len(_zh), os.path.basename(_zf)))
+                                else:
+                                    _log('    ! 翻译失败或条数不一致，跳过翻译')
+                            except Exception as _e:
+                                _log('    ! 字幕翻译失败: %s' % str(_e)[:100])
                         ok += 1
                         _log('    OK %.1f 秒 -> %s' % (time.time() - t0, os.path.basename(out_path)))
                         try:
@@ -3096,7 +3132,7 @@ def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False):
         mlib.unload_ai()
 
 
-def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False):
+def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False, trans=False):
     """语音转字幕：逐个视频跑 SenseVoice（Python 3.11 子进程），输出 <视频名>.<lang>.srt。"""
     global PROG
     _begin('subs', 1)
@@ -3107,7 +3143,7 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False):
         _tick(0, max(1, len(its)))
         ok = 0
         lang = (lang or 'zh').strip() or 'zh'
-        bilingual = (lang != 'zh')
+        bilingual = (lang != 'zh') and trans
         if not os.path.exists(ASR_PY):
             _log('! 找不到 %s（字幕引擎装在 3.11）' % ASR_PY)
             _end('subs 失败')
@@ -4749,6 +4785,8 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/adtect':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_adtect, ids, (q.get('mode') or 'headtail'),
+                               False,
+                               (q.get('force') or '') in ('1', 'true', 'yes'),
                                lane='heavy')
             elif p == '/api/vdetect':
                 _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
@@ -4764,16 +4802,22 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/subs':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 _eng = (q.get('engine') or '').strip()
+                _lang2 = (q.get('lang') or 'zh')
+                _trans2 = (q.get('trans') or '') in ('1', 'true', 'yes')
+                if _lang2 == 'es':
+                    _eng = 'whisper'
                 if _eng == 'whisper':
-                    ok = start_job(_job_subs_whisper, ids, (q.get('lang') or 'zh'),
+                    ok = start_job(_job_subs_whisper, ids, _lang2,
                                    (q.get('force') or '') in ('1', 'true', 'yes'),
                                    (q.get('burn') or '') in ('1', 'true', 'yes'),
+                                   _trans2,
                                    lane='light')
                     return self._json({'ok': ok, 'queued': bool(ok), 'engine': 'whisper'})
-                ok = start_job(_job_subs, ids, (q.get('lang') or 'zh'),
+                ok = start_job(_job_subs, ids, _lang2,
                                (q.get('force') or '') in ('1', 'true', 'yes'),
                                (q.get('enhance') or '1') in ('1', 'true', 'yes'),
                                (q.get('burn') or '') in ('1', 'true', 'yes'),
+                               _trans2,
                                lane='heavy')
             elif p == '/api/merge':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
@@ -4995,7 +5039,7 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': open_image(int(p.rsplit('/', 1)[1]))})
             elif p.startswith('/api/open/'):
                 return self._json({'ok': open_item(int(p.rsplit('/', 1)[1]))})
-            if p == '/api/series/del':
+            elif p == '/api/series/del':
                 try:
                     _ln = int(self.headers.get('Content-Length') or 0)
                     _b = json.loads(self.rfile.read(_ln).decode('utf-8') or '{}')
@@ -5010,7 +5054,7 @@ class H(BaseHTTPRequestHandler):
                 _d.close()
                 return self._json({'ok': True, 'n': _n})
                 return self._json({'ok': True})
-            if p == '/api/series/save':
+            elif p == '/api/series/save':
                 try:
                     _ln = int(self.headers.get('Content-Length') or 0)
                     _b = json.loads(self.rfile.read(_ln).decode('utf-8') or '{}')
@@ -5207,7 +5251,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-vdetect" title="每 30 秒抽帧判断是否有女性；连续 2 点（≥60 秒）无女性判无效，边界 5 秒细化。仅初筛，需人工核实">检测无效段</button>
     <button id="a-segs" title="编辑有效段：每个视频要保留的区间；可改起止、加段、删段，可按文件选择">有效段编辑</button>
      <button id="a-addel" title="按有效段切掉区间（勾了「合并」的视频先拼成一个，用第一个视频的名字替换原片）；原文件留 .orig 回滚点，临时文件自动清理">有效段裁剪（合并）</button>
-     <select id="sublang" style="min-width:64px" title="字幕语言：用 SenseVoice 转写，输出 <视频名>.<语言>.srt"><option value="zh">中文</option><option value="en">英文</option><option value="ja">日文</option><option value="ko">韩文</option><option value="yue">粤语</option></select>
+     <select id="sublang" style="min-width:88px" title="字幕语言：Whisper 支持全部；SenseVoice 只支持中/英/日/韩/粤（西语自动用 Whisper）"><option value="zh">中文</option><option value="ja">日文</option><option value="en">英文</option><option value="ko">韩文</option><option value="yue">粤语</option><option value="es">西班牙语</option></select>
+     <label class="muted" title="生成字幕后，用本地模型把字幕翻成简体中文（与字幕语言不同时）"><input type="checkbox" id="subtrans"> 字幕翻译</label>
      <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
      <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
      <select id="subs-engine" style="min-width:112px" title="字幕引擎：SenseVoice 快且省资源；Whisper v3 Turbo 更准但慢（PotPlayer CUDA）"><option value="sensevoice">SenseVoice</option><option value="whisper">Whisper v3 Turbo</option></select>
@@ -5695,15 +5740,17 @@ $('#a-subs').onclick=async()=>{
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('给选中条目的每个视频生成字幕（SenseVoice，输出 .srt 到原目录；已有字幕会跳过）。继续？')))return;
     if($('#qadd-chk').checked){await qAdd('subs',[...SEL],
-      {lang:$('#sublang').value,enhance:$('#subenh').checked,burn:$('#subburn').checked,engine:$('#subs-engine').value});return;}
+      {lang:$('#sublang').value,enhance:$('#subenh').checked,burn:$('#subburn').checked,trans:$('#subtrans').checked,engine:$('#subs-engine').value});return;}
     await post('/api/subs?'+(ids?'ids='+ids+'&':'')+'lang='+($('#sublang').value)
     +'&enhance='+($('#subenh').checked?'1':'0')+'&burn='+($('#subburn').checked?'1':'0')
+    +'&trans='+($('#subtrans').checked?'1':'0')
     +'&engine='+$('#subs-engine').value);};
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
     if($('#qadd-chk').checked&&SEL.size){await qAdd('adtect',[...SEL],{mode:$('#admode').value});return;}
-    await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+($('#admode').value));};
+    await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+($('#admode').value)
+      +'&force='+($('#force').checked?1:0));};
 $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
@@ -6012,7 +6059,7 @@ async function loadModels(){
     const d=m.dl||{};
     let act='—';
     if(m.url){
-      if(d.done)act='<span style="color:var(--ok)">完成</span>';
+      if(d.done)act='<span style="color:var(--ok)">完成</span> <button class="mdl-dl" data-id="'+m.id+'">重下</button>';
       else if(d.pct!==undefined&&d.error==='')act='<span class="muted">下载 '+d.pct+'%</span>';
       else if(d.error)act='<button class="mdl-dl" data-id="'+m.id+'">重试</button>';
       else act='<button class="mdl-dl" data-id="'+m.id+'">'+(m.present?'重下':'下载')+'</button>';
