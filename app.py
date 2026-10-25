@@ -1650,7 +1650,7 @@ def _job_down(ids=None, target='auto', fix=False, ad=False, fpsout=0):
     try:
         _ensure_media(dbc)
         if ad:
-            _log('== 第一步：删除无效段（先切干净，再按新时长降分辨率）==')
+            _log('== 第一步：有效段裁剪（合并）==')
             _job_addel(ids, nested=True)
             if _stop_req():
                 _log('! 已在删除无效段阶段停止，不再降分辨率')
@@ -1741,9 +1741,9 @@ def _job_down(ids=None, target='auto', fix=False, ad=False, fpsout=0):
                                 _kk.append((_cc, _d0))
                             if len(_kk) == 1:
                                 _ad_skip = (_kk[0][0], _kk[0][1] - _kk[0][0])
-                                _log('    同时删除无效段：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
+                                _log('    有效段裁剪：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
                             else:
-                                _log('    ! 有中插无效段，本次只降分辨率（请先单独删除无效段）')
+                                _log('    ! 有中插区间，本次只降分辨率（请先单独做有效段裁剪）')
                     except Exception as _e:
                         _log('    ! 读取广告区间失败: %s' % str(_e)[:80])
 
@@ -1923,7 +1923,7 @@ def _job_proteus(ids=None, ad=False):
                             _kk.append((_cc, dur))
                         if len(_kk) == 1:
                             _ad_skip = (_kk[0][0], _kk[0][1] - _kk[0][0])
-                            _log('    同时删除无效段：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
+                            _log('    有效段裁剪：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
                         else:
                             _log('    ! 有中插无效段，本次只做画质修复（请先单独删除无效段）')
                 except Exception as _e:
@@ -4501,12 +4501,12 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-adtect" title="抽帧判断广告：头尾模式只扫首尾各 4 分钟并 15 秒取样；全片模式 30 秒全网扫。结果写在列表「属性」列">广告检测</button>
     <button id="a-vdetect" title="每 30 秒抽帧判断是否有女性；连续 2 点（≥60 秒）无女性判无效，边界 5 秒细化。仅初筛，需人工核实">检测无效段</button>
     <button id="a-segs" title="编辑有效段：每个视频要保留的区间；可改起止、加段、删段，可按文件选择">有效段编辑</button>
-     <button id="a-addel" title="按有效段切掉区间（勾了「合并」的视频先拼成一个，用第一个视频的名字替换原片）；原文件留 .orig 回滚点，临时文件自动清理">删除无效段/合并</button>
+     <button id="a-addel" title="按有效段切掉区间（勾了「合并」的视频先拼成一个，用第一个视频的名字替换原片）；原文件留 .orig 回滚点，临时文件自动清理">有效段裁剪（合并）</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <select id="downfps" style="min-width:96px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">保持帧率</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
     <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 同时修复</label>
-    <label class="muted" title="勾上后先跳过无效段（广告+无女性段；只支持头/尾连续区间；中插请先单独删除无效段）"><input type="checkbox" id="downad"> 同时删除无效段</label>
+    <label class="muted" title="勾上后先按有效段裁剪（勾了「合并」的视频会先拼成一个），再降分辨率/修复"><input type="checkbox" id="downad"> 有效段裁剪（合并）</label>
     <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
     <button id="a-proteus" title="Topaz Proteus(prob-4) 同尺寸修复；速度按输入分辨率，1080p 约 2.3 fps（1 小时片约 8 小时）">画质修复</button>
   </div>
