@@ -3330,8 +3330,7 @@ $('#a-copy').onclick=async()=>{
   try{await navigator.clipboard.writeText(txt);}
   catch(e){const t=document.createElement('textarea');t.value=txt;
     t.style.position='fixed';t.style.left='-9999px';document.body.appendChild(t);
-    t.select();document.execCommand('copy');t.remove();}
-  alert(T('已复制 ')+arr.length+T(' 条路径'));};
+    t.select();document.execCommand('copy');t.remove();}};
 $('#a-open').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
   for(const id of SEL)await post('/api/open/'+id);};
 $('#a-del').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
