@@ -1046,6 +1046,11 @@ def _staged_repair(f, fn):
     if not mlib.commit_back(loc, f, _log):
         _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
         return {'ok': False, 'error': '回拷失败', 'stage': loc}
+    _vd = repair.video_duration(f) or 0
+    _sd = r.get('new_dur') or _vd
+    if not _verify_out(f, _sd, _log):
+        _log('    ! 回拷文件校验失败，源副本已保留在 %s.orig' % loc)
+        return {'ok': False, 'error': '回拷校验失败'}
     if os.path.exists(loc + '.orig'):
         mlib.stage_backup(loc + '.orig', _log)
     mlib.drop_work(loc)
@@ -1099,10 +1104,8 @@ def _swap_in(vp, tmp, log=_log):
         k += 1
     os.replace(vp, orig)
     os.replace(tmp, vp)
-    try:
-        return repair.stash_orig(orig, log) or orig
-    except Exception:
-        return orig
+    # 不在这里备份：等回拷并校验通过后由调用方 stage_backup(orig)
+    return orig
 
 
 def _verify_out(path, expect, log=_log, tol=6.0, ends=True):
@@ -1199,6 +1202,10 @@ def _job_down(ids=None, target='auto'):
                     if not mlib.commit_back(loc, vp, _log):
                         _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
                         continue
+                    if not _verify_out(vp, nd, _log):
+                        _log('    ! 回拷文件校验失败，源副本已保留在 %s.orig' % loc)
+                        continue
+                    mlib.stage_backup(loc + '.orig', _log)
                     mlib.drop_work(loc)
                 except Exception as e:
                     _log('    ! 替换失败: %s' % str(e)[:120])
@@ -1302,6 +1309,11 @@ def _job_proteus(ids=None):
                     _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
                     _tick(i + 1)
                     continue
+                if not _verify_out(vp, nd, _log):
+                    _log('    ! 回拷文件校验失败，源副本已保留在 %s.orig' % loc)
+                    _tick(i + 1)
+                    continue
+                mlib.stage_backup(loc + '.orig', _log)
                 mlib.drop_work(loc)
             except Exception as e:
                 _log('    ! 替换失败: %s' % str(e)[:120])
@@ -1432,7 +1444,7 @@ def _job_addel(ids=None):
                     continue
                 _log('  切 %s（%d 段）—— 本地工作区处理' % (v[:60], len(segs)))
                 loc = mlib.stage_local(vp, _log)
-                r = mlib.cut_ads(loc, segs, log=lambda m: _log(m))
+                r = mlib.cut_ads(loc, segs, log=lambda m: _log(m), stash=False)
                 if not r.get('ok'):
                     _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
                     mlib.drop_work(loc)
@@ -1440,6 +1452,11 @@ def _job_addel(ids=None):
                 if not mlib.commit_back(loc, vp, _log):
                     _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
                     continue
+                # 回拷后先在 NAS 上验一遍，再决定源副本的去留
+                if not _verify_out(vp, r.get('new_dur') or 0, _log):
+                    _log('    ! 回拷文件校验失败，源副本已保留在 %s.orig' % loc)
+                    continue
+                mlib.stage_backup(loc + '.orig', _log)
                 mlib.drop_work(loc)
                 _log('    完成: 时长 %.1f -> %.1f 秒，体积 %.1f -> %.1f MB（回滚点 %s）'
                      % (r.get('old_dur') or 0, r.get('new_dur') or 0,
@@ -3029,7 +3046,9 @@ tr.sel td{background:#22314a}
 tr.sel .selbtn{background:var(--acc);border-color:var(--acc);color:#08121f;font-weight:600}
 .meta{color:var(--dim);font-size:11px;margin-top:2px}
 .tags{color:#9fb0d0}
-#log{background:#0b0e13;border:1px solid #2a3140;border-radius:9px;padding:9px;height:170px;overflow:auto;font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;margin-bottom:10px}
+.logwrap{position:relative}
+#logjump{position:absolute;right:14px;bottom:14px;display:none;padding:2px 8px;font-size:11px;border-radius:6px;background:var(--accent);color:#fff;border:0;cursor:pointer;opacity:.9}
+#log{background:#0b0e13;border:1px solid #2a3140;border-radius:9px;padding:9px;height:170px;overflow:auto;user-select:text;font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;margin-bottom:10px}
 #prog{height:5px;background:#0b0e13;border-radius:4px;overflow:hidden;margin-bottom:9px}
 #prog>i{display:block;height:100%;background:var(--acc);width:0}
 .muted{color:var(--dim)}.right{margin-left:auto}
@@ -3076,7 +3095,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div id="prog"><i></i></div>
-  <div id="log"></div>
+  <div class="logwrap"><div id="log"></div><button id="logjump" title="跳到最新一行">↓ 最新</button></div>
   <div class="bar">
     <span class="muted">筛选</span>
     <select id="f-quality"><option value="">质量:全部</option><option value="有">有</option><option value="缺">缺</option><option value="有误">有误</option><option value="无">无</option><option value="删除">删除</option></select>
@@ -3182,12 +3201,31 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
 async function job(){const j=await(await fetch('/api/job')).json();
   if(!j.running&&_jbWas){_jbWas=false;if(/^(health|repair)/.test(j.name||''))_afterOp();}
   if(j.running)_jbWas=true;
-  $('#log').textContent=(j.log||[]).join('\n');
-  const L=$('#log');L.scrollTop=L.scrollHeight;   // 永远默认停在最后一行
+  setLog(j.log||[]);
   const p=j.total?Math.round(j.done*100/j.total):0;
   $('#prog').firstElementChild.style.width=(j.running?Math.max(p,3):(j.done?'100':'0'))+'%';
   const busy=j.running;['b-pipeline','b-rebuild','b-incr','b-incrsem','b-sem','b-fetch','b-qrun'].forEach(i=>$('#'+i).disabled=busy);
   $('#b-stop').disabled=!busy;$('#qcount').textContent=j.queue||0;}
+let _logText='', _logFollow=true;
+function setLog(lines){
+  const txt=(lines||[]).join('\n');
+  if(txt===_logText)return;                 // 内容没变：不重绘，保住选中/滚动
+  const L=$('#log');
+  if(!L)return;
+  const atBottom=(L.scrollHeight-L.scrollTop-L.clientHeight)<28;
+  const follow=_logFollow||atBottom;
+  _logText=txt; L.textContent=txt;
+  if(follow){L.scrollTop=L.scrollHeight;_logFollow=true;}
+  const b=$('#logjump'); if(b)b.style.display=follow?'none':'block';
+}
+(function(){
+  const L=$('#log');
+  if(!L)return;
+  L.addEventListener('scroll',()=>{
+    _logFollow=(L.scrollHeight-L.scrollTop-L.clientHeight)<28;
+    const b=$('#logjump'); if(b)b.style.display=_logFollow?'none':'block';
+  });
+})();
 function saveState(){try{localStorage.setItem('ms_state',JSON.stringify({off:off,
   quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,
   sort:$('#f-sort').value,order:$('#f-order').value}));}catch(e){}}
@@ -3341,6 +3379,7 @@ $('#a-addel').onclick=async()=>{
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('删除选中条目的广告区间？会【替换原片】：先校验时长/抽帧，再原子换名，原文件备份为 .orig 回滚点，临时文件自动清理')))return;
   await post('/api/addel?ids='+ids);};
+$('#logjump').onclick=()=>{const L=$('#log');if(L){L.scrollTop=L.scrollHeight;_logFollow=true;}$('#logjump').style.display='none';};
 $('#a-down').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));

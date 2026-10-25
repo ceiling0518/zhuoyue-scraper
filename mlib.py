@@ -2997,7 +2997,7 @@ def _try_copy_cut_multi(vpath, keep, tmp, log=None, max_shift=5.0):
             pass
 
 
-def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
+def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True, stash=True):
     """按广告区间切掉、其余内容原样保留（帧级精确重编码）。
 
     replace=True（默认）—— 与 repair 完全同一套替换逻辑：
@@ -3161,10 +3161,14 @@ def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True):
             return {'ok': False, 'error': '文件被占用（重试 5 次）: %s' % str(err)[:90],
                     'stage': tmp}
         ok = True
-        try:
-            import repair as _rp
-            _bk = _rp.stash_orig(orig, _log)
-        except Exception:
+        if stash:
+            try:
+                import repair as _rp
+                _bk = _rp.stash_orig(orig, _log)
+            except Exception:
+                _bk = orig
+        else:
+            # 交给调用方：回拷并校验通过后再保留/删除（0 天时也不能提前删）
             _bk = orig
         _log('    已替换原片（回滚点 %s）'
              % (os.path.basename(_bk) if _bk else '未保留（0 天）'))
