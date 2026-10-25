@@ -203,6 +203,153 @@ def now():
 
 
 # ------------------------------------------------------------------ scan
+# ---------------------------------------------------------------- 信息有效性 / 联网补全
+_NOISE_RE = re.compile(
+    r'https?://\S+|www\.\S+|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|'
+    r'【[^】]{0,20}】|\[[^\]]{0,20}\]|\([^)]{0,12}\)|（[^）]{0,12}）')
+_AD_WORDS = ('高清', '无码', '有码', '中文字幕', '字幕', '独家', '首发', '完整版',
+             '未删减', '收藏', '推荐', '精品', '猎艳', '探花')
+
+
+def strip_noise(t):
+    """去掉网址、括号注释、多余符号；返回可读文本。"""
+    x = _NOISE_RE.sub(' ', t or '')
+    x = re.sub(r'[\u200b-\u200f\ufeff]', '', x)
+    x = re.sub(r'[~!@#$%^&*_=+|\\/<>?"]{2,}', ' ', x)
+    x = re.sub(r'\s+', ' ', x).strip(' .,-_')
+    return x
+
+
+def hint_ok(t, min_cjk=4):
+    """判断一段标题/简介是否有实际语义（排除 227、KJSDHUIDS11 (13)、纯广告词）。"""
+    x = strip_noise(t)
+    if not x:
+        return False
+    _t = x
+    for w in _AD_WORDS:
+        _t = _t.replace(w, '')
+    _t = _t.strip(' -_.,:;|')
+    cjk = len(re.findall(r'[\u4e00-\u9fff]', _t))
+    if cjk >= min_cjk:
+        return True
+    core = re.sub(r'[^A-Za-z0-9]', '', _t)
+    if not core or core.isdigit():
+        return False
+    if re.match(r'^[A-Za-z]{1,6}[-_]?\d{2,6}$', core):
+        return True
+    if core.isalpha():
+        if len(core) < 5:
+            return False
+        if re.search(r'[bcdfghjklmnpqrstvwxyz]{4,}', core.lower()):
+            return False
+        v = sum(core.lower().count(c) for c in 'aeiou')
+        return v / float(len(core)) >= 0.2
+    v = sum(core.lower().count(c) for c in 'aeiou')
+    return len(core) >= 8 and v / float(len(core)) >= 0.22
+
+def _http_get(url, timeout=20):
+    try:
+        r = requests.get(url, timeout=timeout, headers={
+            'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                           'AppleWebKit/537.36 (KHTML, like Gecko) '
+                           'Chrome/124.0 Safari/537.36'),
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.6'})
+        if r.status_code == 200:
+            return r.text or ''
+    except Exception:
+        pass
+    return ''
+
+
+def web_search(q, n=5):
+    """Bing -> DuckDuckGo 兜底；返回 [{title,snippet,url}]。"""
+    q = (q or '').strip()
+    if not q:
+        return []
+    from urllib.parse import quote_plus
+    out = []
+    html = _http_get('https://www.bing.com/search?q=%s&setlang=zh-CN' % quote_plus(q))
+    for m in re.finditer(r'<li class="b_algo".*?</li>', html or '', re.S):
+        blk = m.group(0)
+        t = re.search(r'<h2[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', blk, re.S)
+        s2 = re.search(r'<p[^>]*>(.*?)</p>', blk, re.S)
+        if not t:
+            continue
+        title = strip_noise(re.sub(r'<[^>]+>', '', t.group(2)))
+        snip = strip_noise(re.sub(r'<[^>]+>', '', s2.group(1))) if s2 else ''
+        if title:
+            out.append({'title': title, 'snippet': snip, 'url': t.group(1)})
+        if len(out) >= n:
+            return out
+    if out:
+        return out
+    html = _http_get('https://html.duckduckgo.com/html/?q=%s' % quote_plus(q))
+    for m in re.finditer(r'<a rel="nofollow" class="result__a" href="([^"]+)">(.*?)</a>'
+                         r'.*?<a class="result__snippet"[^>]*>(.*?)</a>', html or '', re.S):
+        out.append({'title': strip_noise(re.sub(r'<[^>]+>', '', m.group(2))),
+                    'snippet': strip_noise(re.sub(r'<[^>]+>', '', m.group(3))),
+                    'url': m.group(1)})
+        if len(out) >= n:
+            break
+    return out
+
+
+WEB_FILL_PROMPT = (
+    '下面是某影片的现有信息与网络搜索结果。请判断哪些信息可信，并给出补全结果。\n'
+    '规则：忽略网址、广告词、无意义编号（如 227、KJSDHUIDS11）；\n'
+    '只输出 JSON 对象，不要解释：\n'
+    '{"title":"40字内中文标题","plot":"2-3句中文简介","tags":["标签1","标签2"]}\n\n'
+    '现有：番号=%s | 标题=%s | 简介=%s\n\n搜索结果：\n%s'
+)
+
+
+def web_complete(item, model=None, log=None):
+    """联网补全：搜索 -> 模型抽取。返回 {title,plot,tags} 或 None。"""
+    def _log(m):
+        if log:
+            try:
+                log(m)
+            except Exception:
+                pass
+    code = (item.get('sem_code') or item.get('code') or '').strip()
+    title = strip_noise(item.get('title') or item.get('name') or '')
+    plot = strip_noise(item.get('plot') or '')
+    qs = []
+    if code and hint_ok(code, 0):
+        qs.append(code + ' ' + title[:30])
+    if hint_ok(title):
+        qs.append(title[:60])
+    if not qs:
+        qs.append(title[:60] or code)
+    hits = []
+    for q in qs[:2]:
+        hits = web_search(q, 5)
+        _log('    搜索「%s」-> %d 条' % (q[:40], len(hits)))
+        if hits:
+            break
+    if not hits:
+        return None
+    ctx = '\n'.join('%d. %s | %s' % (i + 1, h['title'][:80], h['snippet'][:120])
+                    for i, h in enumerate(hits))
+    prompt = WEB_FILL_PROMPT % (code or '-', title or '-', plot[:120] or '-', ctx)
+    try:
+        txt = _chat(prompt, model or ai_model(), 900, 0.2)
+        j = extract_json_array(txt)
+        if isinstance(j, list):
+            j = j[0] if j else None
+        if not isinstance(j, dict):
+            return None
+        t2 = strip_noise(j.get('title') or '')
+        p2 = strip_noise(j.get('plot') or '')
+        tg = [str(x).strip() for x in (j.get('tags') or []) if str(x).strip()]
+        if not hint_ok(t2, 3):
+            return None
+        return {'title': t2, 'plot': p2, 'tags': tg[:12]}
+    except Exception as e:
+        _log('    web 抽取失败: %s' % str(e)[:80])
+        return None
+
+
 # ---------------------------------------------------------------- 改名
 _RENAME_BAD = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 

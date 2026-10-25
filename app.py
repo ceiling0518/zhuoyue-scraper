@@ -460,13 +460,18 @@ def _nested_mark(dbc, r):
     return False
 
 
-def _fill_pass(limit, ai_group=None, ids=None):
+def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
     """AI 补全：给【有简介但没标签】的条目按**简介**补 tag（**不看文件名**）。"""
     dbc = mlib.db()
     limit = int(limit or 0)
     ai_group = int(ai_group or 0)
-    q = ("SELECT id,name,title,plot,code,sem_code,path FROM items WHERE present=1 "
-         "AND COALESCE(plot,'')<>''")
+    if web or scan:
+        q = ("SELECT id,name,title,plot,code,sem_code,path FROM items WHERE present=1 "
+             "AND COALESCE(kind,'')<>'nested' "
+             "AND (COALESCE(plot,'')='' OR COALESCE(tags,'')='' OR COALESCE(title,'')='')")
+    else:
+        q = ("SELECT id,name,title,plot,code,sem_code,path FROM items WHERE present=1 "
+             "AND COALESCE(plot,'')<>''")
     args = []
     if ids:
         # 选中项：按简介重补（允许覆盖旧标签，也不看 kind）
@@ -487,6 +492,63 @@ def _fill_pass(limit, ai_group=None, ids=None):
     if batch > 60:
         _log('  单批上限 60（自动切），请求组=%d' % batch)
         batch = 60
+    # 信息无效/不足的条目：先用勾选的来源补（web / 看片）
+    weak = [r for r in rows
+            if (not mlib.hint_ok(r.get('title') or '', 4)
+                or not mlib.hint_ok(r.get('plot') or '', 8))]
+    weak_ids = set(r['id'] for r in weak)
+    rows = [r for r in rows if r['id'] not in weak_ids]
+    srcs = []
+    if web:
+        srcs.append('web')
+    if scan:
+        srcs.append('看片')
+    if weak:
+        _log('  信息无效/不足 %d 条，信息源：%s'
+             % (len(weak), '+'.join(srcs) if srcs else '无（只靠模型补标签）'))
+        for wi, r in enumerate(weak, 1):
+            if _stop_req():
+                break
+            cands = []
+            if web:
+                d1 = mlib.web_complete(r, log=_log)
+                if d1 and mlib.hint_ok(d1.get('title') or '', 3):
+                    cands.append(('web', d1))
+            if scan:
+                d2 = mlib.ai_video_scan(r)
+                if d2 and mlib.hint_ok(d2.get('title') or '', 3):
+                    cands.append(('看片', d2))
+            if not cands:
+                _log('[%d/%d] id=%d 来源均无有效信息' % (wi, len(weak), r['id']))
+                _tick(wi)
+                continue
+            # 综合：标题/简介取更完整的那个，标签取并集
+            base = dict(cands[0][1])
+            if not mlib.hint_ok(base.get('title') or '', 3) and len(cands) > 1:
+                base = dict(cands[1][1])
+            for _src, d in cands:
+                if len(d.get('plot') or '') > len(base.get('plot') or ''):
+                    base['plot'] = d.get('plot')
+                base['tags'] = list(dict.fromkeys((base.get('tags') or []) +
+                                                  (d.get('tags') or [])))
+            tags = ','.join(base.get('tags') or [])[:300]
+            dbc.execute("UPDATE items SET title=?, plot=?, tags=?, quality=?, source=?, "
+                        "last_update=? WHERE id=?",
+                        (base.get('title'), base.get('plot'), tags,
+                         '有' if tags else '缺', '+'.join(s for s, _ in cands),
+                         mlib.now(), r['id']))
+            dbc.commit()
+            try:
+                it = dict(dbc.execute('SELECT * FROM items WHERE id=?', (r['id'],)).fetchone())
+                mlib.write_nfo(it)
+            except Exception:
+                pass
+            ok += 1
+            _log('[%d/%d] id=%d OK（%s）: %s'
+                 % (wi, len(weak), r['id'], '+'.join(s for s, _ in cands),
+                    (base.get('title') or '')[:30]))
+            _tick(wi)
+
     _tick(0, len(rows))
     _log('AI 补全 %d 条，%d 条一批（只看简介，不看文件名）' % (len(rows), batch))
     ok = 0
@@ -526,10 +588,10 @@ def _fill_pass(limit, ai_group=None, ids=None):
     return ok, len(rows)
 
 
-def _job_fill(limit, ai_group=None, ids=None):
+def _job_fill(limit, ai_group=None, ids=None, web=False, scan=False):
     _begin('fill')
     try:
-        ok, tot = _fill_pass(limit, ai_group, ids)
+        ok, tot = _fill_pass(limit, ai_group, ids, web, scan)
         mlib.unload_ai()
         _end('fill %d/%d' % (ok, tot))
     except Exception:
@@ -3071,7 +3133,9 @@ class H(BaseHTTPRequestHandler):
                             _k2, _v2 = _kv.split('=', 1)
                             q.setdefault(_k2, _v2)
                 ids = [int(x) for x in _rid.split(',') if x.strip().isdigit()]
-                ok = start_job(_job_fill, lim, int(q.get('ai_group') or 0), ids)
+                ok = start_job(_job_fill, lim, int(q.get('ai_group') or 0), ids,
+                               (q.get('web') or '') in ('1', 'true', 'yes'),
+                               (q.get('scan') or '') in ('1', 'true', 'yes'))
             elif p == '/api/vscan':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_vscan, lim, ids, lane='heavy')
@@ -3412,6 +3476,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
     <button class="primary" id="a-web" title="只对【选中的条目】跑网站线（不经过队列，队列里有别的也不会被跑）">重跑·网站</button>
     <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
+    <label class="muted" title="勾选后：信息无效/不足时联网搜索补全"><input type="checkbox" id="fill-web"> Web</label>
+    <label class="muted" title="勾选后：信息无效/不足时抽帧看片补全（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
     <button id="a-fill">AI 补全</button>
     <button id="a-vscan">AI 看片</button>
     <button id="a-auto" title="只对【选中的条目】跑全流程（不经过队列）">重跑·全流程</button>
@@ -3620,7 +3686,9 @@ $('#a-ai').onclick=batchRun('ai');
 $('#a-fill').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部 有简介但没标签】的条目按简介补标签，继续？')))return;
-  await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value+(ids?'&ids='+ids:''));};
+  await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value
+    +(ids?'&ids='+ids:'')+'&web='+($('#fill-web').checked?1:0)
+    +'&scan='+($('#fill-scan').checked?1:0));};
 $('#a-vscan').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部 无/有误】的条目抽帧看视频（较慢），继续？')))return;
