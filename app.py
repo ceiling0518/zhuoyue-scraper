@@ -5509,7 +5509,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="f-bad"><option value="">无效段:全部</option><option>广告</option><option>无效段</option><option>both</option><option>无</option><option>未做</option></select>
     <select id="f-subs"><option value="">字幕:全部</option><option>有</option><option>无</option><option>烧录</option></select>
     <select id="f-pq"><option value="">画质:全部</option><option>良好</option><option>一般</option><option>差</option></select>
-    <select id="f-mk"><option value="">类型:全部</option><option value="av">AV</option><option value="movie">电影</option><option value="tv">剧集</option></select>
     <input id="f-q" placeholder="搜索 名字/标题/番号" style="width:200px">
     <select id="f-sort" title="排序字段"><option value="id">排序:编号</option><option value="first_seen">排序:入库时间</option><option value="last_update">排序:最后编辑</option><option value="bitrate">排序:码率</option></select>
     <select id="f-order" title="正序 / 倒序"><option value="asc">正序 ↑</option><option value="desc">倒序 ↓</option></select>
@@ -5547,7 +5546,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     
     <button id="a-thumbs">刷新缩略图</button>
     <label class="muted" title="AI 自动选帧并裁剪到女性；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI选图</label>
-    <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升封面画质</label>
+    <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
     <button id="a-coverdel">删除封面图</button>
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
     <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
@@ -5775,7 +5774,7 @@ function resLabel(w,h){const m=Math.min(w,h),M=Math.max(w,h);
   return (m>=2000)?'4K':(m>=1400?'1440p':(m>=1000?'1080p':(m>=700?'720p':M+'×'+m)));}
 async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
   quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,
-  health:$('#f-health').value,bad:$('#f-bad').value,subf:$('#f-subs').value,pq:$('#f-pq').value,mk:$('#f-mk').value,
+  health:$('#f-health').value,bad:$('#f-bad').value,subf:$('#f-subs').value,pq:$('#f-pq').value,
   sort:$('#f-sort').value,order:$('#f-order').value});
   const d=await(await fetch('/api/items?'+qs)).json();
   $('#rows').innerHTML=d.rows.map(r=>{
@@ -6528,7 +6527,7 @@ $('#b-archive').onclick=async()=>{const d=await(await fetch('/api/archive?limit=
 $('#b-prev').onclick=()=>{off=Math.max(0,off-lim);list();};
 $('#b-next').onclick=()=>{off+=lim;list();};
 $('#pjump').onchange=e=>{off=parseInt(e.target.value,10)||0;list();};
-['f-quality','f-source','f-kind','f-health','f-bad','f-subs','f-pq','f-mk','f-sort','f-order'].forEach(i=>$('#'+i).onchange=()=>{off=0;list();});
+['f-quality','f-source','f-kind','f-health','f-bad','f-subs','f-pq','f-sort','f-order'].forEach(i=>$('#'+i).onchange=()=>{off=0;list();});
 $('#f-q').onkeydown=e=>{if(e.key==='Enter'){off=0;list();}};
 const rawList=v=>{if(v==null)return '';let a=v;try{a=JSON.parse(v)}catch(e){}
   if(Array.isArray(a))return a.join(',');return String(v);};
