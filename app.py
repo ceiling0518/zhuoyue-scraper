@@ -300,9 +300,9 @@ def _sem_pass(limit, force=False, group=None):
             try:
                 _su = dbc.execute('SELECT studio FROM items WHERE id=?',
                                   (r['id'],)).fetchone()
+                _pub = (_su['studio'] if _su else '') or ''
                 mlib.series_upsert(mlib.series_of_item(dict(r, sem_code=code)),
-                                   1 if code else 0, kind,
-                                   (_su['studio'] if _su else '') or '', dbc)
+                                   1 if code else 0, kind, _pub, _pub, dbc)
             except Exception:
                 pass
             if (s or {}).get('nested'):
@@ -579,16 +579,30 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
                 base['tags'] = list(dict.fromkeys((base.get('tags') or []) +
                                                   (d.get('tags') or [])))
             tags = ','.join(base.get('tags') or [])[:300]
+            # 综合判断：网站线已有的标题/简介优先，来源只补缺失或明显更完整的
+            _old_t = (r.get('title') or '').strip()
+            _old_p = (r.get('plot') or '').strip()
+            _new_t = (base.get('title') or '').strip()
+            _new_p = (base.get('plot') or '').strip()
+            _title = _old_t if mlib.hint_ok(_old_t, 4) else _new_t
+            if mlib.hint_ok(_old_p, 8) and len(_old_p) >= max(10, int(len(_new_p) * 0.6)):
+                _plot = _old_p
+            else:
+                _plot = _new_p or _old_p
+            if _title != _new_t or _plot != _new_p:
+                _log('    综合：保留原有标题/简介（来源仅补缺）')
             # 演员/公司/年份/番号：有值才覆盖，不拿空值冲掉已有信息
             _actors = ','.join(base.get('actors') or []) or (r.get('actors') or '')
-            _studio = base.get('studio') or (r.get('studio') or '')
+            _sr = mlib.series_get(mlib.series_of_item(r)) or {}
+            _studio = (_sr.get('publisher') or base.get('studio')
+                       or (r.get('studio') or ''))
             _year = base.get('year') or (r.get('year') or '')
             _code = base.get('code') or ''
             if _code and not (r.get('sem_code') or r.get('code')):
                 dbc.execute('UPDATE items SET code=? WHERE id=?', (_code, r['id']))
             dbc.execute("UPDATE items SET title=?, plot=?, tags=?, actors=?, studio=?, "
                         "year=?, quality=?, source=?, last_update=? WHERE id=?",
-                        (base.get('title'), base.get('plot'), tags, _actors, _studio,
+                        (_title, _plot, tags, _actors, _studio,
                          _year, '有' if tags else '缺', '+'.join(s for s, _ in cands),
                          mlib.now(), r['id']))
             dbc.commit()
@@ -600,7 +614,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
             ok += 1
             _log('[%d/%d] id=%d OK（%s）: %s | 演员 %s | 公司 %s | %s'
                  % (wi, len(weak), r['id'], '+'.join(s for s, _ in cands),
-                    (base.get('title') or '')[:26], (_actors or '-')[:24],
+                    (_title or '')[:26], (_actors or '-')[:24],
                     (_studio or '-')[:16], (_year or '-')))
             _tick(wi)
 

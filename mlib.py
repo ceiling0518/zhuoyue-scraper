@@ -455,28 +455,36 @@ def ensure_series(dbc=None):
         has_code INTEGER DEFAULT 0,
         sem_kind TEXT,
         note TEXT,
+        publisher TEXT,
         updated TEXT)""")
+    try:
+        d.execute('ALTER TABLE series ADD COLUMN publisher TEXT')   # 旧库补列
+    except Exception:
+        pass
     d.commit()
     return d
 
 
-def series_upsert(series, has_code, sem_kind='', note='', dbc=None):
+def series_upsert(series, has_code, sem_kind='', note='', publisher='', dbc=None):
     """有则更新；空值不覆盖已有语义/备注。"""
     series = (series or '').strip()
     if not series:
         return None
     d = dbc or db()
     ensure_series(d)
-    d.execute("""INSERT INTO series(series,has_code,sem_kind,note,updated)
-                 VALUES(?,?,?,?,?)
+    d.execute("""INSERT INTO series(series,has_code,sem_kind,note,publisher,updated)
+                 VALUES(?,?,?,?,?,?)
                  ON CONFLICT(series) DO UPDATE SET
                    has_code=excluded.has_code,
                    sem_kind=CASE WHEN excluded.sem_kind<>'' THEN excluded.sem_kind
                                  ELSE series.sem_kind END,
                    note=CASE WHEN excluded.note<>'' THEN excluded.note
                              ELSE series.note END,
+                   publisher=CASE WHEN excluded.publisher<>'' THEN excluded.publisher
+                                  ELSE series.publisher END,
                    updated=excluded.updated""",
-              (series, 1 if has_code else 0, sem_kind or '', note or '', now()))
+              (series, 1 if has_code else 0, sem_kind or '', note or '',
+               publisher or '', now()))
     d.commit()
     return series
 
