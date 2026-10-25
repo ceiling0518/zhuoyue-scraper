@@ -313,7 +313,7 @@ except Exception:
 
 # ---------------------------------------------------------------- passes
 def _scan_pass(mode):
-    r = mlib.scan(mode=mode)
+    r = mlib.scan_all(mode=mode, log=_log)
     _log('scan(%s): %s' % (mode, json.dumps(r, ensure_ascii=False)))
     return r
 
@@ -3947,7 +3947,8 @@ def stats():
            'total': dbc.execute('SELECT COUNT(*) c FROM items WHERE present=1').fetchone()['c'],
            'by_quality': {}, 'by_source': {}, 'sem': {}, 'ollama': _ollama(), 'os': ('win' if mlib.IS_WIN else 'linux'),
            'archive': dbc.execute('SELECT COUNT(*) c FROM archive').fetchone()['c'],
-           'root': mlib.scan_root(), 'model': mlib.ai_model(), 'db': mlib.DB_PATH,
+           'root': mlib.scan_root(), 'root_movie': mlib.root_movie(),
+           'root_tv': mlib.root_tv(), 'model': mlib.ai_model(), 'db': mlib.DB_PATH,
            'cookie': bool(mlib.javdb_cookie()),
            'queue': len(QUEUE)}
     try:
@@ -4038,6 +4039,10 @@ def items(params):
         where.append('COALESCE(items.subs,0)=0')
     elif sf == '烧录':
         where.append('COALESCE(items.subs_burn,0)=1')
+    _mk = (params.get('mk') or '').strip()
+    if _mk in ('av', 'movie', 'tv'):
+        where.append("COALESCE(items.media_kind,'av')=?")
+        args.append(_mk)
     pq = params.get('pq')
     if pq in ('良好', '一般', '差'):
         _b = ("(COALESCE(m.vbr,0)*1.0/(MIN(m.w*m.h,2073600)*COALESCE(m.fps,0)))")
@@ -4065,7 +4070,7 @@ def items(params):
     total = dbc.execute('SELECT COUNT(*) c FROM items LEFT JOIN media m ON m.item_id=items.id WHERE ' + ws, args).fetchone()['c']
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
-    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,series,status,site,path,items.subs AS subs,items.subs_burn AS subs_burn,'
+    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,series,status,site,path,media_kind,items.subs AS subs,items.subs_burn AS subs_burn,'
                        'm.vbr AS vbr, m.size AS fsize, m.file AS mfile, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads, m.ads_ts AS ads_ts,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT COUNT(*) FROM segs_file s WHERE s.item_id=items.id AND s.kind='invalid' AND IFNULL(s.segs,'') NOT IN ('','[]')) AS nw, "
@@ -4995,6 +5000,10 @@ class H(BaseHTTPRequestHandler):
             if p == '/api/config':
                 if q.get('root'):
                     mlib.cfg_set('root', q['root'])
+                if 'root_movie' in q:
+                    mlib.cfg_set('root_movie', q.get('root_movie') or '')
+                if 'root_tv' in q:
+                    mlib.cfg_set('root_tv', q.get('root_tv') or '')
                 if q.get('model'):
                     mlib.cfg_set('model', q['model'])
                 return self._json({'ok': True, 'root': mlib.scan_root(), 'model': mlib.ai_model()})
@@ -5421,6 +5430,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <button id="b-sites">站点</button>
   <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <span class="muted">媒体库</span><input id="cfg-root" style="width:220px">
+  <span class="muted">电影库</span><input id="cfg-root-movie" style="width:190px" placeholder="留空=不启用">
+  <span class="muted">剧集库</span><input id="cfg-root-tv" style="width:190px" placeholder="留空=不启用">
   <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select><span class="muted">输出语言</span><select id="cfg-outlang" title="元数据输出语言" style="min-width:104px"><option value="">跟随界面</option><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
@@ -5462,6 +5473,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="f-bad"><option value="">无效段:全部</option><option>广告</option><option>无效段</option><option>both</option><option>无</option><option>未做</option></select>
     <select id="f-subs"><option value="">字幕:全部</option><option>有</option><option>无</option><option>烧录</option></select>
     <select id="f-pq"><option value="">画质:全部</option><option>良好</option><option>一般</option><option>差</option></select>
+    <select id="f-mk"><option value="">类型:全部</option><option value="av">AV</option><option value="movie">电影</option><option value="tv">剧集</option></select>
     <input id="f-q" placeholder="搜索 名字/标题/番号" style="width:200px">
     <select id="f-sort" title="排序字段"><option value="id">排序:编号</option><option value="first_seen">排序:入库时间</option><option value="last_update">排序:最后编辑</option><option value="bitrate">排序:码率</option></select>
     <select id="f-order" title="正序 / 倒序"><option value="asc">正序 ↑</option><option value="desc">倒序 ↓</option></select>
@@ -5639,6 +5651,9 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
   PLAT=s.os||'win';                     // 容器/Linux：隐藏 Windows 专属按钮
   const _ao=document.getElementById('a-open'); if(_ao)_ao.style.display=(PLAT==='win'?'':'none');
   if(!$('#cfg-root').value)$('#cfg-root').value=s.root;
+  const _rmv=document.getElementById('cfg-root-movie'),_rtv=document.getElementById('cfg-root-tv');
+  if(_rmv&&!_rmv.value)_rmv.value=s.root_movie||'';
+  if(_rtv&&!_rtv.value)_rtv.value=s.root_tv||'';
   const sel=$('#cfg-model');const ms=(s.ollama&&s.ollama.models)||[];
   if(sel.options.length!==ms.length+1){sel.innerHTML='<option value="'+esc(s.model)+'">'+esc(s.model)+'</option>'
     +ms.map(m=>'<option>'+esc(m)+'</option>').join('');}
@@ -5713,7 +5728,7 @@ function resLabel(w,h){const m=Math.min(w,h),M=Math.max(w,h);
   return (m>=2000)?'4K':(m>=1400?'1440p':(m>=1000?'1080p':(m>=700?'720p':M+'×'+m)));}
 async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
   quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,
-  health:$('#f-health').value,bad:$('#f-bad').value,subf:$('#f-subs').value,pq:$('#f-pq').value,
+  health:$('#f-health').value,bad:$('#f-bad').value,subf:$('#f-subs').value,pq:$('#f-pq').value,mk:$('#f-mk').value,
   sort:$('#f-sort').value,order:$('#f-order').value});
   const d=await(await fetch('/api/items?'+qs)).json();
   $('#rows').innerHTML=d.rows.map(r=>{
@@ -6144,7 +6159,9 @@ $('#md-body').addEventListener('click',async e=>{
   list();});
 $('#md2-close').onclick=()=>$('#modal2').classList.remove('on');
 $('#cfg-save').onclick=async()=>{await fetch('/api/config?root='+encodeURIComponent($('#cfg-root').value)
-  +'&model='+encodeURIComponent($('#cfg-model').value),{method:'POST'});
+  +'&model='+encodeURIComponent($('#cfg-model').value)
+  +'&root_movie='+encodeURIComponent($('#cfg-root-movie').value)
+  +'&root_tv='+encodeURIComponent($('#cfg-root-tv').value),{method:'POST'});
   const n=await(await fetch('/api/net?port='+($('#cfg-port').value||0)+'&lan='+($('#cfg-lan').checked?1:0)
     +'&bak_days='+($('#cfg-bakdays').value||0)
     +'&enc_mode='+($('#cfg-encmode').value)+'&enc_val='+encodeURIComponent($('#cfg-encval').value||'')
@@ -6378,7 +6395,7 @@ $('#b-archive').onclick=async()=>{const d=await(await fetch('/api/archive?limit=
 $('#b-prev').onclick=()=>{off=Math.max(0,off-lim);list();};
 $('#b-next').onclick=()=>{off+=lim;list();};
 $('#pjump').onchange=e=>{off=parseInt(e.target.value,10)||0;list();};
-['f-quality','f-source','f-kind','f-health','f-bad','f-subs','f-pq','f-sort','f-order'].forEach(i=>$('#'+i).onchange=()=>{off=0;list();});
+['f-quality','f-source','f-kind','f-health','f-bad','f-subs','f-pq','f-mk','f-sort','f-order'].forEach(i=>$('#'+i).onchange=()=>{off=0;list();});
 $('#f-q').onkeydown=e=>{if(e.key==='Enter'){off=0;list();}};
 const rawList=v=>{if(v==null)return '';let a=v;try{a=JSON.parse(v)}catch(e){}
   if(Array.isArray(a))return a.join(',');return String(v);};

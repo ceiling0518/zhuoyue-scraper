@@ -119,6 +119,108 @@ def scan_root():
     return cfg_get('root', ROOT_DEFAULT)
 
 
+def root_movie():
+    """电影库根目录；留空 = 不用电影库。"""
+    return (cfg_get('root_movie') or '').strip()
+
+
+def root_tv():
+    """剧集库根目录；留空 = 不用剧集库。"""
+    return (cfg_get('root_tv') or '').strip()
+
+
+def scan_roots():
+    """[(kind, root)]：AV 根固定在内，电影/剧集根可选，按路径去重。"""
+    out = [('av', scan_root())]
+    for k, r in (('movie', root_movie()), ('tv', root_tv())):
+        if r and all(r != x[1] for x in out):
+            out.append((k, r))
+    return out
+
+
+# 剧集特征：S01E02 / S01.E02 / 第12集 / Season 1 / EP05
+_KIND_TV_RE = re.compile(r'(?i)(?:\bS\d{1,2}[\s._-]*E\d{1,3}\b|\bSeason\s*\d{1,2}\b'
+                         r'|第\s*\d{1,3}\s*[集话話]|\bEP?\s*\d{1,2}\b)')
+# 电影特征：(2019) / .2019. / 2019 —— 前后要有边界，避免把 4716 当成年份
+_KIND_YEAR_RE = re.compile(r'(?:[\(\[\.\-_\s]|^)(?:19|20)\d{2}(?:[\)\]\.\-_\s]|$)')
+
+
+def guess_media_kind(folder, name='', files=None):
+    """按命名猜类型：剧集(SxxExx/第N集) > 电影(带年份且无番号) > AV。"""
+    nm = (name or os.path.basename(folder or '') or '').strip()
+    try:
+        fl = list(files) if files is not None else os.listdir(folder)
+    except Exception:
+        fl = []
+    vids = [f for f in fl if os.path.splitext(f)[1].lower() in VIDEO_EXT]
+    probe = ' '.join([nm] + vids[:8])
+    if _KIND_TV_RE.search(nm) or (len(vids) >= 2 and _KIND_TV_RE.search(probe)):
+        return 'tv'
+    try:
+        has_code = bool(JS.find_code(nm))
+    except Exception:
+        has_code = False
+    if not has_code and (_KIND_YEAR_RE.search(nm) or (vids and _KIND_YEAR_RE.search(probe))):
+        return 'movie'
+    return 'av'
+
+
+_MK_MIGRATED = False
+
+
+def ensure_media_kind(dbc=None):
+    """items 的类型/剧集列 + episodes 表（幂等）；老库一次性回填 av。"""
+    global _MK_MIGRATED
+    d = dbc or db()
+    for col, typ in (('media_kind', 'TEXT'), ('show', 'TEXT'), ('season', 'INTEGER'),
+                     ('episode', 'INTEGER'), ('tmdb_id', 'INTEGER')):
+        try:
+            d.execute('ALTER TABLE items ADD COLUMN %s %s' % (col, typ))
+        except Exception:
+            pass
+    try:
+        d.execute("""CREATE TABLE IF NOT EXISTS episodes(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER,
+            season INTEGER, episode INTEGER, path TEXT, title TEXT, plot TEXT,
+            air TEXT, still TEXT, ts TEXT)""")
+    except Exception:
+        pass
+    if not _MK_MIGRATED:
+        try:
+            d.execute("UPDATE items SET media_kind='av' WHERE COALESCE(media_kind,'')=''")
+            _MK_MIGRATED = True
+        except Exception:
+            pass
+    try:
+        d.commit()
+    except Exception:
+        pass
+    return d
+
+
+def scan_all(mode='incr', dbc=None, log=None):
+    """逐库扫描（AV/电影/剧集），每个根目录各自判增删，互不影响。"""
+    d = ensure_media_kind(dbc or db())
+    tot = {'mode': mode, 'added': 0, 'removed': 0, 'changed': 0, 'skipped': 0,
+           'total': 0, 'roots': []}
+    for k, r in scan_roots():
+        if not os.path.isdir(r):
+            tot['roots'].append({'kind': k, 'root': r, 'error': 'unreachable'})
+            if log:
+                log('  %s 根不可达：%s' % (k, r))
+            continue
+        rr = scan(r, mode, d, kind_hint=k)
+        for f in ('added', 'removed', 'changed', 'skipped', 'total'):
+            tot[f] += int(rr.get(f) or 0)
+        tot['roots'].append({'kind': k, 'root': r, 'added': rr.get('added'),
+                             'removed': rr.get('removed'), 'changed': rr.get('changed'),
+                             'total': rr.get('total')})
+        if log:
+            log('  %s：新增 %s / 变更 %s / 共 %s'
+                % (k, rr.get('added'), rr.get('changed'), rr.get('total')))
+    return tot
+
+
 # ---------------------------------------------------------------- 语言
 # 两套独立设置：
 #   config.lang     = 界面语言（前端 i18n 用）
@@ -1119,7 +1221,7 @@ def has_nested_videos(dirpath, depth=2):
     return False
 
 
-def scan(root=None, mode='incr', dbc=None):
+def scan(root=None, mode='incr', dbc=None, kind_hint=''):
     """Snapshot the source tree + read each folder's movie.nfo.
 
     mode 'rebuild': archive ALL rows, then rebuild from scratch.
@@ -1134,15 +1236,19 @@ def scan(root=None, mode='incr', dbc=None):
         dbc.commit()
     except Exception:
         pass
+    ensure_media_kind(dbc)
+    _like = root.rstrip('\\/') + os.sep + '%'
     if mode == 'rebuild':
         dbc.execute("INSERT INTO archive(id,path,name,code,title,quality,source,archived_at,reason) "
-                    "SELECT id,path,name,code,title,quality,source,?, 'rebuild' FROM items", (ts,))
-        dbc.execute('DELETE FROM items')
+                    "SELECT id,path,name,code,title,quality,source,?, 'rebuild' FROM items "
+                    "WHERE path LIKE ?", (ts, _like))
+        dbc.execute('DELETE FROM items WHERE path LIKE ?', (_like,))
         dbc.commit()
         known = {}
     else:
         known = {r['path']: (r['id'], int(r['dir_mtime'] or 0))
-                 for r in dbc.execute('SELECT id, path, dir_mtime FROM items')}
+                 for r in dbc.execute('SELECT id, path, dir_mtime FROM items '
+                                      'WHERE path LIKE ?', (_like,))}
     seen, added, changed, skipped = set(), 0, 0, 0
     if not os.path.isdir(root):
         return {'error': 'root unreachable: %s' % root}
@@ -1168,12 +1274,14 @@ def scan(root=None, mode='incr', dbc=None):
         if q == '有误':
             q = '无'                      # 建库：有误 全部还原成 无
         kk, _nv, _subs = folder_kind(p)
+        _ls = []
         try:
             _ls = os.listdir(p)
             _has_sub = 1 if any(f.lower().endswith('.srt') for f in _ls) else 0
             _has_burn = 1 if any('.hardsub' in f.lower() for f in _ls) else 0
         except Exception:
             _has_sub, _has_burn = 0, 0
+        _mk = kind_hint or guess_media_kind(p, name, _ls)
         # 番号/目录名尾部带 C 或 CX（中文字幕版）-> 视为烧录字幕
         try:
             _nm = (name or '').strip().upper()
@@ -1195,21 +1303,23 @@ def scan(root=None, mode='incr', dbc=None):
                   'actors': json.dumps(nfo.get('actors') or [], ensure_ascii=False),
                   'studio': nfo.get('studio', ''), 'year': nfo.get('year', '')}
         if p not in known:
-            dbc.execute("""INSERT INTO items(path,name,code,status,quality,source,kind,title,plot,
+            dbc.execute("""INSERT INTO items(path,name,code,status,quality,source,kind,media_kind,title,plot,
                                              tags,actors,studio,year,subs,subs_burn,first_seen,last_scan,present,dir_mtime)
-                           VALUES(?,?,?,'empty',?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
-                        (p, name, code, q, src, kk, nf.get('title', ''), nf.get('plot', ''),
+                           VALUES(?,?,?,'empty',?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                        (p, name, code, q, src, kk, _mk, nf.get('title', ''), nf.get('plot', ''),
                          nf.get('tags', ''), nf.get('actors', ''), nf.get('studio', ''),
                          nf.get('year', ''), _has_sub, _has_burn, ts, ts, mt))
             added += 1
         else:
             iid = known[p][0]
-            r = dbc.execute('SELECT code,quality,source,kind,present FROM items WHERE id=?',
-                            (iid,)).fetchone()
+            r = dbc.execute('SELECT code,quality,source,kind,media_kind,present FROM items '
+                            'WHERE id=?', (iid,)).fetchone()
             if (r['code'] != code or (r['quality'] or '') != q or (r['source'] or '') != src
-                    or (r['kind'] or '') != kk or r['present'] != 1):
-                dbc.execute('UPDATE items SET code=?,quality=?,source=?,kind=?,present=1,'
-                            'last_scan=?,dir_mtime=? WHERE id=?', (code, q, src, kk, ts, mt, iid))
+                    or (r['kind'] or '') != kk or (r['media_kind'] or '') != _mk
+                    or r['present'] != 1):
+                dbc.execute('UPDATE items SET code=?,quality=?,source=?,kind=?,media_kind=?,'
+                            'present=1,last_scan=?,dir_mtime=? WHERE id=?',
+                            (code, q, src, kk, _mk, ts, mt, iid))
                 changed += 1
             else:
                 dbc.execute('UPDATE items SET last_scan=?, dir_mtime=? WHERE id=?'
