@@ -522,6 +522,8 @@ def series_build(dbc=None, log=None):
         pubs = [clean_publisher(x.get('studio')) for x in its
                 if clean_publisher(x.get('studio'))]
         pub = max(set(pubs), key=pubs.count) if pubs else ''
+        if not pub:
+            pub = studio_by_series(k)
         has_code = 1 if any((x.get('sem_code') or x.get('code') or '').strip() for x in its) else 0
         note = ''
         if not has_code and kind in ('none', ''):
@@ -649,6 +651,26 @@ def series_get(name, dbc=None):
         return dict(r) if r else None
     except Exception:
         return None
+
+
+AV_STUDIOS = {}
+try:
+    _ap = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'av_studios.json')
+    if os.path.exists(_ap):
+        AV_STUDIOS = json.load(open(_ap, encoding='utf-8'))
+except Exception:
+    AV_STUDIOS = {}
+
+
+def studio_by_series(k):
+    """按 AvNumber 映射查片商：先全大写去分隔符，再试原样。"""
+    if not k:
+        return ''
+    for key in (k.upper().replace('-', '').replace('_', ''), k.upper()):
+        info = AV_STUDIOS.get(key)
+        if info and info.get('publisher'):
+            return info['publisher']
+    return ''
 
 
 PUB_BAD = ('javbus', 'javdb', 'missav', '123av', 'njav', 'supjav', 'freejav',

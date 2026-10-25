@@ -1,0 +1,1687 @@
+{
+ "MDLD": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Legend，主演为传奇级的知名女演员"
+ },
+ "MDVR": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies VR，VR主题"
+ },
+ "MIAD": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Acid Disc，严厉主题，编号好像满了，后续接MIAE"
+ },
+ "MIAE": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Acid Disc，严厉主题"
+ },
+ "MIAS": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Ass，恋臀主题"
+ },
+ "MIGD": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Gati Disc，重口主题"
+ },
+ "MIRD": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Real Disc，真实主题"
+ },
+ "MINT": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies NTR，NTR主题，已作废"
+ },
+ "MIMK": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Manksutu，动漫AV化主题"
+ },
+ "MIDD": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Diva Disc，女歌手主题，常规番号，编号已满，后续接MIDE"
+ },
+ "MIDE": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Diva End，常规番号"
+ },
+ "MIFD": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Fresh Disc，新人出道主题"
+ },
+ "MIID": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "妄想系列"
+ },
+ "MDED": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "对应制作组KILLER，已作废"
+ },
+ "MIZD": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "Moodies Disc，高清剪辑合集"
+ },
+ "MIAA": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "制作组为“大家的吻”，其余不详"
+ },
+ "MIXS": {
+  "publisher": "MOODYZ",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "MDYD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "MBYD": {
+  "publisher": "溜池ゴロー",
+  "group": "北都集团",
+  "desc": "精选合集"
+ },
+ "MEYD": {
+  "publisher": "溜池ゴロー",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "NWF": {
+  "publisher": "Wanz Factory",
+  "group": "北都集团",
+  "desc": "常规番号，编号已满，后续接WANZ"
+ },
+ "WANZ": {
+  "publisher": "Wanz Factory",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "BMW": {
+  "publisher": "Wanz Factory",
+  "group": "北都集团",
+  "desc": "6~8小时合集"
+ },
+ "JBD": {
+  "publisher": "ATTACKERS",
+  "group": "北都集团",
+  "desc": "JaBaku Disc，蛇缚系列"
+ },
+ "RBD": {
+  "publisher": "ATTACKERS",
+  "group": "北都集团",
+  "desc": "Ryu Baku Disc，龙缚系列"
+ },
+ "ATAD": {
+  "publisher": "ATTACKERS",
+  "group": "北都集团",
+  "desc": "Attacker Anthology，Attacker精选集"
+ },
+ "SHKD": {
+  "publisher": "ATTACKERS",
+  "group": "北都集团",
+  "desc": "shaaku Disc,死夜恶系列，日文谐音shark（勒索者）"
+ },
+ "SSPD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ATID": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ADN": {
+  "publisher": "ATTACKERS",
+  "group": "北都集团",
+  "desc": "NTR题材"
+ },
+ "IPTD": {
+  "publisher": "Idea Pocket",
+  "group": "北都集团",
+  "desc": "Idea PockeT Disc，常规番号，编号满了，后续接IPZ"
+ },
+ "IPZ": {
+  "publisher": "Idea Pocket",
+  "group": "北都集团",
+  "desc": "Idea Pocket Z，常规番号，Z代表终极，编号满了，后续接IPX"
+ },
+ "IPX": {
+  "publisher": "Idea Pocket",
+  "group": "北都集团",
+  "desc": "Idea Pocket X，常规番号"
+ },
+ "IDBD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "SUPD": {
+  "publisher": "Idea Pocket",
+  "group": "北都集团",
+  "desc": "数字频道，该番号已作废"
+ },
+ "IPSD": {
+  "publisher": "Idea Pocket",
+  "group": "北都集团",
+  "desc": "旧维纳斯系列，该公司主力女演员合作，已作废，新维纳斯系列归入IPX"
+ },
+ "DAN": {
+  "publisher": "Idea Pocket",
+  "group": "北都集团",
+  "desc": "Disc ANgel，天使系列，已作废"
+ },
+ "AND": {
+  "publisher": "Idea Pocket",
+  "group": "北都集团",
+  "desc": "ANgel Disc，同上，也作废了"
+ },
+ "KAWD": {
+  "publisher": "KAWAII",
+  "group": "北都集团",
+  "desc": "常规番号，编号基本满了"
+ },
+ "KWBD": {
+  "publisher": "KAWAII",
+  "group": "北都集团",
+  "desc": "4~8小时合集"
+ },
+ "KAPD": {
+  "publisher": "KAWAII",
+  "group": "北都集团",
+  "desc": "合辑番号，编号已满，后续大概是接KWBD，但不确定"
+ },
+ "JUC": {
+  "publisher": "Madonna",
+  "group": "北都集团",
+  "desc": "常规番号，编号已满，后续接JUX"
+ },
+ "JUX": {
+  "publisher": "Madonna",
+  "group": "北都集团",
+  "desc": "常规番号，编号已满，后续接JUY"
+ },
+ "JUY": {
+  "publisher": "Madonna",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "JUSD": {
+  "publisher": "Madonna",
+  "group": "北都集团",
+  "desc": "精选集"
+ },
+ "JUKD": {
+  "publisher": "Madonna",
+  "group": "北都集团",
+  "desc": "早期番号，编号已满"
+ },
+ "OBA": {
+  "publisher": "Madonna",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "URE": {
+  "publisher": "Madonna",
+  "group": "北都集团",
+  "desc": "漫改作品"
+ },
+ "JUFE": {
+  "publisher": "FITCH",
+  "group": "北都集团",
+  "desc": "巨乳主题"
+ },
+ "FINH": {
+  "publisher": "FITCH",
+  "group": "北都集团",
+  "desc": "深喉主题"
+ },
+ "EBOD": {
+  "publisher": "E-BODY",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "MKCK": {
+  "publisher": "E-BODY",
+  "group": "北都集团",
+  "desc": "精选合集"
+ },
+ "EYAN": {
+  "publisher": "E-BODY",
+  "group": "北都集团",
+  "desc": "人妻主题"
+ },
+ "KIRD": {
+  "publisher": "kira☆kira",
+  "group": "北都集团",
+  "desc": "同上，差别不详"
+ },
+ "KIBD": {
+  "publisher": "kira☆kira",
+  "group": "北都集团",
+  "desc": "精选合集"
+ },
+ "BLK": {
+  "publisher": "kira☆kira",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "KISD": {
+  "publisher": "kira☆kira",
+  "group": "北都集团",
+  "desc": "多人"
+ },
+ "ONED": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "常规番号，编号已满，后续接SOE"
+ },
+ "SOE": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "常规番号，编号已满，后续接SNIS"
+ },
+ "SNIS": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "常规番号，编号已满，后续接SSNI"
+ },
+ "SSNI": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "常规番号，当前启用中"
+ },
+ "ONSD": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "高清剪辑合集，编号已满，后续接OFJE"
+ },
+ "OFJE": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "高清剪辑合集，启用中"
+ },
+ "SIVR": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "VR作品"
+ },
+ "SPS": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "专为新人女演员开辟的番号，以真爱系列为起点"
+ },
+ "SRXV": {
+  "publisher": "MAX-A",
+  "group": "JHV集团",
+  "desc": "常规番号出租版，内容与XV及XVSR相同，但编号并不对应"
+ },
+ "TMSD": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "NEXD": {
+  "publisher": "S1",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "PGD": {
+  "publisher": "Premium",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "PBD": {
+  "publisher": "Premium",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "PJD": {
+  "publisher": "Premium",
+  "group": "北都集团",
+  "desc": "不详，可能是高清或合集"
+ },
+ "TEK": {
+  "publisher": "Muteki",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "PPPD": {
+  "publisher": "OPPAI",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "HND": {
+  "publisher": "本中",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "TYOD": {
+  "publisher": "乱丸",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "TPPN": {
+  "publisher": "铁板",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "BF": {
+  "publisher": "BEFREE",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "ZUKO": {
+  "publisher": "ZUKKON/BAKKON",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "BID": {
+  "publisher": "美→痴女ヘブン",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "BBI": {
+  "publisher": "美→痴女ヘブン",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "CJOD": {
+  "publisher": "美→痴女ヘブン",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "CLUB": {
+  "publisher": "变态绅士俱楽部",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "MMND": {
+  "publisher": "未满",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "TEAM": {
+  "publisher": "teamZERO",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "HHK": {
+  "publisher": "百花美人",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "ALB": {
+  "publisher": "胸キュン吃茶",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "MUKD": {
+  "publisher": "无垢",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "MUDR": {
+  "publisher": "无垢",
+  "group": "北都集团",
+  "desc": "漫改作品"
+ },
+ "MUM": {
+  "publisher": "ミニマム",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "ANND": {
+  "publisher": "アンナと花子",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "BBAN": {
+  "publisher": "ビビアン（",
+  "group": "北都集团",
+  "desc": "常规番号"
+ },
+ "MOND": {
+  "publisher": "タカラ镜像",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "SPRD": {
+  "publisher": "タカラ镜像",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "VENU": {
+  "publisher": "Venus维纳斯",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "VEMA": {
+  "publisher": "Venus维纳斯",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "VAGU": {
+  "publisher": "Venus维纳斯",
+  "group": "北都集团",
+  "desc": "不详"
+ },
+ "STAR": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "顾名思义，为专属女演员单独设立的番号，编号已满，后续接STARS，编号最高1001"
+ },
+ "STARS": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "顾名思义，为专属女演员设立的常规番号"
+ },
+ "SACE": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "Sod ACE，为人气女演员与SOD企划联组作品设立的番号，貌似已废用"
+ },
+ "SDMS": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "Soft on DeMand系列，SOD公司的主打系列"
+ },
+ "SDDE": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "SOD Creator貌似有个专做Soft on Demand系列的子公司，这是该公司用的番号，但目前这里主要是SENZ的作品"
+ },
+ "SDMT": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "SOD月刊系列，精选合集，素人企划也在这里"
+ },
+ "SDDM": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "不详，可能对应SOD Cinderella或Senz"
+ },
+ "SDNM": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "轻熟女题材"
+ },
+ "SDAB": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "青春题材"
+ },
+ "SDSI": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "不同职业为主题"
+ },
+ "SDMU": {
+  "publisher": "SOD Creator",
+  "group": "SOD集团",
+  "desc": "不详"
+ },
+ "DVDPS": {
+  "publisher": "DEEP'S",
+  "group": "SOD集团",
+  "desc": "常规番号，编号已满，后续接DVDES"
+ },
+ "DVDES": {
+  "publisher": "DEEP'S",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "NHDT": {
+  "publisher": "Natural High",
+  "group": "SOD集团",
+  "desc": "常规番号，旧番号"
+ },
+ "NHDTA": {
+  "publisher": "Natural High",
+  "group": "SOD集团",
+  "desc": "常规番号，新番号"
+ },
+ "RNHDT": {
+  "publisher": "Natural High",
+  "group": "SOD集团",
+  "desc": "女同系列"
+ },
+ "IESP": {
+  "publisher": "IEnergy",
+  "group": "SOD集团",
+  "desc": "不详，大概是精选集或高清"
+ },
+ "IDOL": {
+  "publisher": "IEnergy",
+  "group": "SOD集团",
+  "desc": "不详，大概是偶像题材"
+ },
+ "IENE": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "OPEN": {
+  "publisher": "IEnergy",
+  "group": "SOD集团",
+  "desc": "不详"
+ },
+ "SVND": {
+  "publisher": "志摩プランニング",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "HBAD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "HAVD": {
+  "publisher": "Hibino",
+  "group": "SOD集团",
+  "desc": "多人或者合集作品"
+ },
+ "NTR": {
+  "publisher": "Hibino",
+  "group": "SOD集团",
+  "desc": "NTR系列"
+ },
+ "VSPDS": {
+  "publisher": "V&R Products",
+  "group": "SOD集团",
+  "desc": "合集作品"
+ },
+ "VSPDR": {
+  "publisher": "V&R Products",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "MV": {
+  "publisher": "V&R Products",
+  "group": "SOD集团",
+  "desc": "透明人系列"
+ },
+ "FSET": {
+  "publisher": "AKNR（アキノリ）",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "DANDY": {
+  "publisher": "DANDY",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "LADY": {
+  "publisher": "LADYxLADY",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "HUNT": {
+  "publisher": "Hunter",
+  "group": "SOD集团",
+  "desc": "常规番号，貌似编号满了，后面可能是接HUNTA"
+ },
+ "HUNTA": {
+  "publisher": "Hunter",
+  "group": "SOD集团",
+  "desc": "常规番号，貌似编号满了，后面可能是HUNTB"
+ },
+ "HUNTB": {
+  "publisher": "Hunter",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "GAR": {
+  "publisher": "GARCON",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "SVDVD": {
+  "publisher": "Sadistic Village",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "RCT": {
+  "publisher": "ROCKET",
+  "group": "SOD集团",
+  "desc": "常规番号，编号已满，后续接RCTD"
+ },
+ "RCTD": {
+  "publisher": "ROCKET",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "NGKS": {
+  "publisher": "人間考察",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "RD": {
+  "publisher": "KEU",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "KUF": {
+  "publisher": "KEU",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "NSS": {
+  "publisher": "NEW S&EXUAL",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "ATOM": {
+  "publisher": "ATOM",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "BDD": {
+  "publisher": "ATOM",
+  "group": "SOD集团",
+  "desc": "黑人巨根系列"
+ },
+ "ARSO": {
+  "publisher": "AROUND",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "SW": {
+  "publisher": "SWITCH",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "UPSM": {
+  "publisher": "Up's",
+  "group": "SOD集团",
+  "desc": "常规番号"
+ },
+ "SERO": {
+  "publisher": "EROTICA",
+  "group": "JHV集团",
+  "desc": "常规番号"
+ },
+ "BABYLON": {
+  "publisher": "EROTICA",
+  "group": "JHV集团",
+  "desc": "不详，甚至不确定这是番号"
+ },
+ "DV": {
+  "publisher": "Alice Japan",
+  "group": "JHV集团",
+  "desc": "常规番号，编号不以999为上限"
+ },
+ "DVAJ": {
+  "publisher": "Alice Japan",
+  "group": "JHV集团",
+  "desc": "不详"
+ },
+ "XV": {
+  "publisher": "MAX-A",
+  "group": "JHV集团",
+  "desc": "常规番号，编号已满，后续接XVSR"
+ },
+ "XVSR": {
+  "publisher": "MAX-A",
+  "group": "JHV集团",
+  "desc": "常规番号，贩卖版"
+ },
+ "PXV": {
+  "publisher": "MAX-A",
+  "group": "JHV集团",
+  "desc": "精选综合或多人出演系列"
+ },
+ "XVSE": {
+  "publisher": "MAX-A",
+  "group": "JHV集团",
+  "desc": "不详"
+ },
+ "MDS": {
+  "publisher": "宇宙企划",
+  "group": "CCC集团",
+  "desc": "常规番号"
+ },
+ "MADA": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "熟女题材"
+ },
+ "MILD": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "不详"
+ },
+ "RMLD": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "不详"
+ },
+ "MDB": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "不详"
+ },
+ "RMDBB": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "不详"
+ },
+ "RMDS": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "不详"
+ },
+ "REAL": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "常规番号"
+ },
+ "NATR": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "常规番号"
+ },
+ "SCOP": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "常规番号"
+ },
+ "SAMA": {
+  "publisher": "K·M·Produce",
+  "group": "CCC集团",
+  "desc": "常规番号"
+ },
+ "BOKD": {
+  "publisher": "仆たち男の娘",
+  "group": "CCC集团",
+  "desc": "常规番号"
+ },
+ "ABS": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "ABSolute，主力番号，已被合并入ABP"
+ },
+ "ABP": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "ABsolute Perfect，主力番号，以公司专属女优为主"
+ },
+ "KBH": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "高贵美少女学院系列专用番号"
+ },
+ "EZD": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "以性感带为主题"
+ },
+ "MAS": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "服务类情节为主题"
+ },
+ "INU": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "K9调教为主题"
+ },
+ "JOB": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "各类职业为主题"
+ },
+ "EDD": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "以伪装成无知少女的专业级AV女演员为看点，编号已满，后续接ESK"
+ },
+ "ESK": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "素人主题"
+ },
+ "MEK": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "貌似与JOB内容重合"
+ },
+ "DOM": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "放题系列"
+ },
+ "YRZ": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "以年轻辣妹为男性解决困扰为题材"
+ },
+ "PPP": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "EVO": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "SAD": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "GYD": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "HYK": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "FST": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "TBL": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "LOO": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "TOR": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "早期女英雄欺负系列"
+ },
+ "TD": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "RBS": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "MAN": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ZZR": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "WPC": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "BNDV": {
+  "publisher": "HMP",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "CRS": {
+  "publisher": "Prestige（蚊香社）",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "HODV": {
+  "publisher": "HMP",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "HRDV": {
+  "publisher": "HMP",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "YMDD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "TMD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详，但据说比较重口味"
+ },
+ "DSD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "RJMD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ALD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "DBE": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "DOJ": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "OFCD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "SEND": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ULJM": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "DSS": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "MOED": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "DER": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "OPD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "GRYD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "MSBD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "SS": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "HD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "DVH": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "REID": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "GEN": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "DBUD": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "IBW": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "MMO": {
+  "publisher": "桃太郎映像",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ADZ": {
+  "publisher": "九鬼",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "AKB": {
+  "publisher": "TMA",
+  "group": "独立片商",
+  "desc": "常规番号"
+ },
+ "HITMA": {
+  "publisher": "TMA",
+  "group": "独立片商",
+  "desc": "蓝光番号，内容与AKB相同，仅格式不同"
+ },
+ "RAY": {
+  "publisher": "TMA",
+  "group": "独立片商",
+  "desc": "临时番号，仅包含由COS MAX发行的4部作品"
+ },
+ "24ID": {
+  "publisher": "TMA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "COSQ": {
+  "publisher": "CMP",
+  "group": "独立片商",
+  "desc": "常规番号"
+ },
+ "GRET": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "GATE": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "女英雄露出系列，没情节"
+ },
+ "GEXP": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "GGFH": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "非日本女英雄系列，英语发音"
+ },
+ "GGTB": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "女英雄“凌鲍”系列"
+ },
+ "GMMD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "女英雄妄想计划系列"
+ },
+ "GODS": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "女神欺负系列（2012年开）"
+ },
+ "GPTM": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "GSAD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "超级女英雄动作战争系列"
+ },
+ "GXXD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "GDGA": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "剧情连载系列"
+ },
+ "GOMK": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "新系列，不详"
+ },
+ "GTRL": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "GOMD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "GDSC": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "TBW": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "女英雄洗脑系列"
+ },
+ "TBB": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "女英雄讨伐系列，纯虐，较假"
+ },
+ "TDP": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "XX女英雄系列"
+ },
+ "TDLN": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "下载专区"
+ },
+ "TGGP": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "G1Grand Prix系列"
+ },
+ "THP": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "女英雄危机系列（好结局）"
+ },
+ "THZ": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "女英雄之死系列（坏结局）"
+ },
+ "TMS": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "前半段01-19是机械女英雄系列，后半段20-36是巨大女英雄系列"
+ },
+ "TZZ": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "早期编号，偏欺负，- TRE系列的前身"
+ },
+ "TRE": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "后期女英雄欺负系列"
+ },
+ "TSGS": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "全新女英雄系列"
+ },
+ "TSDL": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "会员特殊欺负短剧"
+ },
+ "TSWN": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "会员属区"
+ },
+ "TSW": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "综合系列"
+ },
+ "TTRE": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "触手系列"
+ },
+ "ATHB": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "战斗大师，游戏女英雄系列"
+ },
+ "AKBD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "女英雄擂台打斗系列"
+ },
+ "DMG": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "早期的双女英雄系列"
+ },
+ "MGJH": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ANIX": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "CYCD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "YNO": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "AZGB": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "SKOT": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "SHP": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "JMSZ": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "JHZD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "NFDM": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "CGAD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "CGBD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "CHSD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "CUSD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "CHSH": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "CMV": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "PAED": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "RGI": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ZARD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ZATS": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ZDAD": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "ZKV": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "COSETT": {
+  "publisher": "GIGA",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "MXGS": {
+  "publisher": "Maxing",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "MX3DS": {
+  "publisher": "Maxing",
+  "group": "独立片商",
+  "desc": "不详"
+ },
+ "SKY": {
+  "publisher": "Sky High Entertainment（空天使）",
+  "group": "无码片商",
+  "desc": "常规番号"
+ },
+ "RHJ": {
+  "publisher": "RED HOT Collection（红热）",
+  "group": "无码片商",
+  "desc": "Red Hot Jam"
+ },
+ "RED": {
+  "publisher": "RED HOT Collection（红热）",
+  "group": "无码片商",
+  "desc": "Red Hot Fetish Collection"
+ },
+ "CRD": {
+  "publisher": "RED HOT Collection（红热）",
+  "group": "无码片商",
+  "desc": "RED HOT IDOL"
+ },
+ "SMD": {
+  "publisher": "Super Model Media（超级名模）",
+  "group": "无码片商",
+  "desc": "常规番号"
+ },
+ "SMDV": {
+  "publisher": "Super Model Media（超级名模）",
+  "group": "无码片商",
+  "desc": "常规番号"
+ },
+ "SMBD": {
+  "publisher": "Super Model Media（超级名模）",
+  "group": "无码片商",
+  "desc": "蓝光番号"
+ },
+ "SM3D2DBD": {
+  "publisher": "Super Model Media（超级名模）",
+  "group": "无码片商",
+  "desc": "蓝光的3D或2D版"
+ },
+ "CWP": {
+  "publisher": "CATWALK(猫步毒药)",
+  "group": "无码片商",
+  "desc": "常规番号"
+ },
+ "CWDV": {
+  "publisher": "CATWALK(猫步毒药)",
+  "group": "无码片商",
+  "desc": "常规番号"
+ },
+ "CWPBD": {
+  "publisher": "CATWALK(猫步毒药)",
+  "group": "无码片商",
+  "desc": "CWP的蓝光版"
+ },
+ "CW3D2DBD": {
+  "publisher": "CATWALK(猫步毒药)",
+  "group": "无码片商",
+  "desc": "CWDV的3D、2D版蓝光"
+ },
+ "TRP": {
+  "publisher": "Tora-Tora-Tora（虎虎虎）",
+  "group": "无码片商",
+  "desc": "常规番号"
+ },
+ "S2M": {
+  "publisher": "Stage 2 Media",
+  "group": "无码片商",
+  "desc": "DVD常规番号"
+ },
+ "S2MBD": {
+  "publisher": "Stage 2 Media",
+  "group": "无码片商",
+  "desc": "蓝光常规番号"
+ },
+ "MX": {
+  "publisher": "MUGEN Entertainment",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "MG": {
+  "publisher": "MUGEN Entertainment",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "MW": {
+  "publisher": "MUGEN Entertainment",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "MUD": {
+  "publisher": "MUGEN Entertainment",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "MKDS": {
+  "publisher": "MUGEN Ent",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "MUBD": {
+  "publisher": "MUGEN Entertainment",
+  "group": "无码片商",
+  "desc": "MUD的蓝光版"
+ },
+ "MKBDS": {
+  "publisher": "MUGEN Ent",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "FH": {
+  "publisher": "Oriental Dream",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "KP": {
+  "publisher": "Kamikaze Ent神风（步兵）",
+  "group": "无码片商",
+  "desc": "Kamikaze Premium系列"
+ },
+ "KS": {
+  "publisher": "KOKESHI",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "KG": {
+  "publisher": "Kamikaze Ent神风（步兵）",
+  "group": "无码片商",
+  "desc": "Kamikaze Girls系列"
+ },
+ "YZD": {
+  "publisher": "Yuzu",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "GOD": {
+  "publisher": "Yuzu",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "YUU": {
+  "publisher": "Yuzu",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "EMP": {
+  "publisher": "EMPIRE",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "C0930PLA": {
+  "publisher": "C0930 |「人妻斬り」",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "C0930GOL": {
+  "publisher": "C0930 |「人妻斬り」",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "C0930GITOZUNA": {
+  "publisher": "C0930 |「人妻斬り」",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "PB": {
+  "publisher": "Pink Puncher",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "DRC": {
+  "publisher": "CATCHEYE",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "DRG": {
+  "publisher": "CATCHEYE",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "DSAM": {
+  "publisher": "SAMURAI PORN",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "EB": {
+  "publisher": "SAMURAI PORN",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "SMR": {
+  "publisher": "SAMURAI PORN",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "SP": {
+  "publisher": "SAMURAI PORN",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "XXXAV": {
+  "publisher": "XXX-AV",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "MKD": {
+  "publisher": "RUBY人妻",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "OPC": {
+  "publisher": "One Piece Ent",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "JUKUJOCLUB": {
+  "publisher": "Jukujo-Club | 熟女俱乐部",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "PT": {
+  "publisher": "Studio Teriyaki",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "AV9898": {
+  "publisher": "AV9898 | AV-酒吧",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "GQUEEN": {
+  "publisher": "G-Queen | 無毛宣言",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "GACHIXXXHD": {
+  "publisher": "Gachinco | ガチん娘",
+  "group": "无码片商",
+  "desc": "常规番号"
+ },
+ "SSKJ": {
+  "publisher": "SASUKE",
+  "group": "无码片商",
+  "desc": "未知"
+ },
+ "AKIBAHONPO": {
+  "publisher": "AKIBAHONPO（アキバ本舗）",
+  "group": "无码片商",
+  "desc": "常规番号"
+ },
+ "NMD": {
+  "publisher": "Dream Ticket",
+  "group": "未归类",
+  "desc": "不详"
+ },
+ "UFD": {
+  "publisher": "Dream Ticket",
+  "group": "未归类",
+  "desc": "不详"
+ },
+ "CXD": {
+  "publisher": "Dream Ticket",
+  "group": "未归类",
+  "desc": "不详"
+ },
+ "NSP": {
+  "publisher": "Glayz",
+  "group": "未归类",
+  "desc": "不详"
+ },
+ "BUR": {
+  "publisher": "Glayz",
+  "group": "未归类",
+  "desc": "不详"
+ },
+ "FTA": {
+  "publisher": "Glayz",
+  "group": "未归类",
+  "desc": "不详"
+ },
+ "PPS": {
+  "publisher": "PSYCHEDERIC PUPPET",
+  "group": "未归类",
+  "desc": "Cos题材"
+ }
+}
