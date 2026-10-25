@@ -1585,13 +1585,20 @@ def _job_down(ids=None, target='auto', fix=False, ad=False):
                 vf += ':flags=lanczos'
                 if fps > 45:
                     vf += ',fps=30'
-                # 同时去广告：取该文件的广告区间，只支持连续保留区间（头/尾）
+                # 同时删除无效段：取该文件的广告+无效区间，只支持连续保留区间（头/尾）
                 _ad_skip = None
                 if ad:
                     try:
-                        _r = dbc.execute('SELECT ads FROM ads_file WHERE item_id=? AND file=?',
-                                         (it['id'], v)).fetchone()
-                        _sg = json.loads((_r['ads'] if _r else '') or '[]')
+                        _sg = []
+                        try:
+                            for _ss in mlib.load_segs(it['id'], v):
+                                _sg.extend(_ss.get('segs') or [])
+                        except Exception:
+                            pass
+                        if not _sg:
+                            _r = dbc.execute('SELECT ads FROM ads_file WHERE item_id=? AND file=?',
+                                             (it['id'], v)).fetchone()
+                            _sg = json.loads((_r['ads'] if _r else '') or '[]')
                         if _sg:
                             _d0 = repair.video_duration(vp) or 0
                             _kk, _cc = [], 0.0
@@ -1605,9 +1612,9 @@ def _job_down(ids=None, target='auto', fix=False, ad=False):
                                 _kk.append((_cc, _d0))
                             if len(_kk) == 1:
                                 _ad_skip = (_kk[0][0], _kk[0][1] - _kk[0][0])
-                                _log('    同时去广告：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
+                                _log('    同时删除无效段：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
                             else:
-                                _log('    ! 有中插广告，本次只降分辨率（请先单独删除广告）')
+                                _log('    ! 有中插无效段，本次只降分辨率（请先单独删除无效段）')
                     except Exception as _e:
                         _log('    ! 读取广告区间失败: %s' % str(_e)[:80])
 
@@ -1732,9 +1739,16 @@ def _job_proteus(ids=None, ad=False):
             _ad_skip = None
             if ad:
                 try:
-                    _r = dbc.execute('SELECT ads FROM ads_file WHERE item_id=? AND file=?',
-                                     (it['id'], v)).fetchone()
-                    _sg = json.loads((_r['ads'] if _r else '') or '[]')
+                    _sg = []
+                    try:
+                        for _ss in mlib.load_segs(it['id'], v):
+                            _sg.extend(_ss.get('segs') or [])
+                    except Exception:
+                        pass
+                    if not _sg:
+                        _r = dbc.execute('SELECT ads FROM ads_file WHERE item_id=? AND file=?',
+                                         (it['id'], v)).fetchone()
+                        _sg = json.loads((_r['ads'] if _r else '') or '[]')
                     if _sg:
                         _kk, _cc = [], 0.0
                         for _x, _y in sorted(_sg):
@@ -1747,9 +1761,9 @@ def _job_proteus(ids=None, ad=False):
                             _kk.append((_cc, dur))
                         if len(_kk) == 1:
                             _ad_skip = (_kk[0][0], _kk[0][1] - _kk[0][0])
-                            _log('    同时去广告：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
+                            _log('    同时删除无效段：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
                         else:
-                            _log('    ! 有中插广告，本次只做画质修复（请先单独删除广告）')
+                            _log('    ! 有中插无效段，本次只做画质修复（请先单独删除无效段）')
                 except Exception as _e:
                     _log('    ! 读取广告区间失败: %s' % str(_e)[:80])
             loc = mlib.stage_local(vp, _log)
@@ -3862,7 +3876,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 同时修复</label>
-    <label class="muted" title="勾上后先跳过广告区间（只支持头/尾广告；中插请先单独删除广告）"><input type="checkbox" id="downad"> 同时去广告</label>
+    <label class="muted" title="勾上后先跳过无效段（广告+无女性段；只支持头/尾连续区间；中插请先单独删除无效段）"><input type="checkbox" id="downad"> 同时删除无效段</label>
     <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
     <button id="a-proteus" title="Topaz Proteus(prob-4) 同尺寸修复；速度按输入分辨率，1080p 约 2.3 fps（1 小时片约 8 小时）">画质修复</button>
   </div>
@@ -4224,6 +4238,11 @@ $('#a-segs').onclick=async()=>{
   const iid=ids.split(',')[0];
   window.SEGIID=iid;
   const d=await(await fetch('/api/segs?item='+iid)).json();
+  window.SEGFIRST=(d.rows&&d.rows[0]&&d.rows[0].file)||'';
+  if(!window.SEGFIRST){
+    try{const _it=await(await fetch('/api/item/'+iid)).json();
+      window.SEGFIRST=(_it.files||[])[0]||'';}catch(_e){}
+  }
   segRender(d.rows||[]);
   $('#modal5').classList.add('on');
 };
