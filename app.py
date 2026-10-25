@@ -1121,7 +1121,11 @@ def _verify_out(path, expect, log=_log, tol=6.0, ends=True):
     return True
 
 
-def _job_down(ids=None, target='auto'):
+def _topaz_path():
+    return r'F:\Topaz Video\ffmpeg.exe'
+
+
+def _job_down(ids=None, target='auto', fix=False):
     """降分辨率：按 bpp/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
     _begin('downscale', 1)
     dbc = mlib.db()
@@ -1196,6 +1200,29 @@ def _job_down(ids=None, target='auto'):
                     mlib.drop_work(tmp)
                     mlib.drop_work(loc)
                     continue
+                if fix:
+                    _tp = _topaz_path()
+                    if not os.path.exists(_tp):
+                        _log('    ! 找不到 Topaz，跳过修复步骤')
+                    else:
+                        _log('    接着 Proteus 修复（仍在本地，不重复回拷）...')
+                        tmp2 = os.path.splitext(tmp)[0] + '.fix' + os.path.splitext(tmp)[1]
+                        _c2 = [_tp, '-hide_banner', '-v', 'error', '-y', '-c:v', 'hevc_cuvid',
+                               '-i', tmp,
+                               '-vf', 'tvai_up=model=prob-4:scale=1:device=0'] + \
+                              _gpu_enc(tmp) + ['-c:a', 'copy', '-movflags', '+faststart', tmp2]
+                        _t1 = time.time()
+                        _r2 = subprocess.run(_c2, capture_output=True, timeout=86400,
+                                             cwd=r'F:\Topaz Video')
+                        if _r2.returncode != 0 or not os.path.exists(tmp2):
+                            _log('    ! 修复失败，保留降分辨率结果: %s'
+                                 % (_r2.stderr or b'')[-160:].decode('utf-8', 'replace'))
+                        elif not _verify_out(tmp2, dur):
+                            _log('    ! 修复结果校验失败，保留降分辨率结果')
+                            mlib.drop_work(tmp2)
+                        else:
+                            os.replace(tmp2, tmp)
+                            _log('    修复完成（%.0f 秒）' % (time.time() - _t1))
                 try:
                     bk = _swap_in(loc, tmp)
                     _log('    本地成品 OK（回滚点 %s）' % os.path.basename(bk or ''))
@@ -2867,7 +2894,8 @@ class H(BaseHTTPRequestHandler):
                 ok = start_job(_job_addel, ids, lane='heavy')
             elif p == '/api/downscale':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                ok = start_job(_job_down, ids, (q.get('target') or 'auto'), lane='heavy')
+                ok = start_job(_job_down, ids, (q.get('target') or 'auto'),
+                               (q.get('fix') or '') in ('1', 'true', 'yes'), lane='heavy')
             elif p == '/api/proteus':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_proteus, ids, lane='heavy')
@@ -3165,6 +3193,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
      <button id="a-addel" title="按检测结果切掉广告区间（帧级精确重编码），【替换原片】；原文件留 .orig 回滚点，临时文件自动清理">删除广告</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
+    <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 同时修复</label>
     <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
     <button id="a-proteus" title="Topaz Proteus(prob-4) 同尺寸修复；速度按输入分辨率，1080p 约 2.3 fps（1 小时片约 8 小时）">画质修复</button>
   </div>
@@ -3422,7 +3451,8 @@ $('#a-down').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('降分辨率会在 backup 本地工作区重编码，完成后回拷替换 NAS 原片（源文件保留在 backup）。继续？')))return;
-  await post('/api/downscale?'+(ids?'ids='+ids+'&':'')+'target='+($('#downtgt').value));};
+  await post('/api/downscale?'+(ids?'ids='+ids+'&':'')+'target='+($('#downtgt').value)
+    +'&fix='+($('#downfix').checked?1:0));};
 $('#a-proteus').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
