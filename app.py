@@ -5652,8 +5652,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <table id="seg-tbl"></table>
   <div class="bar"><button id="seg-add">+ 添加一段</button><button class="primary" id="seg-save">保存</button></div>
 </div></div>
-<div class="modal" id="modal5"><div class="box" style="max-width:1000px">
-  <div class="bar"><b>媒体库设置</b><span class="muted" id="lib-info"></span><button class="right" id="md5-close">关闭</button></div>
+<div class="modal" id="modallib"><div class="box" style="max-width:1000px">
+  <div class="bar"><b>媒体库设置</b><span class="muted" id="lib-info"></span><button class="right" id="mdlib-close">关闭</button></div>
   <p class="muted">每个库有独立数据库文件，互不影响。一个库可挂多个目录；类型决定条目归到 AV / 电影 / 剧集。顶部下拉可直接切换当前库。</p>
   <div id="lib-list"></div>
   <div class="bar"><button id="lib-add">+ 新增媒体库</button><button class="primary" id="lib-save">保存全部</button></div>
@@ -6320,17 +6320,22 @@ let LIBSROWS=[],ACTIVE=0;
 const KINDTXT={av:'AV',movie:'电影',tv:'剧集'};
 function libCard(L,i){
   const cur=(L.id&&L.id===ACTIVE);
-  return '<div data-i="'+i+'" style="border:1px solid #2a3140;border-radius:9px;padding:9px 11px;margin:9px 0">'
-   +'<div class="bar" style="margin:0 0 6px"><input class="lib-name" value="'+esc(L.name||'')+'" placeholder="库名称" style="width:180px">'
-   +'<select class="lib-kind">'+Object.keys(KINDTXT).map(v=>'<option value="'+v+'"'+(L.kind===v?' selected':'')+'>'+KINDTXT[v]+'</option>').join('')+'</select>'
-   +'<label class="muted" style="margin-left:6px"><input type="checkbox" class="lib-on"'+(L.enabled?' checked':'')+'> 启用</label>'
-   +(cur?'<span style="color:var(--ok);margin-left:8px">● 当前库</span>'
-        :(L.id?'<button class="lib-use" style="margin-left:8px">设为当前</button>':''))
-   +'<button class="lib-del right">删除库</button></div>'
-   +'<div class="muted" style="font-size:11px;margin-bottom:6px">数据库：'+esc(L.db||'')+'　条目：'+(L.n==null?'-':L.n)+'</div>'
-   +'<div>'+ (L.paths||[]).map((p,k)=>'<div class="lib-p" style="margin:3px 0"><input class="lib-path" data-k="'+k+'" value="'+esc(p)+'" style="width:84%">'
+  return '<div data-i="'+i+'" style="border:1px solid #2a3140;border-radius:9px;padding:10px 12px;margin:10px 0;background:#111722">'
+   +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+     +'<input class="lib-name" value="'+esc(L.name||'')+'" placeholder="库名称" style="width:190px">'
+     +'<select class="lib-kind" title="类型决定条目归到 AV / 电影 / 剧集">'
+       +Object.keys(KINDTXT).map(v=>'<option value="'+v+'"'+(L.kind===v?' selected':'')+'>'+KINDTXT[v]+'</option>').join('')+'</select>'
+     +'<label class="muted"><input type="checkbox" class="lib-on"'+(L.enabled?' checked':'')+'> 启用</label>'
+     +'<span class="muted">条目 '+(L.n==null?'-':L.n)+'</span>'
+     +(cur?'<span style="color:var(--ok)">● 当前库</span>'
+          :(L.id?'<button class="lib-use">设为当前</button>':''))
+     +'<button class="lib-del right" title="只从列表移除，库文件保留">删除</button></div>'
+   +'<div class="muted" style="font-size:11px;margin:7px 0 3px;word-break:break-all">数据库：<code>'+esc(L.db||'(新建后生成)')+'</code></div>'
+   +'<div style="margin-top:6px">'+(L.paths&&L.paths.length?'':'<div class="muted" style="font-size:12px">还没有目录</div>')
+     +(L.paths||[]).map((p,k)=>'<div class="lib-p" style="display:flex;gap:6px;align-items:center;margin:4px 0">'
+        +'<input class="lib-path" data-k="'+k+'" value="'+esc(p)+'" placeholder="\\\\NAS\\share\\folder 或 D:\\Movies" style="flex:1">'
         +'<button class="lib-pdel" data-k="'+k+'" title="移除这个目录">×</button></div>').join('')
-   +'<button class="lib-padd">+ 目录</button></div></div>';
+     +'<button class="lib-padd">+ 目录</button></div></div>';
 }
 function libRender(){
   $('#lib-list').innerHTML=LIBSROWS.length?LIBSROWS.map(libCard).join('')
@@ -6357,8 +6362,8 @@ async function libLoad(){const d=await(await fetch('/api/libs')).json();
 $('#b-libsel').onchange=async e=>{
   await fetch('/api/libs/active?id='+e.target.value,{method:'POST'});
   location.reload();};
-$('#b-libs').onclick=async()=>{await libLoad();$('#modal5').classList.add('on');};
-$('#md5-close').onclick=()=>$('#modal5').classList.remove('on');
+$('#b-libs').onclick=async()=>{await libLoad();$('#modallib').classList.add('on');};
+$('#mdlib-close').onclick=()=>$('#modallib').classList.remove('on');
 $('#lib-add').onclick=()=>{libSync();LIBSROWS.push({id:0,name:'',kind:'av',enabled:1,paths:['']});libRender();};
 document.addEventListener('click',async e=>{
   const t=e.target.closest?e.target.closest('.lib-del,.lib-padd,.lib-pdel,.lib-use'):null;
@@ -6368,7 +6373,7 @@ document.addEventListener('click',async e=>{
     await fetch('/api/libs/active?id='+LIBSROWS[i].id,{method:'POST'});location.reload();return;}
   libSync();
   const L=LIBSROWS[i];if(!L)return;
-  if(t.classList.contains('lib-del')){LIBSROWS.splice(i,1);}
+  if(t.classList.contains('lib-del')){if(!confirm('删除这个媒体库？只从列表移除，库文件会保留。'))return;LIBSROWS.splice(i,1);}
   else if(t.classList.contains('lib-padd')){L.paths.push('');}
   else {L.paths.splice(parseInt(t.dataset.k,10),1);}
   libRender();});
