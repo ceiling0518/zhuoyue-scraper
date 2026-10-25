@@ -1398,9 +1398,15 @@ def fetch_fc2(item):
         return None
     u = 'https://adult.contents.fc2.com/article/%s/' % num
     try:
-        r = JS.get(u, timeout=30)
+        r = requests.get(u, timeout=30, headers={
+            'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                           '(KHTML, like Gecko) Chrome/124.0 Safari/537.36'),
+            'Accept-Language': 'ja,zh-CN;q=0.8,en;q=0.6'})
     except Exception:
-        return None
+        try:
+            r = JS.get(u, timeout=30)
+        except Exception:
+            return None
     if r is None or r.status_code != 200:
         return None
     t = r.text or ''
@@ -1442,15 +1448,23 @@ def fetch_fc2(item):
             cover = mm.group(1)
     if not title:
         return None
-    samples = []
-    for iu in re.findall(r'https?://storage\d*\.contents\.fc2\.com/[^"\']+?\.(?:jpg|jpeg|png)',
-                         t, re.I):
-        if iu != cover and iu not in samples:
-            samples.append(iu)
+    # 发售日 / 标签（官网页面直出）
+    released = ''
+    mm = re.search(r'販売日\s*[:：]\s*(\d{4})/(\d{2})/(\d{2})', t)
+    if mm:
+        released = '%s-%s-%s' % (mm.group(1), mm.group(2), mm.group(3))
+    genres = []
+    for g in re.findall(r'class="tag tagTag"[^>]*data-tag="([^"]+)"', t):
+        g = g.strip()
+        if g and g not in genres:
+            genres.append(g)
+    # 海报不下载（官方 poster 多为坏图），只保留信息
     return {'source': 'fc2', 'code': 'FC2-PPV-%s' % num, 'title': title,
-            'plot': title, 'studio': seller, 'cover': cover, 'samples': samples[:3],
-            'url': u, 'genres': [], 'actors': [],
-            'note': ' / '.join([x for x in (rating, price) if x])}
+            'plot': title, 'studio': seller, 'cover': '', 'samples': [],
+            'url': u, 'genres': genres[:8], 'actors': [],
+            'released': released,
+            'year': (released[:4] if released else ''),
+            'note': ' / '.join([x for x in (released, rating, price) if x])}
 
 
 # ---------------------------------------------------------------- 番号后缀规则
