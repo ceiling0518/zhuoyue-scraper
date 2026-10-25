@@ -428,11 +428,13 @@ def web_complete(item, model=None, log=None):
         t2 = strip_noise(j.get('title') or '')
         p2 = strip_noise(j.get('plot') or '')
         tg = [str(x).strip() for x in (j.get('tags') or []) if str(x).strip()]
-        if not hint_ok(t2, 3):
-            return None
         c2 = strip_noise(j.get('code') or '').strip()
         if c2 and not re.match(r'^[A-Za-z]{1,6}[-_]?\d{2,6}$', re.sub(r'[^A-Za-z0-9-]', '', c2)):
             c2 = ''
+        if not hint_ok(t2, 3):
+            if not c2:
+                return None
+            t2 = c2           # 标题无效但有合法番号 -> 用番号做标题
         return {'title': t2, 'plot': p2, 'tags': tg[:12],
                 'actors': _clean_people(j.get('actors')),
                 'studio': strip_noise(j.get('studio') or '')[:40],

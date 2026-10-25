@@ -486,9 +486,11 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
     limit = int(limit or 0)
     ai_group = int(ai_group or 0)
     if web or scan:
+        # 勾了来源：范围扩大到「缺简介/缺标签/缺标题/质量未定或无」
         q = ("SELECT id,name,title,plot,code,sem_code,path,actors,studio,year "
              "FROM items WHERE present=1 AND COALESCE(kind,'')<>'nested' "
-             "AND (COALESCE(plot,'')='' OR COALESCE(tags,'')='' OR COALESCE(title,'')='')")
+             "AND (COALESCE(plot,'')='' OR COALESCE(tags,'')='' OR COALESCE(title,'')='' "
+             "OR COALESCE(quality,'') IN ('','无','有误'))")
     else:
         q = ("SELECT id,name,title,plot,code,sem_code,path,actors,studio,year "
              "FROM items WHERE present=1 AND COALESCE(plot,'')<>''")
@@ -497,8 +499,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
         # 选中项：按简介重补（允许覆盖旧标签，也不看 kind）
         q += ' AND id IN (%s)' % ','.join('?' * len(ids))
         args += list(ids)
-    else:
-        # 未选中：只补没标签、且不是嵌套目录的
+    elif not (web or scan):
+        # 未选中且没勾来源：只补没标签、且不是嵌套目录的
         q += " AND COALESCE(kind,'')<>'nested' AND COALESCE(tags,'')=''"
     q += ' ORDER BY id'
     if limit > 0:
@@ -506,7 +508,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
         args.append(limit)
     rows = [dict(r) for r in dbc.execute(q, tuple(args)).fetchall()]
     if not rows:
-        _log('AI 补全: 没有【有简介、无标签】的条目，跳过')
+        _log('AI 补全: 没有需要补全的条目（%s）'
+             % ('简介/标签/标题/质量都齐全' if (web or scan) else '有简介且无标签'))
         return 0, 0
     batch = ai_group if ai_group > 0 else (len(rows) or 1)
     if batch > 60:
@@ -526,6 +529,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
     if weak:
         _log('  信息无效/不足 %d 条，信息源：%s'
              % (len(weak), '+'.join(srcs) if srcs else '无（只靠模型补标签）'))
+        ok = 0
         for wi, r in enumerate(weak, 1):
             if _stop_req():
                 break
@@ -579,7 +583,6 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
 
     _tick(0, len(rows))
     _log('AI 补全 %d 条，%d 条一批（只看简介，不看文件名）' % (len(rows), batch))
-    ok = 0
     for i in range(0, len(rows), batch):
         if _stop_req():
             _log('! 已请求停止'); break
@@ -613,7 +616,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
             else:
                 _log('[%d/%d] id=%d 补全失败（保持 缺）' % (i + k + 1, len(rows), r['id']))
             _tick(i + k + 1)
-    return ok, len(rows)
+    return ok, len(rows) + len(weak)
 
 
 def _job_fill(limit, ai_group=None, ids=None, web=False, scan=False):
@@ -3772,7 +3775,7 @@ $('#a-web').onclick=batchRun('website');
 $('#a-ai').onclick=batchRun('ai');
 $('#a-fill').onclick=async()=>{
   const ids=[...SEL].join(',');
-  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部 有简介但没标签】的条目按简介补标签，继续？')))return;
+  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部需要补全】的条目执行（勾选 Web/看片 时会联网或看片），继续？')))return;
   await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value
     +(ids?'&ids='+ids:'')+'&web='+($('#fill-web').checked?1:0)
     +'&scan='+($('#fill-scan').checked?1:0));};
