@@ -3040,6 +3040,14 @@ def _model_download(mid):
 ASR_LANGS = {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韩文', 'yue': '粤语', 'es': '西班牙语'}
 
 
+def _tr_target():
+    """字幕翻译目标 = 界面（系统）语言；返回 (代码, 给模型看的语言名)。"""
+    _c = mlib.ui_lang()
+    _name = {'zh': 'zh', 'zh-Hant': '繁體中文', 'en': 'English',
+             'ja': '日本語', 'es': 'Español'}.get(_c, _c)
+    return _c, _name
+
+
 def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False, trans=False):
     """Whisper large-v3-turbo（PotPlayer CUDA main.exe），输出 <视频名>.zh.srt。"""
     _begin('subs', 1)
@@ -3083,7 +3091,7 @@ def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False, trans=False)
                     if os.path.exists(srt):
                         txt = io.open(srt, encoding='utf-8', errors='replace').read()
                         io.open(out_path, 'w', encoding='utf-8').write(txt)
-                        if trans and lang != 'zh':
+                        if trans and lang != _tr_target()[0]:
                             try:
                                 import re as _re
                                 import subs as _sm
@@ -3094,13 +3102,14 @@ def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False, trans=False)
                                     if len(_ls) >= 3 and '-->' in _ls[1]:
                                         _pairs.append((_ls[1], '\n'.join(_ls[2:])))
                                 _src = [t for _, t in _pairs]
-                                _zh = _sm.translate_lines(_src, 'zh', mlib.ai_model(),
+                                _tc, _tn = _tr_target()
+                                _zh = _sm.translate_lines(_src, _tn, mlib.ai_model(),
                                                           lambda m: _log('    ' + m))
                                 if _zh and len(_zh) == len(_src):
                                     _ztxt = '\n\n'.join(
                                         '%d\n%s\n%s' % (k + 1, _pairs[k][0], _zh[k])
                                         for k in range(len(_pairs))) + '\n'
-                                    _zf = os.path.join(it['path'], '%s.zh.srt' % stem)
+                                    _zf = os.path.join(it['path'], '%s.%s.srt' % (stem, _tc))
                                     io.open(_zf, 'w', encoding='utf-8').write(_ztxt)
                                     _log('    字幕翻译完成：%d 段 -> %s'
                                          % (len(_zh), os.path.basename(_zf)))
@@ -3143,7 +3152,8 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False, trans=
         _tick(0, max(1, len(its)))
         ok = 0
         lang = (lang or 'zh').strip() or 'zh'
-        bilingual = (lang != 'zh') and trans
+        _tgt_code, _tgt_name = _tr_target()
+        bilingual = trans and (lang != _tgt_code)
         if not os.path.exists(ASR_PY):
             _log('! 找不到 %s（字幕引擎装在 3.11）' % ASR_PY)
             _end('subs 失败')
@@ -3165,7 +3175,8 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False, trans=
                     break
                 v = os.path.basename(vp)
                 stem = os.path.splitext(v)[0]
-                out_name = ('%s.%s-zh.srt' % (stem, lang)) if bilingual else ('%s.%s.srt' % (stem, lang))
+                out_name = (('%s.%s-%s.srt' % (stem, lang, _tgt_code)) if bilingual
+                            else ('%s.%s.srt' % (stem, lang)))
                 out_path = os.path.join(it['path'], out_name)
                 if os.path.exists(out_path) and not force:
                     _log('  %s 已有 %s，跳过' % (v[:36], out_name[-12:]))
@@ -3177,7 +3188,7 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False, trans=
                        '--model-dir', ASR_MODEL_DIR, '--lang', lang, '--threads', '6',
                        '--enhance', '1' if enhance else '0']
                 if bilingual:
-                    cmd += ['--translate', 'zh', '--bilingual', '1']
+                    cmd += ['--translate', _tgt_name, '--bilingual', '1']
                 t0 = time.time()
                 nline = 0
                 total = 0.0
@@ -5236,7 +5247,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
     <span class="muted" id="count"></span>
     <span class="muted" id="page"></span>
-    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 <b style="color:var(--bad)">⛔</b>有无效段 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">字</b>有 <b style="color:var(--ok)">字🔥</b>烧录</span>
+    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">字</b>有 <b style="color:var(--ok)">字🔥</b>烧录</span>
     <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
@@ -5270,7 +5281,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   <table id="tbl"><thead><tr>
     <th style="width:136px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
-    <th style="width:92px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 ⛔有无效段">属性</th>
+    <th style="width:92px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 ⛔段数">属性</th>
     <th style="width:150px" title="系列-番号，下一行语义；均可双击修改">番号 / 语义</th>
     <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
@@ -5464,7 +5475,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
-    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字</span>':'')+(r.subs_burn?' <span title="字幕已烧录" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字🔥</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
+    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字</span>':'')+(r.subs_burn?' <span title="字幕已烧录" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字🔥</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔'+r.nw+'</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
     +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'')+'" title="双击修改系列">'+esc(r.series||r.skey||'—')+'</span></div>'
     +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'—')+'</span></div>'
