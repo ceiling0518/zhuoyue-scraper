@@ -3004,6 +3004,10 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': open_image(int(p.rsplit('/', 1)[1]))})
             elif p.startswith('/api/open/'):
                 return self._json({'ok': open_item(int(p.rsplit('/', 1)[1]))})
+            elif p == '/api/paths':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                rows = _items_by_ids(ids) if ids else []
+                return self._json({'paths': [x.get('path') or '' for x in rows if x.get('path')]})
             elif p == '/api/stop':
                 with _LOCK:
                     STATE['stop'] = True
@@ -3117,6 +3121,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-auto" title="只对【选中的条目】跑全流程（不经过队列）">重跑·全流程</button>
     <select id="qmode" style="min-width:86px"><option value="auto">auto</option><option value="website">website</option><option value="ai">ai</option></select>
     <button id="a-queue" title="把选中条目加入队列（用右侧 qmode 的模式），之后点「跑队列」才执行">加入队列</button>
+    <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
     <button id="a-open">打开目录</button>
 <span id="hb-legend" style="margin-left:10px;font-size:12px;color:var(--muted)">徽标：<b style="color:#2e7d32">✓✓</b> 深检 · <b style="color:#1565c0">✓</b> 浅检 · <b style="color:var(--bad)">⚠</b> 有问题 · <b style="color:var(--muted)">↻</b> 需重测　｜　属性：<b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--muted)">○</b>无 <b style="color:var(--bad)">✕</b>有误 <b style="color:#777">–</b>删除　<b>🌐</b>网站 <b>🤖</b>AI　<b style="color:var(--warn)">📢n</b>广告段数</span>
     <button id="a-flatten" title="把嵌套子目录平铺成 app 可自动刮削的结构：图片 P_、视频 V_，具名目录 序号_名字_；子目录移入 trash 可回滚">整理嵌套目录</button>
@@ -3317,6 +3322,16 @@ $('#a-auto').onclick=batchRun('auto');
 $('#a-queue').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));let n=0;
   for(const id of SEL){const r=await post('/api/queue/'+id+'?mode='+$('#qmode').value);n=r.queue;}
   $('#qcount').textContent=n;};
+$('#a-copy').onclick=async()=>{
+  if(!SEL.size)return alert(T('先选条目'));
+  const j=await(await fetch('/api/paths?ids='+[...SEL].join(','))).json();
+  const arr=j.paths||[]; const txt=arr.join('\\r\\n');
+  if(!txt)return alert(T('没有拿到路径'));
+  try{await navigator.clipboard.writeText(txt);}
+  catch(e){const t=document.createElement('textarea');t.value=txt;
+    t.style.position='fixed';t.style.left='-9999px';document.body.appendChild(t);
+    t.select();document.execCommand('copy');t.remove();}
+  alert(T('已复制 ')+arr.length+T(' 条路径'));};
 $('#a-open').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
   for(const id of SEL)await post('/api/open/'+id);};
 $('#a-del').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
