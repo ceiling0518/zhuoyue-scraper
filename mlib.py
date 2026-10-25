@@ -1195,10 +1195,18 @@ def scan(root=None, mode='incr', dbc=None):
                 dbc.execute('UPDATE items SET last_scan=?, dir_mtime=? WHERE id=?'
                             , (ts, mt, iid))
             if nfo:      # mirror the on-disk nfo into the row (list needs no NAS read)
+                # 空值不覆盖已有字段：nfo 缺标签/简介时保留库里的（防止扫描把标签冲掉）
+                _cur = dbc.execute('SELECT title,plot,tags,actors,studio,year FROM items '
+                                   'WHERE id=?', (iid,)).fetchone()
+                _cv = dict(_cur) if _cur else {}
                 dbc.execute('UPDATE items SET title=?,plot=?,tags=?,actors=?,studio=?,year=? '
                             'WHERE id=?',
-                            (nf['title'], nf['plot'], nf['tags'], nf['actors'],
-                             nf['studio'], nf['year'], iid))
+                            (nf['title'] or _cv.get('title') or '',
+                             nf['plot'] or _cv.get('plot') or '',
+                             nf['tags'] or _cv.get('tags') or '',
+                             nf['actors'] or _cv.get('actors') or '',
+                             nf['studio'] or _cv.get('studio') or '',
+                             nf['year'] or _cv.get('year') or '', iid))
     removed = 0
     for p, _v in known.items():
         i = _v[0]

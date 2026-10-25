@@ -610,18 +610,27 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False):
             if _av.get('released'):
                 _year = _av['released'][:4]
             if _av.get('tags'):
-                tags = ','.join(_av['tags'])[:300]
+                _old_tg = [x for x in (tags or '').split(',') if x.strip()]
+                for _t in _av['tags']:
+                    _t = str(_t).strip()
+                    if _t and _t not in _old_tg:
+                        _old_tg.append(_t)
+                tags = ','.join(_old_tg)[:300]
             if _av:
                 _log('    avfan: %s | 公司 %s | %s' % (_av.get('released') or '-',
                                                       _av.get('maker') or '-', _code))
             # 系列表有发行商时以它为准（FC2 有大量子发行商，统一记 FC2）
             if _sr.get('publisher'):
                 _studio = _sr['publisher']
+            # 空值绝不冲掉已有信息（标签/简介/标题）
+            _title = (_title or '').strip() or (r.get('title') or '')
+            _plot = (_plot or '').strip() or (r.get('plot') or '')
+            tags = (tags or '').strip() or (r.get('tags') or '')
             dbc.execute("UPDATE items SET title=?, plot=?, tags=?, actors=?, studio=?, "
                         "year=?, quality=?, source=?, last_update=? WHERE id=?",
                         (_title, _plot, tags, _actors, _studio,
-                         _year, '有' if tags else '缺', '+'.join(s for s, _ in cands),
-                         mlib.now(), r['id']))
+                         _year, '有' if tags else (r.get('quality') or '缺'),
+                         '+'.join(s for s, _ in cands), mlib.now(), r['id']))
             dbc.commit()
             try:
                 it = dict(dbc.execute('SELECT * FROM items WHERE id=?', (r['id'],)).fetchone())
@@ -718,11 +727,13 @@ def _vscan_pass(limit, ids=None):
             continue
         d = mlib.ai_video_scan(r)
         if d:
-            tags = ','.join(d['tags'])
-            qual = '有' if tags else '缺'
+            tags = ','.join(d['tags']) or (r.get('tags') or '')
+            qual = '有' if tags else (r.get('quality') or '缺')
             dbc.execute('UPDATE items SET title=?, plot=?, tags=?, quality=?, source=?, '
                         'site=?, last_update=? WHERE id=?',
-                        (d['title'], d['plot'], tags, qual, 'AI', 'ai', mlib.now(), r['id']))
+                        ((d['title'] or '').strip() or (r.get('title') or ''),
+                         (d['plot'] or '').strip() or (r.get('plot') or ''),
+                         tags, qual, 'AI', 'ai', mlib.now(), r['id']))
             dbc.commit()
             try:
                 it = dict(dbc.execute('SELECT * FROM items WHERE id=?', (r['id'],)).fetchone())
