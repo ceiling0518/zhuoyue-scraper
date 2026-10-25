@@ -85,7 +85,8 @@ def db():
     for col, typ in (('studio', 'TEXT'), ('sem_kind', 'TEXT'), ('sem_code', 'TEXT'),
                      ('quality', 'TEXT'), ('source', 'TEXT'), ('year', 'TEXT'), ('kind', 'TEXT'),
                      ('sem_manual', 'INTEGER DEFAULT 0'),
-                     ('subs', 'INTEGER DEFAULT 0')):
+                     ('subs', 'INTEGER DEFAULT 0'),
+                     ('subs_burn', 'INTEGER DEFAULT 0')):
         if col not in cols:
             c.execute('ALTER TABLE items ADD COLUMN %s %s' % (col, typ))
     c.execute("""CREATE TABLE IF NOT EXISTS archive(
@@ -1168,9 +1169,11 @@ def scan(root=None, mode='incr', dbc=None):
             q = '无'                      # 建库：有误 全部还原成 无
         kk, _nv, _subs = folder_kind(p)
         try:
-            _has_sub = 1 if any(f.lower().endswith('.srt') for f in os.listdir(p)) else 0
+            _ls = os.listdir(p)
+            _has_sub = 1 if any(f.lower().endswith('.srt') for f in _ls) else 0
+            _has_burn = 1 if any('.hardsub' in f.lower() for f in _ls) else 0
         except Exception:
-            _has_sub = 0
+            _has_sub, _has_burn = 0, 0
         if kk == 'nested':
             q = '有误'                    # 多重嵌套目录 -> 建档就判有误（人工调目录后重跑）
         nf = {}
@@ -1181,11 +1184,11 @@ def scan(root=None, mode='incr', dbc=None):
                   'studio': nfo.get('studio', ''), 'year': nfo.get('year', '')}
         if p not in known:
             dbc.execute("""INSERT INTO items(path,name,code,status,quality,source,kind,title,plot,
-                                             tags,actors,studio,year,subs,first_seen,last_scan,present,dir_mtime)
-                           VALUES(?,?,?,'empty',?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                                             tags,actors,studio,year,subs,subs_burn,first_seen,last_scan,present,dir_mtime)
+                           VALUES(?,?,?,'empty',?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
                         (p, name, code, q, src, kk, nf.get('title', ''), nf.get('plot', ''),
                          nf.get('tags', ''), nf.get('actors', ''), nf.get('studio', ''),
-                         nf.get('year', ''), _has_sub, ts, ts, mt))
+                         nf.get('year', ''), _has_sub, _has_burn, ts, ts, mt))
             added += 1
         else:
             iid = known[p][0]
@@ -1200,7 +1203,8 @@ def scan(root=None, mode='incr', dbc=None):
                 dbc.execute('UPDATE items SET last_scan=?, dir_mtime=? WHERE id=?'
                             , (ts, mt, iid))
             try:
-                dbc.execute('UPDATE items SET subs=? WHERE id=?', (_has_sub, iid))
+                dbc.execute('UPDATE items SET subs=?, subs_burn=? WHERE id=?',
+                            (_has_sub, _has_burn, iid))
             except Exception:
                 pass
             if nfo:      # mirror the on-disk nfo into the row (list needs no NAS read)

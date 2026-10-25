@@ -2899,7 +2899,9 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False):
                     continue
                 try:
                     _d2 = mlib.db()
-                    _d2.execute('UPDATE items SET subs=1 WHERE id=?', (it['id'],))
+                    _d2.execute('UPDATE items SET subs=1, '
+                                'subs_burn=CASE WHEN ? THEN 1 ELSE COALESCE(subs_burn,0) END '
+                                'WHERE id=?', (1 if burn else 0, it['id']))
                     _d2.commit()
                 except Exception:
                     pass
@@ -3600,6 +3602,20 @@ def stats():
            'root': mlib.scan_root(), 'model': mlib.ai_model(), 'db': mlib.DB_PATH,
            'cookie': bool(mlib.javdb_cookie()),
            'queue': len(QUEUE)}
+    try:
+        out['hbad'] = dbc.execute("SELECT COUNT(DISTINCT item_id) c FROM health "
+                                  "WHERE COALESCE(cls,'')<>'ok'").fetchone()['c']
+        out['adbad'] = dbc.execute(
+            "SELECT COUNT(*) c FROM items i WHERE i.present=1 AND ("
+            "EXISTS (SELECT 1 FROM media m WHERE m.item_id=i.id AND COALESCE(m.ads,'') NOT IN ('','[]')) "
+            "OR EXISTS (SELECT 1 FROM segs_file s WHERE s.item_id=i.id AND s.kind='invalid' "
+            "AND COALESCE(s.segs,'') NOT IN ('','[]')))").fetchone()['c']
+        out['lowbpp'] = dbc.execute(
+            "SELECT COUNT(*) c FROM items i JOIN media m ON m.item_id=i.id "
+            "WHERE i.present=1 AND m.vbr>0 AND m.w>0 AND m.h>0 AND m.fps>0 "
+            "AND (m.vbr*1000.0/(MIN(m.w*m.h,2073600)*m.fps))<0.08").fetchone()['c']
+    except Exception:
+        out.setdefault('hbad', 0); out.setdefault('adbad', 0); out.setdefault('lowbpp', 0)
     for r in dbc.execute("SELECT COALESCE(NULLIF(quality,''),'无') q, COUNT(*) c "
                          'FROM items WHERE present=1 GROUP BY q'):
         out['by_quality'][r['q']] = r['c']
@@ -3635,6 +3651,55 @@ def items(params):
         where.append("(sem_kind IS NULL OR sem_kind='')")
     elif kd:
         where.append('sem_kind=?'); args.append(kd)
+    hf = params.get('health')
+    if hf == '未做':
+        where.append('NOT EXISTS (SELECT 1 FROM health h WHERE h.item_id=items.id)')
+    elif hf == '浅检':
+        where.append('EXISTS (SELECT 1 FROM health h WHERE h.item_id=items.id AND COALESCE(h.deep,0)=0) '
+                     'AND NOT EXISTS (SELECT 1 FROM health h WHERE h.item_id=items.id AND COALESCE(h.deep,0)>=1)')
+    elif hf == '深检':
+        where.append('EXISTS (SELECT 1 FROM health h WHERE h.item_id=items.id AND COALESCE(h.deep,0)>=1) '
+                     'AND NOT EXISTS (SELECT 1 FROM health h WHERE h.item_id=items.id AND COALESCE(h.deep,0)=0)')
+    elif hf == 'both':
+        where.append('EXISTS (SELECT 1 FROM health h WHERE h.item_id=items.id AND COALESCE(h.deep,0)>=1) '
+                     'AND EXISTS (SELECT 1 FROM health h WHERE h.item_id=items.id AND COALESCE(h.deep,0)=0)')
+    elif hf == '无':
+        where.append("EXISTS (SELECT 1 FROM health h WHERE h.item_id=items.id) "
+                     "AND NOT EXISTS (SELECT 1 FROM health h WHERE h.item_id=items.id AND COALESCE(h.cls,'')<>'ok')")
+    bf = params.get('bad')
+    _ads = ("EXISTS (SELECT 1 FROM media m2 WHERE m2.item_id=items.id "
+            "AND COALESCE(m2.ads,'') NOT IN ('','[]'))")
+    _seg = ("EXISTS (SELECT 1 FROM segs_file s WHERE s.item_id=items.id AND s.kind='invalid' "
+            "AND COALESCE(s.segs,'') NOT IN ('','[]'))")
+    if bf == '广告':
+        where.append(_ads)
+    elif bf == '无效段':
+        where.append(_seg)
+    elif bf == 'both':
+        where.append(_ads + ' AND ' + _seg)
+    elif bf == '无':
+        where.append('NOT ' + _ads + ' AND NOT ' + _seg)
+    elif bf == '未做':
+        where.append("NOT EXISTS (SELECT 1 FROM segs_file s WHERE s.item_id=items.id) "
+                     "AND NOT EXISTS (SELECT 1 FROM media m2 WHERE m2.item_id=items.id "
+                     "AND COALESCE(m2.ads,'') NOT IN ('','[]'))")
+    sf = params.get('subf')
+    if sf == '有':
+        where.append('COALESCE(items.subs,0)=1')
+    elif sf == '无':
+        where.append('COALESCE(items.subs,0)=0')
+    elif sf == '烧录':
+        where.append('COALESCE(items.subs_burn,0)=1')
+    pq = params.get('pq')
+    if pq in ('良好', '一般', '差'):
+        _b = ("(COALESCE(m.vbr,0)*1000.0/(MIN(m.w*m.h,2073600)*COALESCE(m.fps,0)))")
+        where.append('m.vbr>0 AND m.w>0 AND m.h>0 AND m.fps>0')
+        if pq == '良好':
+            where.append(_b + '>=0.08')
+        elif pq == '一般':
+            where.append(_b + '>=0.04 AND ' + _b + '<0.08')
+        else:
+            where.append(_b + '<0.04')
     if q:
         where.append('(name LIKE ? OR title LIKE ? OR code LIKE ? OR sem_code LIKE ?)')
         args += ['%' + q + '%'] * 4
@@ -3649,10 +3714,10 @@ def items(params):
             _sort = 'id'                          # 白名单，防注入
         order_by = '%s %s, id %s' % (_sort, 'DESC' if _desc else 'ASC',
                                      'DESC' if _desc else 'ASC')
-    total = dbc.execute('SELECT COUNT(*) c FROM items WHERE ' + ws, args).fetchone()['c']
+    total = dbc.execute('SELECT COUNT(*) c FROM items LEFT JOIN media m ON m.item_id=items.id WHERE ' + ws, args).fetchone()['c']
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
-    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,series,status,site,path,items.subs AS subs,'
+    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,series,status,site,path,items.subs AS subs,items.subs_burn AS subs_burn,'
                        'm.vbr AS vbr, m.size AS fsize, m.file AS mfile, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads, m.ads_ts AS ads_ts,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT COUNT(*) FROM segs_file s WHERE s.item_id=items.id AND s.kind='invalid' AND IFNULL(s.segs,'') NOT IN ('','[]')) AS nw, "
@@ -3673,7 +3738,8 @@ def items(params):
             w = int(o.get('mw') or 0)
             h = int(o.get('mh') or 0)
             fps = float(o.get('mfps') or 0)
-            o['bpp'] = round(v / (w * h * fps), 4) if (v and w and h and fps) else 0
+            _px = min(w * h, 1920 * 1080) if (w and h) else 0
+            o['bpp'] = round(v / (_px * fps), 4) if (v and _px and fps) else 0
         except Exception:
             o['bpp'] = 0
     # 类型计数：MP4(2), AVI(1)
@@ -4773,6 +4839,10 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="f-quality"><option value="">质量:全部</option><option value="有">有</option><option value="缺">缺</option><option value="有误">有误</option><option value="无">无</option><option value="删除">删除</option></select>
     <select id="f-source"><option value="">来源:全部</option><option value="Web">Web</option><option value="AI">AI</option></select>
     <select id="f-kind"><option value="">语义:全部</option><option>coded</option><option>uncensored</option><option>none</option><option>(未跑)</option></select>
+    <select id="f-health"><option value="">体检:全部</option><option>深检</option><option>浅检</option><option>both</option><option>无</option><option>未做</option></select>
+    <select id="f-bad"><option value="">无效段:全部</option><option>广告</option><option>无效段</option><option>both</option><option>无</option><option>未做</option></select>
+    <select id="f-subs"><option value="">字幕:全部</option><option>有</option><option>无</option><option>烧录</option></select>
+    <select id="f-pq"><option value="">画质:全部</option><option>良好</option><option>一般</option><option>差</option></select>
     <input id="f-q" placeholder="搜索 名字/标题/番号" style="width:200px">
     <select id="f-sort" title="排序字段"><option value="id">排序:编号</option><option value="first_seen">排序:入库时间</option><option value="last_update">排序:最后编辑</option><option value="bitrate">排序:码率</option></select>
     <select id="f-order" title="正序 / 倒序"><option value="asc">正序 ↑</option><option value="desc">倒序 ↓</option></select>
@@ -4804,7 +4874,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted" id="count"></span>
     <span class="muted" id="page"></span>
     <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 <b style="color:var(--bad)">⛔</b>有无效段 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测</span>
-    <span class="muted">体检 <b id="hstat">—</b></span>
     <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
@@ -4944,7 +5013,8 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
   const q=s.by_quality||{},sr=s.by_source||{},sm=s.sem||{};
   $('#cards').innerHTML=[['总数',s.total],['质量·有',q['有']||0],['质量·缺',q['缺']||0],['质量·有误',q['有误']||0],['质量·无',q['无']||0],['质量·删除',q['删除']||0],
      ['来源·Web',(sr.Web||0)+(sr.code||0)+(sr.Uncen||0)],['来源·AI',sr.AI||0],
-     ['语义未跑',sm['(未跑)']||0],['档案',s.archive]]
+     ['语义未跑',sm['(未跑)']||0],['档案',s.archive],
+     ['体检问题',s.hbad||0],['广告/无效段',s.adbad||0],['码率差',s.lowbpp||0]]
     .map(([k,v])=>'<div class="card"><b>'+v+'</b><span>'+k+'</span></div>').join('');
   $('#qcount').textContent=s.queue||0;}
 async function job(){const j=await(await fetch('/api/job')).json();
@@ -5009,14 +5079,14 @@ function resLabel(w,h){const m=Math.min(w,h),M=Math.max(w,h);
   return (m>=2000)?'4K':(m>=1400?'1440p':(m>=1000?'1080p':(m>=700?'720p':M+'×'+m)));}
 async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
   quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,
+  health:$('#f-health').value,bad:$('#f-bad').value,subf:$('#f-subs').value,pq:$('#f-pq').value,
   sort:$('#f-sort').value,order:$('#f-order').value});
   const d=await(await fetch('/api/items?'+qs)).json();
-  if(d.hstats){const h=d.hstats;$('#hstat').textContent='深检'+(h.deep||0)+'｜通过'+Math.max(0,(h.tested||0)-(h.bad||0))+'｜问题'+(h.bad||0)+'｜未测'+(h.untested||0);}
   $('#rows').innerHTML=d.rows.map(r=>{
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
-    +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
-    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="color:var(--ok)">字</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
+    +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+(r.subs?'<span title="有字幕 (.srt)" style="color:var(--ok);margin-left:4px">字</span>':'')+'</td>'
+    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
     +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'')+'" title="双击修改系列">'+esc(r.series||r.skey||'—')+'</span></div>'
     +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'—')+'</span></div>'
