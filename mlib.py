@@ -250,7 +250,8 @@ def hint_ok(t, min_cjk=4):
 
 def _http_get(url, timeout=20):
     try:
-        r = requests.get(url, timeout=timeout, headers={
+        _ck = {'existmag': 'mag'} if 'javbus.' in (url or '') else None
+        r = requests.get(url, timeout=timeout, cookies=_ck, headers={
             'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                            'AppleWebKit/537.36 (KHTML, like Gecko) '
                            'Chrome/124.0 Safari/537.36'),
@@ -541,33 +542,72 @@ def series_build(dbc=None, log=None):
 
 
 def avfan_info(code):
-    """avfan.com：番号 -> {released, maker, tags}（页面公开，无需登录）。"""
+    """avfan.com：番号 -> {released, maker, tags}（公开页；直连搜索优先，searxng 兜底）。"""
     code = (code or '').strip().upper()
     if not code:
         return {}
     try:
         url = ''
-        for h in searxng_search('site:avfan.com "%s"' % code, 6):
-            u = h.get('url') or ''
-            if '/movies/' in u:
-                url = u
+        _qs = [code]
+        _d = re.sub(r'\D', '', code)
+        if 'FC2' in code and _d:
+            _qs += ['FC2-%s' % _d, 'FC2-PPV-%s' % _d]
+        _qs += [code.replace('-', ' '), code.replace('-', ''),
+                re.sub(r'[^A-Za-z0-9]', '', code)]
+        _seen = []
+        for _q in _qs:
+            _q = (_q or '').strip()
+            if _q and _q not in _seen:
+                _seen.append(_q)
+        for _q in _seen:
+            for u in ('https://avfan.com/zh-CN/search?q=%s' % _q,
+                      'https://avfan.com/search?q=%s' % _q):
+                d0 = _http_get(u, 25)
+                if not d0:
+                    continue
+                m = re.search(r'href="(/[a-z\-]*/?movies/[^"?#]+)"', d0)
+                if not m:
+                    m = re.search(r'href="(https://avfan\.com/[^"]*?/movies/[^"?#]+)"', d0)
+                if m:
+                    url = m.group(1)
+                    if url.startswith('/'):
+                        url = 'https://avfan.com' + url
+                    break
+            if url:
                 break
+        if not url:
+            for h in searxng_search('site:avfan.com "%s"' % code, 6):
+                u = h.get('url') or ''
+                if '/movies/' in u:
+                    url = u
+                    break
         if not url:
             return {}
         d = _http_get(url)
         if not d:
             return {}
         out = {}
-        m = re.search(r'<dt>\s*Released Date\s*</dt>\s*<dd>\s*(\d{2})/(\d{2})/(\d{4})', d)
+        m = re.search(r'<dt[^>]*>\s*(?:Released Date|发行日期|發行日期)\s*</dt>\s*<dd[^>]*>\s*(\d{4})-(\d{2})-(\d{2})', d)
         if m:
-            out['released'] = '%s-%s-%s' % (m.group(3), m.group(1), m.group(2))
-        m = re.search(r'<dt>\s*Maker\s*</dt>\s*<dd>\s*(?:<a[^>]*>)?([^<]{2,60})', d)
+            out['released'] = '%s-%s-%s' % (m.group(1), m.group(2), m.group(3))
+        elif re.search(r'<dt[^>]*>\s*Released Date\s*</dt>', d):
+            m = re.search(r'Released Date\s*</dt>\s*<dd[^>]*>\s*(\d{2})/(\d{2})/(\d{4})', d)
+            if m:
+                out['released'] = '%s-%s-%s' % (m.group(3), m.group(1), m.group(2))
+        m = re.search(r'<dt[^>]*>\s*(?:Maker|制作商|製作商)\s*</dt>\s*<dd[^>]*>(.*?)</dd>', d, re.S)
         if m:
-            out['maker'] = clean_publisher(strip_noise(m.group(1)))
-        m = re.search(r'<dt>\s*Tags\s*</dt>\s*<dd>(.*?)</dd>', d, re.S)
+            mm = re.search(r'>([^<>]{2,60})<', m.group(1))
+            mk = strip_noise((mm.group(1) if mm else m.group(1)).strip())
+            if mk:
+                out['maker'] = clean_publisher(mk)
+        m = re.search(r'<dt[^>]*>\s*(?:Tags|标签|標籤)\s*</dt>\s*<dd[^>]*>(.*?)</dd>', d, re.S)
         if m:
-            tags = [strip_noise(x) for x in re.split(r'[,、]', re.sub(r'<[^>]+>', ' ', m.group(1)))]
-            out['tags'] = [x for x in tags if x][:8]
+            blk = m.group(1)
+            tags = re.findall(r'<a[^>]*tag-chip[^>]*>(.*?)</a>', blk, re.S)
+            if not tags:
+                tags = re.split(r'[,、]', re.sub(r'<[^>]+>', ' ', blk))
+            tags = [strip_noise(re.sub(r'<[^>]+>', '', t)) for t in tags]
+            out['tags'] = [t for t in tags if t][:8]
         return out
     except Exception:
         return {}
