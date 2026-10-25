@@ -1442,22 +1442,43 @@ def _job_addel(ids=None):
                 if not os.path.isfile(vp):
                     _log('  跳过（文件不存在）: %s' % v[:60])
                     continue
-                _log('  切 %s（%d 段）—— 本地工作区处理' % (v[:60], len(segs)))
-                loc = mlib.stage_local(vp, _log)
-                r = mlib.cut_ads(loc, segs, log=lambda m: _log(m), stash=False)
-                if not r.get('ok'):
-                    _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
+                _dur0 = repair.video_duration(vp) or 0
+                _keep = []
+                _cur = 0.0
+                for _a, _b in sorted(segs):
+                    _a = max(_cur, min(float(_a), _dur0 or float(_a)))
+                    _b = max(_a, min(float(_b), _dur0 or float(_b)))
+                    if _a - _cur > 0.15:
+                        _keep.append((_cur, _a))
+                    _cur = max(_cur, _b)
+                if _dur0 and _dur0 - _cur > 0.15:
+                    _keep.append((_cur, _dur0))
+
+                if len(_keep) == 1:
+                    # 头/尾广告：只重封装，直接在 NAS 上做，不暂存、不建备份
+                    _log('  切 %s（头/尾广告）—— 直接在 NAS 重封装，不建备份；操作中请勿中断'
+                         % v[:56])
+                    r = mlib.cut_ads(vp, segs, log=lambda m: _log(m))
+                    if not r.get('ok'):
+                        _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
+                        continue
+                else:
+                    # 中间广告：仍需拼接，放到本地工作区做，失败可回退
+                    _log('  切 %s（%d 段，含中插）—— 本地工作区处理' % (v[:56], len(segs)))
+                    loc = mlib.stage_local(vp, _log)
+                    r = mlib.cut_ads(loc, segs, log=lambda m: _log(m), stash=False)
+                    if not r.get('ok'):
+                        _log('    未替换: %s' % str((r or {}).get('error') or '未知')[:120])
+                        mlib.drop_work(loc)
+                        continue
+                    if not mlib.commit_back(loc, vp, _log):
+                        _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
+                        continue
+                    if not _verify_out(vp, r.get('new_dur') or 0, _log):
+                        _log('    ! 回拷文件校验失败，源副本已保留在 %s.orig' % loc)
+                        continue
+                    mlib.stage_backup(loc + '.orig', _log)
                     mlib.drop_work(loc)
-                    continue
-                if not mlib.commit_back(loc, vp, _log):
-                    _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
-                    continue
-                # 回拷后先在 NAS 上验一遍，再决定源副本的去留
-                if not _verify_out(vp, r.get('new_dur') or 0, _log):
-                    _log('    ! 回拷文件校验失败，源副本已保留在 %s.orig' % loc)
-                    continue
-                mlib.stage_backup(loc + '.orig', _log)
-                mlib.drop_work(loc)
                 _log('    完成: 时长 %.1f -> %.1f 秒，体积 %.1f -> %.1f MB（回滚点 %s）'
                      % (r.get('old_dur') or 0, r.get('new_dur') or 0,
                         (r.get('old_size') or 0) / 1048576.0,
@@ -1886,6 +1907,8 @@ def _job_repair(ids=None, mode='index', go=False):
                         p = {'cls': 'error', 'reason': type(e).__name__, 'tier': 'none'}
                 t = p.get('tier')
                 if t == 'index' and go and mode in ('index', 'safe', 'all'):
+                    _log('  id=%s %s 修表：直接在 NAS 上改写（不建备份，操作中请勿中断）'
+                         % (it['id'], base[:34]))
                     r = repair.apply_index(f, log=_log)
                     if r.get('ok'):
                         n_idx += 1
@@ -1964,8 +1987,9 @@ def _job_repair(ids=None, mode='index', go=False):
                                      % (it['id'], base[:34], (r.get('error') or '')[:70]))
                                 r = None
                     else:
-                        r = _staged_repair(
-                            f, lambda p: repair.interp_gap(p, gaps=_gaps, log=_log, tick=_pk2))
+                        _log('  id=%s %s 小洞修补：直接在 NAS 上做（不建备份，操作中请勿中断）'
+                             % (it['id'], base[:34]))
+                        r = repair.interp_gap(f, gaps=_gaps, log=_log, tick=_pk2)
                         if not r.get('ok'):
                             _log('  id=%s %s 小洞过渡未采用（%s）-> 改走整段容错重编码'
                                  % (it['id'], base[:34], (r.get('error') or '')[:70]))
