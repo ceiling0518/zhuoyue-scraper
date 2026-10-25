@@ -2819,9 +2819,13 @@ def _ollama():
         return {'up': False, 'model': mlib.ai_model(), 'model_ok': False, 'error': str(e)[:90]}
 
 
+BUILD_ID = time.strftime('%m%d-%H%M%S')
+
+
 def stats():
     dbc = mlib.db()
-    out = {'total': dbc.execute('SELECT COUNT(*) c FROM items WHERE present=1').fetchone()['c'],
+    out = {'build': BUILD_ID,
+           'total': dbc.execute('SELECT COUNT(*) c FROM items WHERE present=1').fetchone()['c'],
            'by_quality': {}, 'by_source': {}, 'sem': {}, 'ollama': _ollama(), 'os': ('win' if mlib.IS_WIN else 'linux'),
            'archive': dbc.execute('SELECT COUNT(*) c FROM archive').fetchone()['c'],
            'root': mlib.scan_root(), 'model': mlib.ai_model(), 'db': mlib.DB_PATH,
@@ -4063,6 +4067,20 @@ async function post(p){const r=await fetch(p,{method:'POST'});const j=await r.js
 let PLAT='win';
 function tagsOf(s){try{const a=JSON.parse(s||'[]');return (a||[]).join(' / ');}catch(e){return s||'';}}
 async function cfg(){const s=await(await fetch('/api/stats')).json();
+  // 服务重启后 build 会变：旧页面立刻可见地提示刷新，避免「点了没反应」
+  if(!window.LOADBUILD){window.LOADBUILD=s.build||'';}
+  else if(s.build&&s.build!==window.LOADBUILD){
+    let _sb=document.getElementById('stalebanner');
+    if(!_sb){_sb=document.createElement('div');_sb.id='stalebanner';
+      _sb.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99999;background:#b3261e;'
+        +'color:#fff;padding:8px 12px;text-align:center;font:14px system-ui;'
+        +'box-shadow:0 2px 8px rgba(0,0,0,.45)';
+      _sb.innerHTML='<b>页面已过期</b>（服务重启过，'+esc(window.LOADBUILD||'')+' → '+esc(s.build||'')+'）：'
+        +'<a href="#" id="sbreload" style="color:#fff;text-decoration:underline">点此刷新</a>';
+      document.body.appendChild(_sb);
+      document.getElementById('sbreload').onclick=e=>{e.preventDefault();location.reload();};
+    }
+  }
   PLAT=s.os||'win';                     // 容器/Linux：隐藏 Windows 专属按钮
   const _ao=document.getElementById('a-open'); if(_ao)_ao.style.display=(PLAT==='win'?'':'none');
   if(!$('#cfg-root').value)$('#cfg-root').value=s.root;
