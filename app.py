@@ -1627,7 +1627,7 @@ def _rename_one(dbc, iid, new_dir, new_file):
     return {'ok': True, 'path': new_abs, 'file': main_new}
 
 
-def _job_down(ids=None, target='auto', fix=False, ad=False):
+def _job_down(ids=None, target='auto', fix=False, ad=False, fpsout=0):
     """降分辨率：按 bpp/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
     _begin('downscale', 1)
     dbc = mlib.db()
@@ -1671,12 +1671,25 @@ def _job_down(ids=None, target='auto', fix=False, ad=False):
                 if min(w, h) <= min(tw, th):
                     _log('  %s 已经 %dx%d，目标 %dx%d 更大，跳过' % (v[:40], w, h, tw, th))
                     continue
-                fps_out = 30.0 if fps > 45 else fps
+                # 目标帧率：0=保持（>45 自动降到 30）；高于原帧率走 Apollo 插帧，低于则丢帧
+                _want = float(fpsout or 0)
+                _interp = _drop = False
+                if _want > 0:
+                    fps_out = _want
+                    if _want > fps + 0.5:
+                        _interp = True
+                    elif _want < fps - 0.5:
+                        _drop = True
+                else:
+                    fps_out = 30.0 if fps > 45 else fps
+                    _drop = fps > 45
                 portrait = h > w
                 vf = ('scale=-2:%d' % th) if portrait else ('scale=%d:-2' % tw)
                 vf += ':flags=lanczos'
-                if fps > 45:
-                    vf += ',fps=30'
+                if _interp:
+                    vf += ',tvai_fi=model=apo-8:device=0:fps=%d' % int(round(_want))
+                elif _drop:
+                    vf += ',fps=%d' % int(round(fps_out))
                 # 同时删除无效段：取该文件的广告+无效区间，只支持连续保留区间（头/尾）
                 _ad_skip = None
                 if ad:
@@ -1712,15 +1725,47 @@ def _job_down(ids=None, target='auto', fix=False, ad=False):
 
                 loc = mlib.stage_local(vp, _log)
                 tmp = os.path.splitext(loc)[0] + '.down' + os.path.splitext(loc)[1]
+                _fpsnote = ''
+                if _interp:
+                    _fpsnote = ' 插帧 %.0f->%.0ffps' % (fps, _want)
+                elif _drop:
+                    _fpsnote = ' %.0f->%.0ffps' % (fps, fps_out)
                 _log('  %s  %dx%d@%.0f %.0fkbps bpp=%.4f -> %s%s'
                      % (v[:46], w, h, fps, kbps, bpp,
                         ('%dx%d' % (tw, th)) if not portrait else ('%dx%d' % (th, tw)),
-                        ' @30fps' if fps > 45 else ''))
+                        _fpsnote))
                 _pre = (['-ss', '%.3f' % _ad_skip[0], '-t', '%.3f' % _ad_skip[1]]
                         if _ad_skip else [])
-                cmd = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y'] + _pre +                       ['-i', loc, '-vf', vf] + _gpu_enc(loc) +                       ['-c:a', 'copy', '-movflags', '+faststart', tmp]
+                _cwd = None
+                _label = '降分辨率'
+                if _interp:
+                    _tp = _topaz_path()
+                    if not os.path.exists(_tp):
+                        _log('    ! 找不到 Topaz，无法插帧，跳过 %s' % v[:40])
+                        mlib.drop_work(loc)
+                        continue
+                    _dec = 'h264_cuvid'
+                    try:
+                        _rc0, _so0, _se0 = repair._run(
+                            [repair.FFPROBE, '-v', 'error', '-select_streams', 'v:0',
+                             '-show_entries', 'stream=codec_name',
+                             '-of', 'default=nw=1:nk=1', loc], 60)
+                        if (_so0 or '').strip() in ('hevc', 'h265'):
+                            _dec = 'hevc_cuvid'
+                    except Exception:
+                        pass
+                    _log('    插帧引擎：Apollo apo-8（GPU）%.0f -> %.0f fps' % (fps, _want))
+                    cmd = [_tp, '-hide_banner', '-v', 'error', '-y'] + _pre + \
+                          ['-c:v', _dec, '-i', loc, '-vf', vf] + _gpu_enc(loc) + \
+                          ['-c:a', 'copy', '-movflags', '+faststart', tmp]
+                    _cwd = r'F:\Topaz Video'
+                    _label = '降分辨率+插帧'
+                else:
+                    cmd = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y'] + _pre + \
+                          ['-i', loc, '-vf', vf] + _gpu_enc(loc) + \
+                          ['-c:a', 'copy', '-movflags', '+faststart', tmp]
                 t0 = time.time()
-                _rc, _err = _run_prog(cmd, dur, _log, '降分辨率', cuda=0, timeout=14400)
+                _rc, _err = _run_prog(cmd, dur, _log, _label, cuda=0, cwd=_cwd, timeout=14400)
                 if _rc != 0 or not os.path.exists(tmp):
                     _log('    编码失败: %s' % (_err or b'')[-160:].decode('utf-8', 'replace'))
                     try:
@@ -3621,9 +3666,13 @@ class H(BaseHTTPRequestHandler):
                 ok = start_job(_job_addel, ids, lane='heavy')
             elif p == '/api/downscale':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                try:
+                    _fq = int(float(q.get('fps') or 0))
+                except Exception:
+                    _fq = 0
                 ok = start_job(_job_down, ids, (q.get('target') or 'auto'),
                                (q.get('fix') or '') in ('1', 'true', 'yes'),
-                               (q.get('ad') or '') in ('1', 'true', 'yes'), lane='heavy')
+                               (q.get('ad') or '') in ('1', 'true', 'yes'), _fq, lane='heavy')
             elif p == '/api/proteus':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_proteus, ids,
@@ -4011,6 +4060,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
      <button id="a-addel" title="按无效段（广告+无女性段）切掉区间，【替换原片】；原文件留 .orig 回滚点，临时文件自动清理">删除无效段</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
     <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
+    <select id="downfps" style="min-width:96px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">保持帧率</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
     <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 同时修复</label>
     <label class="muted" title="勾上后先跳过无效段（广告+无女性段；只支持头/尾连续区间；中插请先单独删除无效段）"><input type="checkbox" id="downad"> 同时删除无效段</label>
     <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
@@ -4456,7 +4506,8 @@ $('#a-down').onclick=async()=>{
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('降分辨率会在 backup 本地工作区重编码，完成后回拷替换 NAS 原片（源文件保留在 backup）。继续？')))return;
   await post('/api/downscale?'+(ids?'ids='+ids+'&':'')+'target='+($('#downtgt').value)
-    +'&fix='+($('#downfix').checked?1:0)+'&ad='+($('#downad').checked?1:0));};
+    +'&fix='+($('#downfix').checked?1:0)+'&ad='+($('#downad').checked?1:0)
+    +'&fps='+($('#downfps').value));};
 $('#a-proteus').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
