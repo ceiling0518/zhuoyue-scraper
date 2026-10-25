@@ -2808,6 +2808,18 @@ MODELS = [
      'path': os.path.join('models', 'asr', 'silero_vad.onnx'),
      'url': 'https://huggingface.co/csukuangfj/sherpa-onnx-silero-vad/resolve/main/silero_vad.onnx',
      'license': 'MIT'},
+    {'id': 'realesrgan', 'name': 'Real-ESRGAN x4plus', 'use': '超分 / 画质修复（开源）',
+     'path': os.path.join('models', 'upscale', 'RealESRGAN_x4plus.pth'),
+     'url': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
+     'license': 'BSD-3-Clause'},
+    {'id': 'gfpgan', 'name': 'GFPGAN v1.4', 'use': '人脸修复（开源）',
+     'path': os.path.join('models', 'face', 'GFPGANv1.4.pth'),
+     'url': 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth',
+     'license': 'Apache-2.0'},
+    {'id': 'rife', 'name': 'RIFE 插帧（ncnn）', 'use': '插帧 / 补帧（开源）',
+     'path': os.path.join('models', 'rife', 'rife-ncnn-vulkan-20221029-windows.zip'),
+     'url': 'https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-windows.zip',
+     'extract': os.path.join('models', 'rife'), 'license': 'MIT'},
     {'id': 'yunet', 'name': 'YuNet 人脸检测', 'use': '抽帧看片 / 封面',
      'path': os.path.join('models', 'face_detection_yunet_2023mar.onnx'),
      'url': 'https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx',
@@ -2873,6 +2885,16 @@ def _model_download(mid):
                     if total:
                         st['pct'] = int(got * 100 / total)
             os.replace(tmp, dst)
+            if ent.get('extract'):
+                import zipfile
+                ex = os.path.join(base, ent['extract'])
+                os.makedirs(ex, exist_ok=True)
+                with zipfile.ZipFile(dst) as z:
+                    z.extractall(ex)
+                try:
+                    os.remove(dst)
+                except Exception:
+                    pass
             st['pct'] = 100
             st['done'] = True
         except Exception as e:
