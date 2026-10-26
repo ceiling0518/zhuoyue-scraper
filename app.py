@@ -19,6 +19,7 @@ import mlib                                   # noqa: E402
 
 import flatten                                  # 整理嵌套目录（平铺 + P_/V_ 命名 + 可回滚）
 import repair                                   # 损坏视频体检 + 三级修复（索引重建/插帧/容错重编码）
+import tempfile
 
 
 for _s in (sys.stdout, sys.stderr):
@@ -4352,18 +4353,55 @@ def drop_covers(ids):
     return n
 
 
+ESR_LAST = ''
+
+
 def _esrgan_up(src, dst, scale=2):
-    """Real-ESRGAN 放大一张图；成功返回 True。"""
+    """Real-ESRGAN 放大一张图；成功返回 True。
+
+    先把图转成 PNG 放进临时目录再跑：媒体库路径里常有表情/特殊字符，
+    ncnn 的 argv 走 ANSI 转换会打不开文件（表现为「秒失败」）。
+    工作目录固定到 exe 所在目录，避免 models 目录解析受调用方 cwd 影响。
+    """
+    global ESR_LAST
     exe = ESRGAN_EXE
+    ESR_LAST = ''
     if not os.path.exists(exe):
+        ESR_LAST = '找不到 %s' % exe
         return False
+    td = tempfile.mkdtemp(prefix='esr_')
+    tin = os.path.join(td, 'in.png')
+    tout = os.path.join(td, 'out.png')
     try:
-        subprocess.run([exe, '-i', src, '-o', dst, '-s', str(scale),
-                        '-n', 'realesrgan-x4plus'],
-                       capture_output=True, timeout=600)
+        try:
+            from PIL import Image as _Im
+            _Im.open(src).convert('RGB').save(tin, 'PNG')
+        except Exception:
+            shutil.copy2(src, tin)
+        r = subprocess.run([exe, '-i', tin, '-o', tout, '-s', str(scale),
+                            '-n', 'realesrgan-x4plus'],
+                           capture_output=True, timeout=600,
+                           cwd=os.path.dirname(exe))
+        if not (os.path.exists(tout) and os.path.getsize(tout) > 2048):
+            tail = (r.stderr or b'').decode('utf-8', 'replace').strip().splitlines()[-3:]
+            ESR_LAST = 'rc=%s %s' % (r.returncode, ' | '.join(tail)[:200] or '无输出')
+            return False
+        try:
+            shutil.move(tout, dst)
+        except Exception as e:
+            # 跨盘/NAS 直接写有时会失败，改成显式分块复制
+            try:
+                with open(tout, 'rb') as fi, open(dst, 'wb') as fo:
+                    shutil.copyfileobj(fi, fo)
+            except Exception:
+                ESR_LAST = '写回失败: %s' % str(e)[:120]
+                return False
         return os.path.exists(dst) and os.path.getsize(dst) > 2048
-    except Exception:
+    except Exception as e:
+        ESR_LAST = str(e)[:160]
         return False
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
 
 
 def _poster_ai_frame(vp):
@@ -4470,6 +4508,8 @@ def _poster_refresh_one(iid, ai=False, enh=False):
                     pass
             else:
                 note += '（ESRGAN不可用）'
+                if ESR_LAST:
+                    _log('      ESRGAN 原因: ' + ESR_LAST)
     else:
         if not os.path.exists(dst):
             out = make_poster(iid, upgrade=False)
@@ -4493,6 +4533,8 @@ def _poster_refresh_one(iid, ai=False, enh=False):
                         pass
                 else:
                     note = '新建（ESRGAN不可用）'
+                    if ESR_LAST:
+                        _log('      ESRGAN 原因: ' + ESR_LAST)
         elif enh:
             up = os.path.join(p, 'poster.up.png')
             if _esrgan_up(dst, up, 2):
@@ -4509,6 +4551,8 @@ def _poster_refresh_one(iid, ai=False, enh=False):
                     pass
             else:
                 note = 'ESRGAN不可用'
+                if ESR_LAST:
+                    _log('      ESRGAN 原因: ' + ESR_LAST)
         else:
             note = '沿用现有封面'
 
