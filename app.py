@@ -697,6 +697,12 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                 _sr.get('publisher') or base.get('studio') or (r.get('studio') or ''))
             _year = base.get('year') or (r.get('year') or '')
             _code = base.get('code') or ''
+            if not ai:
+                # Web 补全只补 简介/标签/作者/年份：
+                # 标题与公司保持原值，番号不写入、也不触发 avfan 二次抓取
+                _title = (r.get('title') or '').strip()
+                _studio = (r.get('studio') or '')
+                _code = ''
             if _code and not (r.get('sem_code') or r.get('code')):
                 dbc.execute('UPDATE items SET code=? WHERE id=?', (_code, r['id']))
             # avfan：发行日期/制作商/标签（公开页，优先于模型抽取）
@@ -5694,7 +5700,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
     <label class="muted" title="勾选后：AI 补全 / Web 补全 都会先抽帧看片（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
     <button id="a-fill" title="按简介补标签；勾了看片则先看片补信息">AI 补全</button>
-    <button id="a-fill-web" title="联网/网站补全信息不足的条目；勾了看片则叠加看片">Web 补全</button>
+    <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button>
     <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
     <label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
     <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
