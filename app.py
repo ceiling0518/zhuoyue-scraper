@@ -613,8 +613,14 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             return False
 
         if ids:
-            _ids = set(ids)
-            rows = [x for x in _all if x['id'] in _ids]   # 选中的一律走来源
+            _ids = set(int(x) for x in ids)
+            _ph = ','.join('?' * len(_ids))
+            rows = [dict(r) for r in dbc.execute(
+                "SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality "
+                "FROM items WHERE id IN (%s) ORDER BY id" % _ph, tuple(_ids)).fetchall()]
+            _miss = _ids - set(x['id'] for x in rows)
+            if _miss:
+                _log('  选中里有 %d 条不在当前库，跳过' % len(_miss))
         else:
             rows = [x for x in _all if _need(x)]
             _log('  需要补全 %d 条（缺 标签/简介/标题%s）'
@@ -636,8 +642,10 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             args.append(limit)
         rows = [dict(r) for r in dbc.execute(q, tuple(args)).fetchall()]
     if not rows:
-        _log('AI 补全: 没有需要补全的条目（%s）'
-             % ('简介/标签/标题/质量都齐全' if (web or scan) else '有简介且无标签'))
+        _log('%s: 没有需要补全的条目（%s）'
+             % ('Web 补全' if not ai else 'AI 补全',
+                '简介/标题/标签/质量/作者/年份/制作 都齐全' if (web or scan)
+                else '有简介且无标签'))
         return 0, 0
     batch = ai_group if ai_group > 0 else (len(rows) or 1)
     if batch > 60:
@@ -709,13 +717,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                 _sr.get('publisher') or base.get('studio') or (r.get('studio') or ''))
             _year = base.get('year') or (r.get('year') or '')
             _code = base.get('code') or ''
-            if not ai:
-                # Web 补全只补 简介/标签/作者/年份：
-                # 标题与公司保持原值，番号不写入、也不触发 avfan 二次抓取
-                _title = (r.get('title') or '').strip()
-                _studio = (r.get('studio') or '')
-                _code = ''
-            if _code and not (r.get('sem_code') or r.get('code')):
+            # 番号：Web 补全只用来查 avfan（制作/年份/标签），不写回条目
+            if _code and ai and not (r.get('sem_code') or r.get('code')):
                 dbc.execute('UPDATE items SET code=? WHERE id=?', (_code, r['id']))
             # avfan：发行日期/制作商/标签（公开页，优先于模型抽取）
             _av = mlib.avfan_info(_code) if _code else {}
@@ -751,7 +754,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                         "year=?, quality=?, source=?, last_update=? WHERE id=?",
                         (_title, _plot, tags, _actors, _studio,
                          _year, '有' if tags else (r.get('quality') or '缺'),
-                         '+'.join(s for s, _ in cands), mlib.now(), r['id']))
+                         ('web' if not ai else '+'.join(s for s, _ in cands)),
+                         mlib.now(), r['id']))
             dbc.commit()
             try:
                 it = dict(dbc.execute('SELECT * FROM items WHERE id=?', (r['id'],)).fetchone())
