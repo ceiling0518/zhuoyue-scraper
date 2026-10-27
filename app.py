@@ -613,12 +613,21 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             return False
 
         if ids:
-            _ids = set(int(x) for x in ids)
-            _ph = ','.join('?' * len(_ids))
-            rows = [dict(r) for r in dbc.execute(
-                "SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality "
-                "FROM items WHERE id IN (%s) ORDER BY id" % _ph, tuple(_ids)).fetchall()]
-            _miss = _ids - set(x['id'] for x in rows)
+            _ids = sorted(set(int(x) for x in ids))
+            rows = []
+            try:
+                for _i in range(0, len(_ids), 400):      # 分批，避开 SQLite 变量上限
+                    _chunk = _ids[_i:_i + 400]
+                    _ph = ','.join('?' * len(_chunk))
+                    rows += [dict(r) for r in dbc.execute(
+                        "SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality "
+                        "FROM items WHERE id IN (%s) ORDER BY id" % _ph,
+                        tuple(_chunk)).fetchall()]
+            except Exception as _e:
+                _log('  ERR 按 id 取条目失败（%d 条）: %s: %s'
+                     % (len(_ids), type(_e).__name__, str(_e)[:120]))
+                raise
+            _miss = set(_ids) - set(x['id'] for x in rows)
             if _miss:
                 _log('  选中里有 %d 条不在当前库，跳过' % len(_miss))
         else:
@@ -676,11 +685,19 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                 break
             cands = []
             if web:
-                d1 = mlib.web_complete(r, log=_log)
+                try:
+                    d1 = mlib.web_complete(r, log=_log)
+                except Exception as _e:
+                    d1 = None
+                    _log('    web 查询失败: %s: %s' % (type(_e).__name__, str(_e)[:90]))
                 if d1 and mlib.hint_ok(d1.get('title') or '', 3):
                     cands.append(('web', d1))
             if scan:
-                d2 = mlib.ai_video_scan(r)
+                try:
+                    d2 = mlib.ai_video_scan(r)
+                except Exception as _e:
+                    d2 = None
+                    _log('    看片失败: %s: %s' % (type(_e).__name__, str(_e)[:90]))
                 if d2 and mlib.hint_ok(d2.get('title') or '', 3):
                     cands.append(('看片', d2))
             if not cands:
@@ -819,7 +836,16 @@ def _job_fill(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             mlib.unload_ai()
         _end(('fill' if ai else 'web 补全') + ' %d/%d' % (ok, tot))
     except Exception:
-        _log('ERR ' + traceback.format_exc()[:1600]); _end('fill 失败')
+        _tb = traceback.format_exc()
+        try:                    # 完整堆栈落盘，日志里那条会被压缩/截断
+            _lp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'last_err.txt')
+            os.makedirs(os.path.dirname(_lp), exist_ok=True)
+            with open(_lp, 'a', encoding='utf-8') as _f:
+                _f.write('\n[%s] %s\n%s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'),
+                                              'fill', _tb))
+        except Exception:
+            pass
+        _log('ERR ' + _tb[:1600]); _end('fill 失败')
 
 
 def _vscan_pass(limit, ids=None):
