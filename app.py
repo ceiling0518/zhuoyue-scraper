@@ -245,6 +245,12 @@ def _log_purge():
 def _log(msg):
     """普通流水一行一条；**错误只保留一条**（新的替换旧的，最多每秒更新一次）。"""
     msg = str(msg)
+    try:                       # 心跳：任何一条日志都算「还在动」
+        _c = _cur()
+        if _c.get('running'):
+            _c['beat'] = time.time()
+    except Exception:
+        pass
     if _ERRRE.search(msg):
         body = msg[4:] if msg.startswith('ERR ') else msg
         flat = '%s%s%s' % (time.strftime('%H:%M:%S'), _ERRTAG, ' '.join(body.split()))
@@ -281,7 +287,7 @@ def _begin(name, total=0):
     _s = _cur()
     with _LOCK:
         _s.update(running=True, name=name, done=0, total=total, stop=False,
-                  started=time.time())
+                  started=time.time(), beat=time.time())
     _log('===== %s 开始 (total=%d) =====' % (name, total))
 
 
@@ -301,6 +307,7 @@ def _tick(n, total=None):
     _s = _cur()
     with _LOCK:
         _s['done'] = n
+        _s['beat'] = time.time()
         if total:
             _s['total'] = total
 
@@ -310,6 +317,39 @@ try:
     repair.STOP_HOOK = _stop_req
 except Exception:
     pass
+
+# ---------------------------------------------------------------- 看门狗
+# 某条车道长时间没有任何心跳（_log/_tick 都没动）时，先置停止，再强制释放，
+# 免得一个卡住的读盘/网络调用把整条车道永久占死（UI 一直转圈、后续任务全排队）。
+WATCHDOG = {'light': 900, 'heavy': 1800}     # 秒；超时先请求停止
+WATCHDOG_GRACE = 300                          # 再等 5 分钟仍不动就强制释放
+
+
+def _watchdog():
+    while True:
+        time.sleep(30)
+        now = time.time()
+        for lane, lim in WATCHDOG.items():
+            st = LANES[lane]
+            if not st.get('running'):
+                continue
+            beat = st.get('beat') or st.get('started') or now
+            idle = now - beat
+            if idle > lim + WATCHDOG_GRACE:
+                with _LOCK:
+                    st['running'] = False
+                    st['stop'] = True
+                _log('[看门狗] %s 车道 %d 秒无进展（%s），已强制释放'
+                     % (lane, int(idle), st.get('name') or '?'))
+            elif idle > lim and not st.get('wd_warned'):
+                st['wd_warned'] = True
+                with _LOCK:
+                    st['stop'] = True
+                _log('[看门狗] %s 车道 %d 秒无进展（%s），已请求停止'
+                     % (lane, int(idle), st.get('name') or '?'))
+
+
+threading.Thread(target=_watchdog, daemon=True).start()
 
 
 # ---------------------------------------------------------------- passes
@@ -3899,11 +3939,15 @@ def start_job(fn, *a, lane='light', exclusive=False):
         if lane == 'heavy':
             if LANES['heavy']['running'] or STATE['running']:
                 return False
+            if LANES['light']['running'] and LANES['light'].get('exclusive'):
+                return False          # light 正在读整片（AI 选图），别同时改文件
             if exclusive and LANES['light']['running']:
                 return False          # 修复：等 light 车道收尾（不能读替换中的半成品）
         else:
             if LANES['light']['running']:
                 return False
+            if exclusive and (LANES['heavy']['running'] or STATE['running']):
+                return False          # 要读整片/写文件时，等重活结束再开始
             if LANES['heavy']['running'] and LANES['heavy'].get('exclusive'):
                 return False
             if STATE['running'] and STATE.get('exclusive'):
@@ -4573,18 +4617,41 @@ def _poster_refresh_one(iid, ai=False, enh=False):
     return note
 
 
+def _run_bounded(fn, timeout, *a):
+    """在子线程里跑 fn，硬超时就抛 TimeoutError（读 NAS 卡住时不会拖死整条车道）。"""
+    box = {}
+
+    def w():
+        try:
+            box['v'] = fn(*a)
+        except Exception as e:      # noqa: BLE001 透传给调用方
+            box['e'] = e
+
+    t = threading.Thread(target=w, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError('超过 %d 秒无响应' % timeout)
+    if 'e' in box:
+        raise box['e']
+    return box.get('v')
+
+
 def _job_poster_refresh(ids=None, ai=False, enh=False):
     _begin('poster', 1)
     try:
         its = _items_by_ids(ids)
         _tick(0, max(1, len(its)))
+        lim = 900 if ai else 420        # AI 选图要扫整片；普通刷新给 7 分钟
         ok = 0
         for i, it in enumerate(its):
             if _stop_req():
                 _log('! 已请求停止')
                 break
             try:
-                msg = _poster_refresh_one(it['id'], bool(ai), bool(enh))
+                msg = _run_bounded(_poster_refresh_one, lim, it['id'], bool(ai), bool(enh))
+            except TimeoutError as e:
+                msg = '超时跳过（%s）' % str(e)[:60]
             except Exception as e:
                 msg = 'ERR %s' % str(e)[:100]
             if not msg.startswith(('无', '抽帧', '替换', 'ERR')):
@@ -5276,7 +5343,8 @@ class H(BaseHTTPRequestHandler):
                 _ai = (q.get('ai') or '') in ('1', 'true', 'yes')
                 _enh = (q.get('enh') or '') in ('1', 'true', 'yes')
                 if _ai or _enh:
-                    ok = start_job(_job_poster_refresh, tids or None, _ai, _enh, lane='light')
+                    ok = start_job(_job_poster_refresh, tids or None, _ai, _enh,
+                                   lane='light', exclusive=bool(_ai))
                     return self._json({'ok': True, 'queued': bool(ok)})
                 return self._json({'ok': True, 'n': refresh_thumbs(tids or None, make=True)})
             elif p == '/api/covers/drop':
