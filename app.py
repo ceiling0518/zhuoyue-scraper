@@ -3969,6 +3969,54 @@ def start_job(fn, *a, lane='light', exclusive=False):
     return True
 
 
+def _wait_pid(pid, timeout=120):
+    """等另一个进程退出（Windows 用 WaitForSingleObject，拿不到句柄就直接睡 2 秒）。"""
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x00100000, False, int(pid))     # SYNCHRONIZE
+        if h:
+            k32.WaitForSingleObject(h, int(timeout * 1000))
+            k32.CloseHandle(h)
+            return
+    except Exception:
+        pass
+    time.sleep(2)
+
+
+def _restart_soon(delay=0.6):
+    """自重启：起一个「等父进程退出再接管」的子进程，然后本进程退出。
+
+    不用 bat/cmd：无控制台时会话里 start 容易起不来（之前就这么断的）。
+    子进程带 --wait-pid，main() 里先等这个 PID 消失，再绑端口（带重试）。
+    """
+    py = sys.executable
+    script = os.path.abspath(__file__)
+    workdir = os.path.dirname(script)
+    pid = os.getpid()
+    # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+    flags = 0x00000008 | 0x00000200 | 0x08000000
+    try:
+        subprocess.Popen([py, '-X', 'utf8', script, '--wait-pid', str(pid)],
+                         cwd=workdir, close_fds=True, creationflags=flags,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    except Exception as e:
+        _log('ERR 重启失败: %s' % e)
+        return False
+
+    def bye():
+        time.sleep(delay)
+        try:
+            _flush_log()
+        except Exception:
+            pass
+        os._exit(0)
+
+    threading.Thread(target=bye, daemon=True).start()
+    return True
+
+
 # ---------------------------------------------------------------- read helpers
 def _ollama():
     try:
@@ -3994,7 +4042,7 @@ def stats():
            'archive': dbc.execute('SELECT COUNT(*) c FROM archive').fetchone()['c'],
            'root': mlib.scan_root(), 'root_movie': mlib.root_movie(),
            'root_tv': mlib.root_tv(), 'libs': len(mlib.libraries()),
-           'model': mlib.ai_model(), 'db': mlib.DB_PATH,
+           'model': mlib.ai_model(), 'db': mlib.DB_PATH, 'pid': os.getpid(),
            'cookie': bool(mlib.javdb_cookie()), 'tmdb': bool(mlib.tmdb_key()),
            'douban': bool(mlib.douban_cookie()),
            'queue': len(QUEUE)}
@@ -5358,6 +5406,14 @@ class H(BaseHTTPRequestHandler):
                 k = mlib.tmdb_key()
                 return self._json({'ok': ok, 'has': bool(k),
                                    'mode': ('token' if k.startswith('eyJ') else ('key' if k else ''))})
+            elif p == '/api/restart':
+                _force = (q.get('force') or '') in ('1', 'true', 'yes')
+                _busy = STATE['running'] or LANES['light']['running']
+                if _busy and not _force:
+                    return self._json({'ok': False, 'err': '有任务在运行',
+                                       'name': STATE.get('name') or LANES['light'].get('name')})
+                ok = _restart_soon()
+                return self._json({'ok': bool(ok), 'pid': os.getpid()})
             elif p == '/api/libs/active':
                 ok = mlib.set_active_lib(q.get('id') or '')
                 _a = mlib.active_lib()
@@ -5577,6 +5633,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.1.0</span> 
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
   <button id="b-sites">站点</button>
+  <button id="b-restart" title="重启服务：加载新代码 / 任务卡死时恢复">重启</button>
   <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <select id="b-libsel" title="切换媒体库（每个库独立数据库）" style="min-width:132px"></select>
   <button id="b-libs" title="媒体库设置">⚙ 库</button>
@@ -6496,6 +6553,27 @@ $('#lib-save').onclick=async()=>{
   ACTIVE=(await(await fetch('/api/libs')).json()).active||ACTIVE;
   await libLoad();await libSel();
   $('#lib-info').textContent='已保存：'+LIBSROWS.length+' 个库';};
+$('#b-restart').onclick=async()=>{
+  let busy=false,jn='';
+  try{const j=await(await fetch('/api/job')).json();
+    busy=!!j.running||!!(j.lanes&&(j.lanes.heavy||j.lanes.light));jn=j.name||'';}catch(e){}
+  if(!confirm(busy?('有任务在运行（'+jn+'），重启会中断，继续？'):'重启服务？页面会自动刷新。'))return;
+  const btn=$('#b-restart');btn.disabled=true;btn.textContent='重启中…';
+  let r={};
+  try{r=await(await fetch('/api/restart?force=1',{method:'POST'})).json();}catch(e){}
+  if(r&&r.ok===false){btn.disabled=false;btn.textContent='重启';alert('重启失败：'+(r.err||'未知'));return;}
+  const oldPid=r.pid||0, t0=Date.now();
+  for(let i=0;i<90;i++){
+    await new Promise(x=>setTimeout(x,1000));
+    try{const s=await fetch('/api/stats',{cache:'no-store'});
+      if(!s.ok)continue;
+      const j=await s.json();
+      if(j.pid&&oldPid&&j.pid!==oldPid){location.reload();return;}
+      if(!oldPid&&Date.now()-t0>5000){location.reload();return;}
+    }catch(e){}
+  }
+  btn.disabled=false;btn.textContent='重启';
+  alert('重启超时，请检查服务是否还在运行');};
 $('#b-sites').onclick=async()=>{await stLoad();
   try{const s=await(await fetch('/api/stats')).json();$('#ck-state').textContent=s.cookie?'当前：已设置':'当前：未设置';
     const t=await(await fetch('/api/tmdb')).json();
@@ -6727,6 +6805,14 @@ def rebind(host, port):
 
 
 def main():
+    _wp = 0
+    try:
+        if '--wait-pid' in sys.argv:
+            _wp = int(sys.argv[sys.argv.index('--wait-pid') + 1])
+    except Exception:
+        _wp = 0
+    if _wp:
+        _wait_pid(_wp, 120)          # 重启：等旧进程彻底退出再绑端口
     print('  卓"悦"刮削器 — 给你和你的小姐姐')
     print('    python : %s' % sys.executable)
     print('    root   : %s' % mlib.scan_root())
@@ -6771,7 +6857,17 @@ def main():
               % (_es['mode'], _es['crf'], _es['kbps'], _es['scale']))
     except Exception as _e:
         print('    backup : %s' % str(_e)[:120])
-    srv = ThreadingHTTPServer((HOST, PORT), H)
+    srv = None
+    for _i in range(40):             # 刚重启时旧端口可能还没完全释放
+        try:
+            srv = ThreadingHTTPServer((HOST, PORT), H)
+            break
+        except OSError as _e:
+            if _i == 0:
+                print('    端口 %s 暂不可用，重试中... (%s)' % (PORT, _e))
+            time.sleep(0.5)
+    if srv is None:
+        raise OSError('端口 %s 绑定失败' % PORT)
     SERVER = srv
     try:
         while True:
