@@ -603,6 +603,13 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                 return True
             if not mlib.hint_ok(x.get('plot') or '', 8):
                 return True
+            if not ai:                    # Web 补全还要补作者/年份
+                if not (x.get('actors') or '').strip():
+                    return True
+                # 没有番号的条目搜不到发行年份，不算「缺」（否则每次全库都重跑）
+                if (not (x.get('year') or '').strip()
+                        and (x.get('code') or x.get('sem_code'))):
+                    return True
             return False
 
         if ids:
@@ -610,6 +617,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             rows = [x for x in _all if x['id'] in _ids]   # 选中的一律走来源
         else:
             rows = [x for x in _all if _need(x)]
+            _log('  需要补全 %d 条（缺 标签/简介/标题%s）'
+                 % (len(rows), '/作者/年份' if not ai else ''))
         if limit > 0:
             rows = rows[:limit]
     else:
@@ -637,9 +646,12 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
     ok = 0
     # 信息无效/不足的条目：先用勾选的来源补（web / 看片）
     _force = bool(ids) and (web or scan)
-    weak = [r for r in rows
-            if _force or (not mlib.hint_ok(r.get('title') or '', 4)
-                          or not mlib.hint_ok(r.get('plot') or '', 8))]
+    if not ai:
+        weak = list(rows)          # Web 补全：选出来的就是需要补的，别再按标题/简介筛
+    else:
+        weak = [r for r in rows
+                if _force or (not mlib.hint_ok(r.get('title') or '', 4)
+                              or not mlib.hint_ok(r.get('plot') or '', 8))]
     weak_ids = set(r['id'] for r in weak)
     rows = [r for r in rows if r['id'] not in weak_ids]
     srcs = []
@@ -728,6 +740,13 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             _title = (_title or '').strip() or (r.get('title') or '')
             _plot = (_plot or '').strip() or (r.get('plot') or '')
             tags = (tags or '').strip() or (r.get('tags') or '')
+            _changed = any(((_title or '').strip() != (r.get('title') or '').strip(),
+                            (_plot or '').strip() != (r.get('plot') or '').strip(),
+                            (tags or '').strip() != (r.get('tags') or '').strip(),
+                            (','.join([a for a in (_actors or '').split(',') if a]).strip()
+                             != (r.get('actors') or '').strip()),
+                            ((_studio or '').strip() != (r.get('studio') or '').strip()),
+                            ((_year or '').strip() != (r.get('year') or '').strip())))
             dbc.execute("UPDATE items SET title=?, plot=?, tags=?, actors=?, studio=?, "
                         "year=?, quality=?, source=?, last_update=? WHERE id=?",
                         (_title, _plot, tags, _actors, _studio,
@@ -739,9 +758,11 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                 mlib.write_nfo(it)
             except Exception:
                 pass
-            ok += 1
-            _log('[%d/%d] id=%d OK（%s）: %s | 演员 %s | 公司 %s | %s'
-                 % (wi, len(weak), r['id'], '+'.join(s for s, _ in cands),
+            if _changed:
+                ok += 1
+            _log('[%d/%d] id=%d %s（%s）: %s | 演员 %s | 公司 %s | %s'
+                 % (wi, len(weak), r['id'], 'OK' if _changed else '无变化',
+                    '+'.join(s for s, _ in cands),
                     (_title or '')[:26], (_actors or '-')[:24],
                     (_studio or '-')[:16], (_year or '-')))
             _tick(wi)
