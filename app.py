@@ -2709,46 +2709,52 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
                 continue
             vids = sorted(vids, key=lambda p: os.path.getsize(p), reverse=True)
             fb = os.path.basename(vids[0])
+            _done = 0
             if not force:
                 _done = dbc.execute('SELECT COUNT(*) c FROM ads_file WHERE item_id=? AND file=?',
                                     (it['id'], fb)).fetchone()['c']
-                if _done:
-                    _log('[%d/%d] id=%s 已检测过（%s），跳过（勾 force 可重测）'
-                         % (i + 1, len(its), it['id'], fb[:32]))
-                    ok += 1
-                    _tick(i + 1)
-                    continue
-            try:
-                dur = mlib.video_duration(vids[0])
-                _log('[%d/%d] id=%s 检测 %s (%.0fs，共 %d 个视频，%s)'
-                     % (i + 1, len(its), it['id'], fb, dur or 0, len(vids),
-                        '只查头尾' if mode == 'headtail' else '全片'))
-                segs = mlib.detect_ads(vids[0], dur, log=lambda m: _log(m), mode=mode)
-                _save_ads(dbc, it['id'], fb, segs, main=True)
-                mlib.save_segs(it['id'], fb, 'ad', segs)
-                _log('    -> %d 段广告 %s' % (len(segs), segs))
+            _content_only = bool(_done and (subs or demo or bad))
+            if _done and not _content_only:
+                _log('[%d/%d] id=%s 已检测过（%s），跳过（勾 force 可重测）'
+                     % (i + 1, len(its), it['id'], fb[:32]))
                 ok += 1
-                rest = vids[1:]
-                if not rest:
-                    pass
-                elif not segs:
-                    _log('    首个无广告 -> 同组其余 %d 个跳过' % len(rest))
-                else:
-                    _log('    首个有广告 -> 补测同组其余 %d 个' % len(rest))
-                    for vp2 in rest:
-                        if _stop_req():
-                            break
-                        b2 = os.path.basename(vp2)
-                        try:
-                            d2 = mlib.video_duration(vp2)
-                            s2 = mlib.detect_ads(vp2, d2, log=lambda m: _log('      ' + m),
-                                                 mode=mode)
-                            _save_ads(dbc, it['id'], b2, s2)
-                            _log('      %s -> %d 段 %s' % (b2[:36], len(s2), s2))
-                        except Exception as e2:
-                            _log('      %s ERR %s' % (b2[:36], str(e2)[:120]))
-            except Exception as e:
-                _log('    ERR %s' % str(e)[:180])
+                _tick(i + 1)
+                continue
+            if _content_only:
+                _log('[%d/%d] id=%s 广告已检测过，跳过广告，只做内容检测（%s）'
+                     % (i + 1, len(its), it['id'], fb[:32]))
+            else:
+                try:
+                    dur = mlib.video_duration(vids[0])
+                    _log('[%d/%d] id=%s 检测 %s (%.0fs，共 %d 个视频，%s)'
+                         % (i + 1, len(its), it['id'], fb, dur or 0, len(vids),
+                            '只查头尾' if mode == 'headtail' else '全片'))
+                    segs = mlib.detect_ads(vids[0], dur, log=lambda m: _log(m), mode=mode)
+                    _save_ads(dbc, it['id'], fb, segs, main=True)
+                    mlib.save_segs(it['id'], fb, 'ad', segs)
+                    _log('    -> %d 段广告 %s' % (len(segs), segs))
+                    ok += 1
+                    rest = vids[1:]
+                    if not rest:
+                        pass
+                    elif not segs:
+                        _log('    首个无广告 -> 同组其余 %d 个跳过' % len(rest))
+                    else:
+                        _log('    首个有广告 -> 补测同组其余 %d 个' % len(rest))
+                        for vp2 in rest:
+                            if _stop_req():
+                                break
+                            b2 = os.path.basename(vp2)
+                            try:
+                                d2 = mlib.video_duration(vp2)
+                                s2 = mlib.detect_ads(vp2, d2, log=lambda m: _log('      ' + m),
+                                                     mode=mode)
+                                _save_ads(dbc, it['id'], b2, s2)
+                                _log('      %s -> %d 段 %s' % (b2[:36], len(s2), s2))
+                            except Exception as e2:
+                                _log('      %s ERR %s' % (b2[:36], str(e2)[:120]))
+                except Exception as e:
+                    _log('    ERR %s' % str(e)[:180])
             if subs or demo:
                 try:
                     _vp0 = vids[0] if vids else ''
@@ -6283,7 +6289,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
     <span class="muted" id="count"></span>
     <span class="muted" id="page"></span>
-    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 字幕 Sub/S🔥 ｜ 去码 <b style="color:#a8b3c4">●</b>有码 <b style="color:#d8dde6">◍</b>一般 <b style="color:#8fd0ff">◉</b>无码 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">字</b>有 <b style="color:var(--ok)">字🔥</b>烧录</span>
+    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 去码 <b style="color:#a8b3c4">●</b>有码 <b style="color:#d8dde6">◍</b>一般 <b style="color:#8fd0ff">◉</b>无码 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">Sub</b>有 <b style="color:var(--ok)">S🔥</b>烧录 <b style="color:#7b8798;text-decoration:line-through">Sub</b>无</span>
     <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
@@ -6296,7 +6302,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
      <select id="admode" style="min-width:86px" title="头尾：只扫开头/结尾各 4 分钟（能只重封装，秒级）；全片：30 秒全网扫（可能命中中插广告）"><option value="headtail">头尾</option><option value="full">全片</option></select>
-    <button id="a-adtect" title="广告 + 内容检测：抽帧判广告（默认只查头尾），可勾选字幕 / 去码 / 无效段一起检">广告和内容检测</button><label class="muted" title="同时检测字幕：外挂 .srt/.ass 或已烧录"><input type="checkbox" id="chk-subdet" checked> 字幕检测</label><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码检测</label>
+    <button id="a-adtect" title="广告 + 内容检测：抽帧判广告（默认只查头尾），可勾选字幕 / 去码 / 无效段一起检">广告和内容检测</button><label class="muted" title="同时检测字幕：外挂 .srt/.ass 或已烧录"><input type="checkbox" id="chk-subdet" checked> 字幕</label><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码</label>
     <label class="muted" title="广告和内容检测时一并检无效段（无女性画面），跃慢"><input type="checkbox" id="chk-badseg"> 无效段</label>
     <button id="a-segs" title="自定义编辑：自己填要保留的区间；可改起止、加段、删段">自定义编辑</button>
      <button id="a-addel" title="按已检出的头/尾广告切掉开头和结尾；原文件留 .orig 回滚点">头尾删除</button>
@@ -7453,8 +7459,8 @@ def main():
     q_load()
     print('    queue  : %d (\u5df2\u6301\u4e45\u5316)' % len(QUEUE))
     try:
-        rows = mlib.db().execute('SELECT line FROM joblog ORDER BY id DESC LIMIT 200').fetchall()
-        STATE['log'] = [r['line'] for r in reversed(rows)]
+        rows = _logdb().execute('SELECT line FROM joblog ORDER BY id DESC LIMIT 200').fetchall()
+        STATE['log'] = [r[0] for r in reversed(rows)]
     except Exception:
         pass
     global SERVER, HOST, PORT
