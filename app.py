@@ -5235,10 +5235,18 @@ def _poster_ai_frame(vp):
 
     def orank(w, h):
         a = w / float(h) if h else 1.0
-        return 0 if a >= 1.2 else (1 if a >= 0.9 else 2)
+        return 0 if a >= 1.25 else (1 if a >= 0.9 else 2)
 
-    cands.sort(key=lambda c: (0 if c[0] >= 0.004 else 1, orank(c[4], c[5]),
-                              -c[0], -c[1]))
+    def bodyrank(ratio):
+        # 脸占比小 = 景别远 = 能看到整体身体；脸占比大 = 大特写
+        if 0.0004 <= ratio <= 0.012:
+            return 0          # 整体身体
+        if ratio > 0.012:
+            return 1          # 脸/局部特写
+        return 2              # 没检测到脸
+
+    cands.sort(key=lambda c: (bodyrank(c[0]), orank(c[4], c[5]),
+                              -c[1], -c[0]))
     best = cands[0]
     return best[2], best[3]
 
@@ -5490,6 +5498,20 @@ def _job_poster_stats(ids=None):
         _log('ERR ' + traceback.format_exc()[:800]); _end('pstat 失败')
 
 
+def _poster_cls(iid):
+    """返回 ('bad'|'green'|'color'|'', bpp)。宽图判彩色框，竖图/方图判绿框。"""
+    w, h, b = poster_stat_of(iid)
+    if not (w and h):
+        return '', b
+    mn = min(w, h)
+    wide = (w / float(h)) >= 1.25 if h else False
+    if b <= 0.03 or mn < 300:
+        return 'bad', b
+    if mn >= 420:
+        return ('color' if wide else 'green'), b
+    return '', b
+
+
 def _poster_save(im, path, lo=100, hi=150, long_side=1200, minq=86):
     """存封面 JPEG：先卡分辨率，再用尽量高的质量（=更高码率）把体积顶进 lo-hi。
 
@@ -5571,6 +5593,12 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False):
         _need, _b = _needs_enh(dst)
         if not _need:
             return '跳过（bpp %.3f 已够，强制可覆盖）' % _b
+
+    # 已经是彩框（宽图+够清晰）就不必再 AI 选图；要重选请勾强制
+    if ai and not force:
+        _c0, _b0 = _poster_cls(iid)
+        if _c0 == 'color':
+            return '跳过（已是彩框 bpp %.3f）' % _b0
 
     # 有封面又只要「提升画质」时，绝不重新抽帧：直接拿现有 poster 超分
     if ai and not (enh and os.path.exists(dst)):
@@ -6690,6 +6718,7 @@ tr:hover td{background:#1f2531}
 .tframe{display:inline-block;line-height:0;border-radius:6px;padding:2px}
 .tframe.tbad{box-shadow:0 0 0 2px #e5484d}
 .tframe.tgood{padding:3px;background:linear-gradient(135deg,#ff5f6d,#ffc371,#5ee6a8,#4ac1ff)}
+.tframe.tgreen{box-shadow:0 0 0 2px #3fb950}
 #rows td{height:84px;vertical-align:middle}
 @media (max-width:1100px){#tbl th:nth-child(4),#tbl td:nth-child(4),#tbl th:nth-child(5),#tbl td:nth-child(5){display:none}}
 .cellclip{max-height:78px;overflow:hidden}
@@ -7074,7 +7103,7 @@ function tcls(r){
   if(w&&h){
     const mn=Math.min(w,h),mx=Math.max(w,h);
     if(b<=0.03||mn<300)return ' tbad';
-    if(mn>=420)return ' tgood';            // 短边 420p 折算，横竖不分，够用就给彩框
+    if(mn>=420)return (w/h>=1.25)?' tgood':' tgreen';   // 宽图=彩框，非宽图=绿框
     return '';
   }
   const t=+r.tbpp||0;
