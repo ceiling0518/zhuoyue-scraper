@@ -5375,10 +5375,10 @@ def _poster_stat(dst):
         return 0.0, 0, 0
 
 
-def _needs_enh(dst, bpp_hi=0.03, short_lo=420):
-    """要不要做提升画质：bpp<=0.03（红框）或短边<600 才做。
+def _needs_enh(dst, bpp_hi=0.03, short_lo=300):
+    """只有红框（bpp<=0.03 或短边<300）才做提升画质。
 
-    一般/良好（彩框）的封面不再重复超分——重复超分只会糊。
+    无框/灰/绿/彩 一律跳过——重复超分只会越修越糊。
     """
     bpp, w, h = _poster_stat(dst)
     if not (w and h):
@@ -5509,7 +5509,7 @@ def _poster_cls(iid):
         return 'bad', b
     if mn >= 420:
         return ('color' if wide else 'green'), b
-    return '', b
+    return ('', b) if wide else ('gray', b)
 
 
 def _poster_save(im, path, lo=100, hi=150, long_side=1200, minq=86):
@@ -6719,6 +6719,7 @@ tr:hover td{background:#1f2531}
 .tframe.tbad{box-shadow:0 0 0 2px #e5484d}
 .tframe.tgood{padding:3px;background:linear-gradient(135deg,#ff5f6d,#ffc371,#5ee6a8,#4ac1ff)}
 .tframe.tgreen{box-shadow:0 0 0 2px #3fb950}
+.tframe.tgray{box-shadow:0 0 0 2px #6b7280}
 #rows td{height:84px;vertical-align:middle}
 @media (max-width:1100px){#tbl th:nth-child(4),#tbl td:nth-child(4),#tbl th:nth-child(5),#tbl td:nth-child(5){display:none}}
 .cellclip{max-height:78px;overflow:hidden}
@@ -7104,7 +7105,7 @@ function tcls(r){
     const mn=Math.min(w,h),mx=Math.max(w,h);
     if(b<=0.03||mn<300)return ' tbad';
     if(mn>=420)return (w/h>=1.25)?' tgood':' tgreen';   // 宽图=彩框，非宽图=绿框
-    return '';
+    return (w/h>=1.25)?'':' tgray';                      // 中等质量：非宽幅给灰框
   }
   const t=+r.tbpp||0;
   if(!t)return '';
