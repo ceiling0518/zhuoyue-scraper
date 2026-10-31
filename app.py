@@ -771,7 +771,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                         "year=?, quality=?, source=?, last_update=? WHERE id=?",
                         (_title, _plot, tags, _actors, _studio,
                          _year, '有' if tags else (r.get('quality') or '缺'),
-                         ('web' if not ai else '+'.join(s for s, _ in cands)),
+                         ('Web' if not ai else '+'.join(
+                             ({'web': 'Web', '看片': 'AI'}.get(s, s)) for s, _ in cands)),
                          mlib.now(), r['id']))
             dbc.commit()
             try:
@@ -4126,7 +4127,10 @@ def stats():
         out['by_quality'][r['q']] = r['c']
     for r in dbc.execute("SELECT COALESCE(NULLIF(source,''),'—') s, COUNT(*) c "
                          'FROM items WHERE present=1 GROUP BY s'):
-        out['by_source'][r['s']] = r['c']
+        _k = r['s']
+        if _k.strip().lower() == 'web':
+            _k = 'Web'
+        out['by_source'][_k] = out['by_source'].get(_k, 0) + r['c']
     for r in dbc.execute("SELECT COALESCE(NULLIF(sem_kind,''),'(未跑)') k, COUNT(*) c "
                          'FROM items WHERE present=1 GROUP BY k'):
         out['sem'][r['k']] = r['c']
@@ -4151,7 +4155,7 @@ def items(params):
     else:
         where.append("COALESCE(quality,'')<>'删除'")     # 默认不含已删除
     if sc:
-        where.append('source=?'); args.append(sc)
+        where.append("LOWER(COALESCE(source,''))=LOWER(?)"); args.append(sc)
     if kd == '(未跑)':
         where.append("(sem_kind IS NULL OR sem_kind='')")
     elif kd:
