@@ -1173,7 +1173,9 @@ def _job_queue(batches=None):
                               bool(p.get('burn')))
                     ok += 1
                 elif task == 'adtect':
-                    _job_adtect(ids, p.get('mode') or 'headtail', True)
+                    _job_adtect(ids, p.get('mode') or 'headtail', True, False,
+                                bool(p.get('subs', True)), bool(p.get('demo', True)),
+                                bool(p.get('bad', False)))
                     ok += 1
                 else:
                     _log('  ! 未知任务 %s，跳过' % task)
@@ -1307,6 +1309,11 @@ def _ensure_media(dbc):
     for _c in ('ads', 'ads_ts'):
         try:
             dbc.execute('ALTER TABLE media ADD COLUMN %s TEXT' % _c)
+        except Exception:
+            pass
+    for _c in ('demo', 'subs_det'):
+        try:
+            dbc.execute("ALTER TABLE items ADD COLUMN %s TEXT DEFAULT ''" % _c)
         except Exception:
             pass
     dbc.commit()
@@ -2049,7 +2056,7 @@ def _job_down(ids=None, target='auto', fix=False, ad=False, fpsout=0):
     try:
         _ensure_media(dbc)
         if ad:
-            _log('== 第一步：有效段裁剪（合并）==')
+            _log('== 第一步：裁剪合并 ==')
             _job_addel(ids, nested=True)
             if _stop_req():
                 _log('! 已在删除无效段阶段停止，不再降分辨率')
@@ -2140,9 +2147,9 @@ def _job_down(ids=None, target='auto', fix=False, ad=False, fpsout=0):
                                 _kk.append((_cc, _d0))
                             if len(_kk) == 1:
                                 _ad_skip = (_kk[0][0], _kk[0][1] - _kk[0][0])
-                                _log('    有效段裁剪：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
+                                _log('    裁剪：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
                             else:
-                                _log('    ! 有中插区间，本次只降分辨率（请先单独做有效段裁剪）')
+                                _log('    ! 有中插区间，本次只降分辨率（请先单独做裁剪合并）')
                     except Exception as _e:
                         _log('    ! 读取广告区间失败: %s' % str(_e)[:80])
 
@@ -2435,7 +2442,7 @@ def _job_proteus(ids=None, ad=False):
                             _kk.append((_cc, dur))
                         if len(_kk) == 1:
                             _ad_skip = (_kk[0][0], _kk[0][1] - _kk[0][0])
-                            _log('    有效段裁剪：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
+                            _log('    裁剪：跳过 %.1f-%.1f 秒' % (_kk[0][0], _kk[0][1]))
                         else:
                             _log('    ! 有中插无效段，本次只做画质修复（请先单独删除无效段）')
                 except Exception as _e:
@@ -2614,7 +2621,35 @@ def _job_convert(ids=None):
         _log('ERR ' + traceback.format_exc()[:1200]); _end('convert 失败')
 
 
-def _job_adtect(ids=None, mode='headtail', nested=False, force=False):
+def _subs_status(it, vp=None):
+    """字幕检测：烧录 > 外挂字幕 > 无。"""
+    folder = it.get('path') or ''
+    try:
+        names = [n.lower() for n in os.listdir(folder)]
+    except Exception:
+        names = []
+    if any(n.endswith(('.hardsub.mp4', '.hardsub.mkv', '.hardsub.mov')) for n in names):
+        return 'burn'
+    if any(n.endswith(('.srt', '.ass', '.ssa', '.vtt')) for n in names):
+        return 'file'
+    return 'none'
+
+
+def _demo_by_code(code):
+    """按番号判去码：X/CX/J/CJ -> 一般；UNCON/UNCEN -> 好；其余 -> 有码。"""
+    c = (code or '').upper().replace(' ', '')
+    if not c:
+        return ''
+    import re as _re
+    if _re.search(r'\dC?[XJ]$', c):
+        return '一般'
+    if 'UNCEN' in c or 'UNCON' in c or _re.search(r'UC$', c):
+        return '好'
+    return '有'
+
+
+def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
+                subs=False, demo=False, bad=False):
     """广告检测：30s 粗扫 + 精修 -> ads_file（逐文件）/ media（最大文件）。
 
     多视频条目：先只测最大的那个。它没有广告就跳过同组其余
@@ -2678,6 +2713,42 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False):
                             _log('      %s ERR %s' % (b2[:36], str(e2)[:120]))
             except Exception as e:
                 _log('    ERR %s' % str(e)[:180])
+            if subs or demo:
+                try:
+                    _vp0 = vids[0] if vids else ''
+                    if subs:
+                        _sd = _subs_status(it, _vp0)
+                        dbc.execute('UPDATE items SET subs_det=?, subs=?, subs_burn=? WHERE id=?',
+                                    (_sd, 1 if _sd in ('file', 'burn') else 0,
+                                     1 if _sd == 'burn' else 0, it['id']))
+                        _log('    字幕检测：%s' % {'file': '有外挂字幕',
+                                                    'burn': '已烧录',
+                                                    'none': '无字幕'}.get(_sd, _sd))
+                    if demo:
+                        _r0 = dbc.execute('SELECT code, sem_code FROM items WHERE id=?',
+                                          (it['id'],)).fetchone()
+                        _code0 = ((_r0['sem_code'] or _r0['code'] or '') if _r0 else '')
+                        _dm = _demo_by_code(_code0)
+                        if _dm:
+                            dbc.execute('UPDATE items SET demo=? WHERE id=?', (_dm, it['id']))
+                        _log('    去码检测：%s（%s）'
+                             % ({'有': '有码', '一般': '去码一般',
+                                 '好': '去码好'}.get(_dm, '无番号，未判定'),
+                                _code0 or '-'))
+                    dbc.commit()
+                except Exception as _e:
+                    _log('    内容检测 ERR %s' % str(_e)[:120])
+            if bad:
+                try:
+                    for _vp3 in vids:
+                        _d3 = mlib.video_duration(_vp3)
+                        _s3, _r3 = mlib.detect_no_woman(_vp3, _d3,
+                                                        log=lambda m: _log('      ' + m))
+                        mlib.save_segs(it['id'], os.path.basename(_vp3), 'invalid', _s3)
+                        _log('      无效段 %s -> %d 段'
+                             % (os.path.basename(_vp3)[:30], len(_s3)))
+                except Exception as _e:
+                    _log('      无效段 ERR %s' % str(_e)[:120])
             _tick(i + 1)
         if not nested:
             _end('adtect %d/%d' % (ok, len(its)))
@@ -4586,7 +4657,7 @@ def items(params):
     total = dbc.execute('SELECT COUNT(*) c FROM items LEFT JOIN media m ON m.item_id=items.id WHERE ' + ws, args).fetchone()['c']
     limit = min(int(params.get('limit') or 50), 300)
     offset = int(params.get('offset') or 0)
-    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,series,status,site,path,media_kind,items.subs AS subs,items.subs_burn AS subs_burn,'
+    rows = dbc.execute('SELECT items.id AS id,name,code,sem_kind,sem_code,sem_manual,series,status,site,path,media_kind,items.subs AS subs,items.subs_burn AS subs_burn,items.demo AS demo,items.subs_det AS subs_det,'
                        'm.vbr AS vbr, m.size AS fsize, m.file AS mfile, m.w AS mw, m.h AS mh, m.fps AS mfps, m.dur AS mdur, m.ads AS ads, m.ads_ts AS ads_ts,'
                        'quality,source,title,plot,tags,actors,year,studio,cover,last_update,first_seen, '
                        "(SELECT COUNT(*) FROM segs_file s WHERE s.item_id=items.id AND s.kind='invalid' AND IFNULL(s.segs,'') NOT IN ('','[]')) AS nw, "
@@ -5648,9 +5719,10 @@ class H(BaseHTTPRequestHandler):
                                lane='heavy')
             elif p == '/api/adtect':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                _tr = lambda k: (q.get(k) or '') in ('1', 'true', 'yes')
                 ok = start_job(_job_adtect, ids, (q.get('mode') or 'headtail'),
-                               False,
-                               (q.get('force') or '') in ('1', 'true', 'yes'),
+                               False, _tr('force'),
+                               _tr('subs'), _tr('demo'), _tr('bad'),
                                lane='heavy')
             elif p == '/api/vdetect':
                 _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
@@ -6170,10 +6242,10 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
      <select id="admode" style="min-width:86px" title="头尾：只扫开头/结尾各 4 分钟（能只重封装，秒级）；全片：30 秒全网扫（可能命中中插广告）"><option value="headtail">头尾</option><option value="full">全片</option></select>
-    <button id="a-adtect" title="抽帧判断广告：头尾模式只扫首尾各 4 分钟并 15 秒取样；全片模式 30 秒全网扫。结果写在列表「属性」列">广告检测</button>
-    <button id="a-vdetect" title="每 30 秒抽帧判断是否有女性；连续 2 点（≥60 秒）无女性判无效，边界 5 秒细化。仅初筛，需人工核实">检测无效段</button>
-    <button id="a-segs" title="编辑有效段：每个视频要保留的区间；可改起止、加段、删段，可按文件选择">有效段编辑</button>
-     <button id="a-addel" title="按有效段切掉区间（勾了「合并」的视频先拼成一个，用第一个视频的名字替换原片）；原文件留 .orig 回滚点，临时文件自动清理">有效段裁剪（合并）</button>
+    <button id="a-adtect" title="广告 + 内容检测：抽帧判广告（默认只查头尾），可勾选字幕 / 去码 / 无效段一起检">广告和内容检测</button><label class="muted" title="同时检测字幕：外挂 .srt/.ass 或已烧录"><input type="checkbox" id="chk-subdet" checked> 字幕检测</label><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码检测</label>
+    <label class="muted" title="广告和内容检测时一并检无效段（无女性画面），跃慢"><input type="checkbox" id="chk-badseg"> 无效段</label>
+    <button id="a-segs" title="自定义编辑：自己填要保留的区间；可改起止、加段、删段">自定义编辑</button>
+     <button id="a-addel" title="按已检出的头/尾广告切掉开头和结尾；原文件留 .orig 回滚点">头尾删除</button>
      <label class="muted" title="生成字幕后，用本地模型把字幕翻成简体中文（与字幕语言不同时）"><input type="checkbox" id="subtrans"> 字幕翻译</label>
      <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
      <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
@@ -6183,7 +6255,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="downtgt" style="min-width:66px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <select id="downfps" style="min-width:86px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">保持帧率</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
     <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 修复</label>
-    <label class="muted" title="勾上后先按有效段裁剪（勾了「合并」的视频会先拼成一个），再降分辨率/修复"><input type="checkbox" id="downad"> 有效段裁剪（合并）</label>
+    <label class="muted" title="降分辨率前先按自定义区间裁剪（勾了合并的视频先拼成一个）"><input type="checkbox" id="downad"> 裁剪合并</label>
     <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
     <select id="beaut-engine" style="min-width:92px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">Real-ESRGAN</option><option value="rife">RIFE 插帧</option></select>
     <select id="beaut-scale" style="min-width:46px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
@@ -6263,8 +6335,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="bar"><b id="md2-title">档案</b><button class="right" id="md2-close">关闭</button></div>
   <div id="md2-body"></div></div></div>
 <div class="modal" id="modalseg"><div class="box">
-  <div class="bar"><b>有效段编辑</b><span class="muted" id="seg-info"></span><button class="right" id="mdseg-close">关闭</button></div>
-  <p class="muted">这里填「要保留」的区间（每个视频可多段）。保存后「删除无效段」会切掉区间以外的部分；「合并有效段」会把它们拼成一个新视频。</p>
+  <div class="bar"><b>自定义编辑</b><span class="muted" id="seg-info"></span><button class="right" id="mdseg-close">关闭</button></div>
+  <p class="muted">这里填「要保留」的区间（每个视频可多段）。保存后「头尾删除」会切掉区间以外的部分；「裁剪合并」会把它们拼成一个新视频。</p>
   <div id="seg-files" style="margin:8px 0;font-size:12px;line-height:1.9"></div>
   <table id="seg-tbl"></table>
   <div class="bar"><button id="seg-add">+ 添加一段</button><button class="primary" id="seg-save">保存</button></div>
@@ -6388,6 +6460,22 @@ function adIcon(r,short){try{const a=JSON.parse(r.ads||'[]');
     return '<span style="color:var(--warn)" title="'+T('广告 ')+a.length+T(' 段：')+t+'">📢'+a.length+'</span>';}
   if(r.ads_ts){return '<span style="color:var(--muted)" title="'+T('检测过：无广告')+'">📢</span>';}
   return '';}catch(e){return '';}}
+function subIcon(r){
+  const k=r.subs_det||'';
+  if(k==='burn')return ' <span title="\u5b57\u5e55\uff1a\u5df2\u70e7\u5f55\u8fdb\u753b\u9762" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">S\ud83d\udd25</span>';
+  if(k==='file'||r.subs)return ' <span title="\u5b57\u5e55\uff1a\u6709\u5916\u6302\u5b57\u5e55" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">Sub</span>';
+  if(k==='none')return ' <span title="\u5b57\u5e55\u68c0\u6d4b\uff1a\u65e0" style="color:var(--muted);font-size:11px;font-weight:700">Sub</span>';
+  return '';
+}
+function demoIcon(r){
+  const d=r.demo||'';
+  if(!d)return '';
+  const S={'\u6709':['#0b0f14','#0b0f14','\u6709\u7801\uff08\u672a\u53bb\u7801\uff09',''],
+           '\u4e00\u822c':['rgba(255,255,255,.32)','rgba(255,255,255,.5)','\u53bb\u7801\u4e00\u822c','inset 0 0 3px rgba(255,255,255,.9)'],
+           '\u597d':['linear-gradient(135deg,rgba(150,210,255,.9),rgba(255,255,255,.35))','rgba(255,255,255,.75)','\u53bb\u7801\u597d','inset 0 1px 2px rgba(255,255,255,.95)']};
+  const m=S[d]||S['\u6709'];
+  return ' <span title="'+m[2]+'" style="display:inline-block;width:11px;height:11px;border-radius:50%;background:'+m[0]+';border:1px solid '+m[1]+';box-shadow:'+m[3]+';vertical-align:-1px"></span>';
+}
 function resLabel(w,h){const m=Math.min(w,h),M=Math.max(w,h);
   return (m>=2000)?'4K':(m>=1400?'1440p':(m>=1000?'1080p':(m>=700?'720p':M+'×'+m)));}
 async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
@@ -6399,7 +6487,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
-    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字</span>':'')+(r.subs_burn?' <span title="字幕已烧录" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字🔥</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔'+r.nw+'</span>':'')+'<div class="meta" title="大小 '+fsize(r.tsize||r.fsize)+' ｜ 时长 '+fdur(r.mdur)+'">'+fsz(r.tsize||r.fsize)+' '+fdur(r.mdur)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
+    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)++subIcon(r)+demoIcon(r)+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔'+r.nw+'</span>':'')+'<div class="meta" title="大小 '+fsize(r.tsize||r.fsize)+' ｜ 时长 '+fdur(r.mdur)+'">'+fsz(r.tsize||r.fsize)+' '+fdur(r.mdur)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
     +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(((r.series||'').trim())||r.skey||'')+'" title="双击修改系列">'+esc(((r.series||'').trim())||r.skey||'—')+'</span></div>'
     +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(((r.sem_code||'').trim())||r.code||'')+'" title="双击修改番号">'+esc(((r.sem_code||'').trim())||r.code||'—')+'</span></div>'
@@ -6613,7 +6701,6 @@ function rpShow(title,sum,html,btns){
   $('#modal6').classList.add('on');}
 $('#md6-close').onclick=()=>$('#modal6').classList.remove('on');
 ;
-$('#a-vdetect').onclick=async()=>{const ids=[...SEL].join(',');if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做无效段初筛（逐条抽帧，较慢），继续？')))return;await post('/api/vdetect'+(ids?'?ids='+ids:''));};
 $('#a-segs').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!ids){alert(T('先选条目'));return;}
@@ -6711,9 +6798,11 @@ $('#a-subs').onclick=async()=>{
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
-    if($('#qadd-chk').checked&&SEL.size){await qAdd('adtect',[...SEL],{mode:$('#admode').value});return;}
-    await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+($('#admode').value)
-      +'&force='+($('#force').checked?1:0));};
+    const _o={mode:$('#admode').value,subs:$('#chk-subdet').checked?1:0,
+      demo:$('#chk-demodet').checked?1:0,bad:$('#chk-badseg').checked?1:0};
+    if($('#qadd-chk').checked&&SEL.size){await qAdd('adtect',[...SEL],_o);return;}
+    await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+$('#admode').value
+      +'&force='+($('#force').checked?1:0)+'&subs='+_o.subs+'&demo='+_o.demo+'&bad='+_o.bad);};
 $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
