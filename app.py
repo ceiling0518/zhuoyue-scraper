@@ -6335,7 +6335,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 .helpq{position:relative;display:inline-block;width:14px;height:14px;line-height:12px;border:1px solid #39455a;border-radius:50%;text-align:center;font-size:10px;cursor:help;margin:0 4px;color:#8b97a8;vertical-align:middle}
 .helpq::after{content:attr(data-tip);position:absolute;top:150%;left:50%;transform:translateX(-50%);background:#0b0e13;border:1px solid #39455a;border-radius:6px;padding:6px 8px;color:#d8dde6;font-size:11px;line-height:1.45;white-space:pre-wrap;width:280px;text-align:left;opacity:0;transition:opacity .12s ease;pointer-events:none;z-index:3000}
 .helpq:hover::after{opacity:1;transition-delay:.6s}
-#fbar select{min-width:112px}
+#fbar select{height:28px;padding:0 6px}
 </style></head><body>
 <header>
   <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.2.0</span> 
