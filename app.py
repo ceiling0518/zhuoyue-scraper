@@ -6865,7 +6865,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <label class="muted" title="AI 选图：抽帧评分，优先整体身体，其次脸部，再局部体态"><input type="checkbox" id="thumb-ai"> AI选图</label>
 <label class="muted" title="AI 补完：对现有/新封面重新构图（去黑边、按人脸位置裁切），不重新抽帧"><input type="checkbox" id="thumb-comp"> AI补完</label>
       <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
-      <button id="a-coverdel">删除封面图</button>
+      <button class="danger" id="a-coverdel">删除缩略图/封面</button>
       <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
       <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
       <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
@@ -7132,13 +7132,13 @@ function tcls(r){
   const w=+r.pw||0,h=+r.ph||0,b=+r.pbpp||0;
   if(w&&h){
     const mn=Math.min(w,h),mx=Math.max(w,h);
-    if(b<=0.03||mn<300)return '';                         // 差的缩略图不再描红
+    if(b<=0.03||mn<300)return ' tbad';                    // 差的缩略图红框
     if(mn>=420)return (w/h>=1.25)?' tgood':' tgreen';   // 宽图=彩框，非宽图=绿框
     return (w/h>=1.25)?'':' tgray';                      // 中等质量：非宽幅给灰框
   }
   const t=+r.tbpp||0;
   if(!t)return '';
-  if(t<=0.03)return '';          // 差的不描红（与删除同款）
+  if(t<=0.03)return ' tbad';
   if(t>0.08)return ' tgood';
   return '';
 }
