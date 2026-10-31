@@ -4504,7 +4504,9 @@ def detect_mosaic(vpath, dur=None, model=None, log=None, n=16):
     vals = [v for v in vis_batch_vals(vpath, times, MOSAIC_PROMPT,
                                       model=model, log=log, width=640) if v >= 0]
     if not vals:
-        return ''
+        if log:
+            log('    去码抽帧：无有效画面 -> 默认无码')
+        return '好'
     c2 = sum(1 for v in vals if v >= 2) / len(vals)
     c0 = sum(1 for v in vals if v == 0) / len(vals)
     if log:

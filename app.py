@@ -2713,7 +2713,14 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
             if not force:
                 _done = dbc.execute('SELECT COUNT(*) c FROM ads_file WHERE item_id=? AND file=?',
                                     (it['id'], fb)).fetchone()['c']
-            _content_only = bool(_done and (subs or demo or bad))
+            _q0 = dbc.execute("SELECT COALESCE(subs_det,'') ss, COALESCE(demo,'') dd "
+                              "FROM items WHERE id=?", (it['id'],)).fetchone()
+            _sd_now = (_q0['ss'] if _q0 else '') or ''
+            _dm_now = (_q0['dd'] if _q0 else '') or ''
+            _need_subs = bool(subs and (force or not _sd_now))
+            _need_demo = bool(demo and (force or not _dm_now))
+            _need_content = bool(_need_subs or _need_demo or bad)
+            _content_only = bool(_done and _need_content)
             if _done and not _content_only:
                 _log('[%d/%d] id=%s 已检测过（%s），跳过（勾 force 可重测）'
                      % (i + 1, len(its), it['id'], fb[:32]))
@@ -2764,7 +2771,7 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
                             _dur0 = mlib.video_duration(_vp0)
                         except Exception:
                             _dur0 = 0
-                    if demo:
+                    if demo and _need_demo:
                         _r0 = dbc.execute('SELECT code, sem_code, sem_kind FROM items WHERE id=?',
                                           (it['id'],)).fetchone()
                         _code0 = ((_r0['sem_code'] or _r0['code'] or '') if _r0 else '')
@@ -2784,7 +2791,7 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
                                     _code0 or '-'))
                         if _dm:
                             dbc.execute('UPDATE items SET demo=? WHERE id=?', (_dm, it['id']))
-                    if subs:
+                    if subs and _need_subs:
                         _sd = _subs_status(it, _vp0)
                         if _sd == 'none' and _vp0:
                             if mlib.detect_subs_burn(_vp0, _dur0, log=lambda m: _log(m)):
