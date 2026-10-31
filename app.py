@@ -5788,7 +5788,7 @@ h1{font-size:15px;margin:0;font-weight:600}
 .wrap{padding:14px 16px;max-width:1600px;margin:0 auto}
 .cards{display:flex;gap:6px;flex-wrap:nowrap;margin-bottom:12px;overflow-x:auto}
 .card{background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:6px 9px;min-width:70px;flex:0 0 auto}
-.card b{display:block;font-size:17px;line-height:1.2}.card span{color:var(--dim);font-size:10px}
+.card b{display:block;font-size:19px;line-height:1.2}.card span{color:var(--dim);font-size:11px}
 .bar{display:flex;gap:7px;flex-wrap:wrap;align-items:center;background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:9px 11px;margin-bottom:10px}
 #fbar{flex-wrap:nowrap;overflow-x:auto;gap:5px;padding:7px 9px}
 #fbar select,#fbar input,#fbar button{padding:2px 6px}
