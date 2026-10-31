@@ -5367,7 +5367,7 @@ def _poster_stat(dst):
         return 0.0, 0, 0
 
 
-def _needs_enh(dst, bpp_hi=0.03, short_lo=480):
+def _needs_enh(dst, bpp_hi=0.03, short_lo=420):
     """要不要做提升画质：bpp<=0.03（红框）或短边<600 才做。
 
     一般/良好（彩框）的封面不再重复超分——重复超分只会糊。
@@ -7074,7 +7074,7 @@ function tcls(r){
   if(w&&h){
     const mn=Math.min(w,h),mx=Math.max(w,h);
     if(b<=0.03||mn<300)return ' tbad';
-    if(mn>=360&&mx>=600)return ' tgood';   // 600 宽的方图/竖图也算彩框，别卡 640
+    if(mn>=420)return ' tgood';            // 短边 420p 折算，横竖不分，够用就给彩框
     return '';
   }
   const t=+r.tbpp||0;
