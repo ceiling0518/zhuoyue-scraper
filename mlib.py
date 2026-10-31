@@ -4098,11 +4098,11 @@ def frame_at(vpath, t, width=480):
 
 def ads_batch(vpath, times, model=None, log=None):
     """一次请求多张截图，返回与 times 等长的 bool 列表。
-    批大小默认 20（MS_AD_BATCH 可调）：图越多请求次数越少，整体更快。"""
+    批大小默认 24（MS_AD_BATCH 可调）：图越多请求次数越少，整体更快。"""
     model = model or ai_model()
     out = [False] * len(times)
     try:
-        chunk = max(1, min(24, int(os.environ.get('MS_AD_BATCH') or 20)))
+        chunk = max(1, min(24, int(os.environ.get('MS_AD_BATCH') or 24)))
     except Exception:
         chunk = 20
     for s in range(0, len(times), chunk):
@@ -4215,7 +4215,7 @@ def vis_batch(vpath, times, prompt_tpl, model=None, log=None, width=320):
     model = model or ai_model()
     out = [False] * len(times)
     try:
-        chunk = max(1, min(24, int(os.environ.get('MS_AD_BATCH') or 20)))
+        chunk = max(1, min(24, int(os.environ.get('MS_AD_BATCH') or 24)))
     except Exception:
         chunk = 20
     for st in range(0, len(times), chunk):
@@ -4385,17 +4385,30 @@ def detect_ads(vpath, dur=None, model=None, log=None, mode='headtail', edge_sec=
     if mode == 'headtail':
         # 只关心头尾：预检也只采片头/片尾，避免中段画面误触
         probes = sorted(set(round(p, 1) for p in
-                            [0.5, 2.0, 5.0, 10.0,
-                             max(dur - 8, 0), max(dur - 3, 0), max(dur - 1, 0)]
+                            [0.5, 2.0, 5.0,
+                             max(dur - 3, 0), max(dur - 1, 0)]
                             if 0 <= p < dur))
     else:
         r0 = _rnd.uniform(0.05, 0.8) * dur
         probes = sorted(set(round(p, 1) for p in
                             [0.5, 2.0, r0, r0 + 10,
-                             max(dur - 8, 0), max(dur - 3, 0), max(dur - 1, 0)]
+                             max(dur - 3, 0), max(dur - 1, 0)]
                             if 0 <= p < dur))
-    pf = ads_batch(vpath, probes, model=model, log=_log)
-    _log('  预检 %d 张 -> 广告 %d 张' % (len(pf), sum(pf)))
+    # 预检也先查快照库：命中直接判广告，未命中才送模型（省一整批调用）
+    pf, _askp = [], []
+    for _t in probes:
+        _h = _dhash_jpeg(frame_at(vpath, _t))
+        _, _d = _adlib_best(dbc, _h)
+        if _d <= AD_LIB_TOL:
+            pf.append(True)
+        else:
+            pf.append(None)
+            _askp.append(_t)
+    if _askp:
+        _got = ads_batch(vpath, _askp, model=model, log=_log)
+        _it = iter(_got)
+        pf = [True if (x is True) else next(_it) for x in pf]
+    _log('  预检 %d 张 -> 广告 %d 张' % (len(pf), sum(1 for x in pf if x)))
     if not any(pf):
         return []
 
