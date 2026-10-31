@@ -6338,7 +6338,7 @@ tr.sel .selbtn{background:var(--acc);border-color:var(--acc);color:#08121f;font-
 .modal .box>.bar:first-child{position:sticky;top:-15px;margin:-15px -15px 10px;padding:12px 15px;background:var(--card);border:0;border-bottom:1px solid #2a3140;border-radius:11px 11px 0 0;z-index:6}
 pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;overflow:auto;font-size:11px}
 .zone{display:inline-flex;align-items:center;gap:5px;border-left:1px solid #2a3342;padding-left:10px;margin-left:6px}
-.zlab{font-size:11px;color:#8b97a8;letter-spacing:1px}
+.zlab{font-size:12.5px;font-weight:600;color:#9dabc0;letter-spacing:1.5px}
 #cfg-enchelp{font-size:10px;line-height:14px;height:14px;min-width:14px;text-align:center;padding:0 3px;border-radius:7px;margin:0 2px}
 .helpq{position:relative;display:inline-block;width:14px;height:14px;line-height:12px;border:1px solid #39455a;border-radius:50%;text-align:center;font-size:10px;cursor:help;margin:0 4px;color:#8b97a8;vertical-align:middle}
 .helpq::after{content:attr(data-tip);position:absolute;top:150%;left:50%;transform:translateX(-50%);background:#0b0e13;border:1px solid #39455a;border-radius:6px;padding:6px 8px;color:#d8dde6;font-size:11px;line-height:1.45;white-space:pre-wrap;width:280px;text-align:left;opacity:0;transition:opacity .12s ease;pointer-events:none;z-index:3000}
