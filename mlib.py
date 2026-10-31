@@ -4986,9 +4986,9 @@ def restore_index_cut(vpath):
         t = bytes(head[off + 4:off + 8])
         if t == b'mdat':
             if struct.unpack('>I', head[off:off + 4])[0] == 1:
-                struct.pack_into('>Q', head, off + 8, total - off)
+                struct.pack_into('>Q', head, off + 8, moov_off - off)
             else:
-                struct.pack_into('>I', head, off, total - off)
+                struct.pack_into('>I', head, off, moov_off - off)
             break
         off += sz
     tmp = vpath + '.restore.tmp'
@@ -5000,10 +5000,35 @@ def restore_index_cut(vpath):
     return {'ok': True, 'size': os.path.getsize(vpath)}
 
 
-def cut_ads_index(vpath, segs, log=None):
-    """去头尾广告：只改索引 + 尾部截断；失败返回 {'ok':False,'error':...}。
+def _fwalk_top(f, total):
+    """顺序走一遍顶层 box，只读头，不读数据。"""
+    out, off = [], 0
+    while off + 8 <= total:
+        f.seek(off)
+        h = f.read(16)
+        if len(h) < 8:
+            break
+        sz = struct.unpack('>I', h[:4])[0]
+        t = h[4:8]
+        hl = 8
+        if sz == 1:
+            if len(h) < 16:
+                break
+            sz = struct.unpack('>Q', h[8:16])[0]
+            hl = 16
+        elif sz == 0:
+            sz = total - off
+        if sz < 8:
+            break
+        out.append((t, off, sz, hl))
+        off += sz
+    return out
 
-    只支持「保留区间连续」（头广告 / 尾广告 / 头+尾）。中插广告请走 cut_ads。
+
+def cut_ads_index(vpath, segs, log=None):
+    """去头尾广告：原地改索引 + 尾部截断（不读整片、不重封装）。
+
+    只支持「保留区间连续」（头广告 / 尾广告 / 头+尾）。失败自动回滚。
     """
     def _log(m):
         if log:
@@ -5029,43 +5054,197 @@ def cut_ads_index(vpath, segs, log=None):
     a0, b0 = keep[0]
     head_skip, tail_skip = a0, dur - b0
 
-    stem = os.path.splitext(os.path.basename(vpath))[0]
-    tmp = os.path.join(os.path.dirname(vpath), '.%s.idx.%d.mp4' % (stem, os.getpid()))
+    total = os.path.getsize(vpath)
     try:
-        t_total, t_cut, t_out = mp4_index_cut(vpath, tmp, head_skip, tail_skip)
+        with open(vpath, 'rb') as f:
+            tops = _fwalk_top(f, total)
+            moov_b = next((x for x in tops if x[0] == b'moov'), None)
+            mdat_b = next((x for x in tops if x[0] == b'mdat'), None)
+            if not moov_b:
+                raise RuntimeError('没有 moov')
+            _, moov_off, moov_sz, _ = moov_b
+            if moov_off + moov_sz != total:
+                raise RuntimeError('moov 不在文件末尾，暂不支持')
+            f.seek(moov_off)
+            moov_bytes = f.read(moov_sz)
+
+        top = _mp4_parse(moov_bytes, 0, moov_sz)
+        moov = _f1(top, b'moov')
+        if not moov:
+            raise RuntimeError('没有 moov')
+        mvhd = _f1(moov.children, b'mvhd')
+        mv_ver = mvhd.payload[0]
+        mv_ts = _u32(mvhd.payload, 12) if mv_ver == 0 else _u32(mvhd.payload, 20)
+        traks = [n for n in moov.children if n.t == b'trak']
+        if not traks:
+            raise RuntimeError('没有 trak')
+
+        trunc_at, keep_movie = 0, 0
+        for tr in traks:
+            mdia = _f1(tr.children, b'mdia')
+            mdhd = _f1(mdia.children, b'mdhd')
+            v = mdhd.payload[0]
+            mts = _u32(mdhd.payload, 12) if v == 0 else _u32(mdhd.payload, 20)
+            mdur = _u32(mdhd.payload, 16) if v == 0 else _u64(mdhd.payload, 24)
+            keep_s = max(0.1, mdur / float(mts) - head_skip - tail_skip)
+            keep_movie = max(keep_movie, int(round(keep_s * mv_ts)))
+
+            stbl = _f1(_f1(mdia.children, b'minf').children, b'stbl')
+            stsz = _f1(stbl.children, b'stsz')
+            stts = _f1(stbl.children, b'stts')
+            stsc = _f1(stbl.children, b'stsc')
+            stco = _f1(stbl.children, b'stco') or _f1(stbl.children, b'co64')
+            if not (stsz and stts and stsc and stco):
+                continue
+            is64 = stco.t == b'co64'
+            sizes = _parse_stsz(stsz.payload)
+            times = _parse_stts(stts.payload)
+            sc = _parse_stsc(stsc.payload)
+            offs = _parse_stco(stco.payload, is64)
+
+            target = int(round((head_skip + keep_s) * mts))
+            acc, keep_n = 0, 0
+            for cnt, delta in times:
+                if acc + cnt * delta <= target:
+                    acc += cnt * delta
+                    keep_n += cnt
+                else:
+                    keep_n += max(0, int((target - acc + delta - 1) // delta))
+                    break
+            keep_n = min(keep_n, len(sizes))
+            if keep_n <= 0:
+                raise RuntimeError('保留样本数为 0')
+            keep_sizes = sizes[:keep_n]
+
+            chunk_samples = []
+            si, cur_spc = 0, 1
+            for ci in range(len(offs)):
+                while si + 1 < len(sc) and sc[si + 1][0] - 1 <= ci:
+                    si += 1
+                if sc and sc[si][0] - 1 <= ci:
+                    cur_spc = sc[si][1]
+                chunk_samples.append(cur_spc)
+
+            remaining, trunc_off, kept_chunks = keep_n, offs[0], 0
+            for ci, cnt in enumerate(chunk_samples):
+                if remaining <= 0:
+                    break
+                take = min(cnt, remaining)
+                start = keep_n - remaining
+                trunc_off = offs[ci] + sum(keep_sizes[start:start + take])
+                remaining -= take
+                kept_chunks = ci + 1
+            trunc_at = max(trunc_at, trunc_off)
+
+            stsz.payload = _build_stsz(keep_sizes)[8:]
+            left, nt = keep_n, []
+            for cnt, delta in times:
+                if left <= 0:
+                    break
+                take = min(cnt, left)
+                nt.append((take, delta))
+                left -= take
+            stts.payload = _build_stts(nt)[8:]
+            stsc.payload = _mkbox(b'stsc',
+                                  _p32(0) + _p32(len([1 for a, _b, _c in sc if a <= kept_chunks])) +
+                                  b''.join(_p32(a) + _p32(bb) + _p32(cc)
+                                           for a, bb, cc in sc if a <= kept_chunks))[8:]
+            stco.payload = _mkbox(stco.t,
+                                  _p32(0) + _p32(kept_chunks) +
+                                  b''.join((struct.pack('>Q', x) if is64 else _p32(x))
+                                           for x in offs[:kept_chunks]))[8:]
+            stss = _f1(stbl.children, b'stss')
+            if stss:
+                sn = [_u32(stss.payload, 8 + 4 * i) for i in range(_u32(stss.payload, 4))]
+                sn = [x for x in sn if x <= keep_n]
+                stss.payload = _mkbox(b'stss', _p32(0) + _p32(len(sn)) +
+                                      b''.join(_p32(x) for x in sn))[8:]
+
+            mb = bytearray(mdhd.payload)
+            if v == 0:
+                struct.pack_into('>I', mb, 16, int(round(keep_s * mts)))
+            else:
+                struct.pack_into('>Q', mb, 24, int(round(keep_s * mts)))
+            mdhd.payload = bytes(mb)
+
+            tkhd = _f1(tr.children, b'tkhd')
+            if tkhd:
+                tb = bytearray(tkhd.payload)
+                if tb[0] == 0:
+                    struct.pack_into('>I', tb, 20, keep_movie)
+                else:
+                    struct.pack_into('>Q', tb, 28, keep_movie)
+                tkhd.payload = bytes(tb)
+
+            media_time = int(round(head_skip * mts))
+            elst = _Box(b'elst', _p32(0) + _p32(1) +
+                        struct.pack('>IIhh', keep_movie, media_time, 1, 0))
+            edts = _f1(tr.children, b'edts')
+            if edts:
+                edts.children = [elst]
+            else:
+                idx = tr.children.index(tkhd) + 1 if tkhd else 0
+                tr.children.insert(idx, _Box(b'edts', b'', [elst]))
+
+        mb = bytearray(mvhd.payload)
+        if mv_ver == 0:
+            struct.pack_into('>I', mb, 16, keep_movie)
+        else:
+            struct.pack_into('>Q', mb, 24, keep_movie)
+        mvhd.payload = bytes(mb)
+        new_moov = moov.dump()
+    except Exception as e:
+        return {'ok': False, 'error': str(e)[:160]}
+
+    _bak = vpath + '.orig'
+    _modified = False
+    try:
+        with open(vpath, 'rb') as f:
+            f.seek(trunc_at)
+            _tail = f.read(max(0, moov_off - trunc_at))
+        with open(_bak, 'wb') as fb:
+            fb.write(struct.pack('>QQQ', total, trunc_at, moov_off))
+            fb.write(_tail)
+            fb.write(moov_bytes)
+        _log('    回滚包 %.1f MB（尾部 %.1f + 索引 %.1f；不拷整片）'
+             % ((len(_tail) + len(moov_bytes)) / 1048576.0,
+                len(_tail) / 1048576.0, len(moov_bytes) / 1048576.0))
+
+        _modified = True
+        with open(vpath, 'r+b') as f:
+            if mdat_b:
+                _, m_off, _m_sz, m_hl = mdat_b
+                new_sz = trunc_at - m_off
+                if m_hl == 16:
+                    f.seek(m_off + 8)
+                    f.write(struct.pack('>Q', new_sz))
+                else:
+                    f.seek(m_off)
+                    f.write(struct.pack('>I', new_sz))
+            f.seek(trunc_at)
+            f.write(new_moov)
+            f.flush()
+            os.fsync(f.fileno())
+        os.truncate(vpath, trunc_at + len(new_moov))
         _log('    索引裁剪：%.1f MB -> %.1f MB（头 %.1f / 尾 %.1f 秒）'
-             % (t_total / 1048576.0, t_out / 1048576.0, head_skip, tail_skip))
-        nd = video_duration(tmp)
+             % (total / 1048576.0, (trunc_at + len(new_moov)) / 1048576.0,
+                head_skip, tail_skip))
+        nd = video_duration(vpath)
         if not nd or abs(nd - (b0 - a0)) > max(1.5, (b0 - a0) * 0.005):
             raise RuntimeError('时长校验失败 %.1f != %.1f' % (nd or 0, b0 - a0))
         for t in (0.5, max(0.5, nd - 1.5)):
-            if not frame_at(tmp, t, width=320):
+            if not frame_at(vpath, t, width=320):
                 raise RuntimeError('抽帧失败 t=%.1f' % t)
-        # 轻量回滚包：头段只是 elst（数据没动），只需原 moov + 被截掉的尾段
-        _bak = vpath + '.orig'
-        try:
-            _tail = data[trunc_at:moov_off] if trunc_at < moov_off else b''
-            _moo = data[moov_off:total]
-            with open(_bak, 'wb') as _fb:
-                _fb.write(struct.pack('>QQQ', total, trunc_at, moov_off))
-                _fb.write(_tail)
-                _fb.write(_moo)
-            _log('    回滚包 %.1f MB（尾部 %.1f + 索引 %.1f；不拷整片）'
-                 % ((len(_tail) + len(_moo)) / 1048576.0,
-                    len(_tail) / 1048576.0, len(_moo) / 1048576.0))
-        except Exception as _e:
-            raise RuntimeError('回滚包写入失败: %s' % str(_e)[:60])
-        os.replace(tmp, vpath)
-        return {'ok': True, 'new_dur': nd, 'old_dur': dur,
-                'old_size': os.path.getsize(tmp) if False else t_total,
-                'new_size': t_out, 'mode': 'index'}
+        return {'ok': True, 'new_dur': nd, 'old_dur': dur, 'old_size': total,
+                'new_size': os.path.getsize(vpath), 'mode': 'index'}
     except Exception as e:
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
+        if _modified:
+            try:
+                restore_index_cut(vpath)
+                _log('    校验失败，已自动回滚')
+            except Exception as _e2:
+                _log('    自动回滚失败: %s' % str(_e2)[:90])
         return {'ok': False, 'error': str(e)[:160]}
-
 
 def cut_ads(vpath, segs, out=None, log=None, replace=True, verify=True, stash=True):
     """按广告区间切掉、其余内容原样保留（帧级精确重编码）。
