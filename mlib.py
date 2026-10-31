@@ -29,12 +29,19 @@ if os.name == 'nt':
         _LIVE = []
 
         def _hidden_popen(*a, **kw):
-            kw['creationflags'] = int(kw.get('creationflags') or 0) | _CREATE_NO_WINDOW
-            if kw.get('startupinfo') is None:
-                _si = subprocess.STARTUPINFO()
-                _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                _si.wShowWindow = subprocess.SW_HIDE
-                kw['startupinfo'] = _si
+            _exe = ''
+            try:
+                _cmd = a[0] if a else kw.get('args')
+                _exe = os.path.basename(str(_cmd[0] if isinstance(_cmd, (list, tuple)) else _cmd)).lower()
+            except Exception:
+                _exe = ''
+            if _exe not in ('explorer', 'explorer.exe'):
+                kw['creationflags'] = int(kw.get('creationflags') or 0) | _CREATE_NO_WINDOW
+                if kw.get('startupinfo') is None:
+                    _si = subprocess.STARTUPINFO()
+                    _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    _si.wShowWindow = subprocess.SW_HIDE
+                    kw['startupinfo'] = _si
             p = _real_popen(*a, **kw)
             try:
                 _LIVE.append(p)
