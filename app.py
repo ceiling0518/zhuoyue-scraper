@@ -5194,6 +5194,21 @@ def _esrgan_up(src, dst, scale=2):
         shutil.rmtree(td, ignore_errors=True)
 
 
+def _sharp_file(fp):
+    """文件清晰度（Laplacian 方差），失败返 0。"""
+    try:
+        import cv2
+        import numpy as np
+        img = cv2.imdecode(np.fromfile(fp, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return 0.0
+        if img.shape[1] > 800:
+            img = cv2.resize(img, (800, max(1, int(img.shape[0] * 800.0 / img.shape[1]))))
+        return float(cv2.Laplacian(img, cv2.CV_64F).var())
+    except Exception:
+        return 0.0
+
+
 def _poster_ai_frame(vp, n=48, width=320):
     """两段式选帧：小图批量扫脸定位 -> 大图候选 -> qwen 比对清晰度/完整度。
 
@@ -5363,8 +5378,8 @@ def _focus_crop(im, bbox):
     w, h = im.size
     x, y, fw, fh = bbox
     cx, cy = x + fw / 2.0, y + fh / 2.0
-    cw = min(w, max(fw * 5.0, w * 0.60))
-    ch = min(h, max(fh * 5.0, h * 0.60))
+    cw = min(w, max(fw * 4.0, w * 0.45))
+    ch = min(h, max(fh * 4.0, h * 0.45))
     ar = w / float(h)
     if cw / ch > ar:
         cw = ch * ar
@@ -5694,6 +5709,8 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
     made = None
     note = ''
 
+    if ai:
+        comp, enh = False, False        # AI 选图 > AI 补完 > 提升画质：选图会重新生成
     if enh and os.path.exists(dst) and not force:
         _need, _b = _needs_enh(dst)
         if not _need:
@@ -5719,6 +5736,22 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
         _poster_save(im, newp)
         made = newp
         note = ('AI选图+补完' if comp else 'AI选图') + ('（宽屏）' if (comp and bbox) else '')
+        # 糊图不凑合：先试超分修，修不了才标偏糊
+        if _sharp_file(newp) < 60:
+            _up = os.path.join(p, 'poster.up.png')
+            if _esrgan_up(newp, _up, 2):
+                try:
+                    from PIL import Image as _Im4
+                    _poster_save(_Im4.open(_up), newp)
+                    note += '+超分修'
+                except Exception:
+                    note += '（偏糊）'
+                try:
+                    os.remove(_up)
+                except Exception:
+                    pass
+            else:
+                note += '（偏糊·超分不可用）'
         # 顺手判一次烧录字幕：命中就直接点亮字幕徽标
         try:
             _dd = mlib.video_duration(vp) or 0
