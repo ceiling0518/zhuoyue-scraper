@@ -6287,7 +6287,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   <div class="bar" id="infobar" style="background:#141922">
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
-    <span class="muted" id="count"></span>
     <span class="muted" id="page"></span>
     <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 去码 <b style="color:#a8b3c4">●</b>有码 <b style="color:#d8dde6">◍</b>一般 <b style="color:#8fd0ff">◉</b>无码 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">Sub</b>有 <b style="color:var(--ok)">S🔥</b>烧录 <b style="color:#7b8798;text-decoration:line-through">Sub</b>无</span>
     <span class="muted right">队列 <b id="qcount">0</b></span>
@@ -6567,14 +6566,14 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     +'<div class="meta">作者: '+esc(tagsOf(r.actors))+' ｜ 年份: '+esc(r.year||'')+' ｜ 制作: '+esc(r.studio||'')+'</div>'
     +'</div></td>'
     +'<td><button class="selbtn" data-id="'+r.id+'">选择</button></td></tr>';}).join('');
-  $('#count').textContent='共 '+d.total+' 条';
   stripWinOnly();
   document.querySelectorAll('.selbtn').forEach(b=>{if(SEL.has(b.dataset.id))selSet(b,true);});
   const pages=Math.max(1,Math.ceil(d.total/lim)),cur=Math.floor(off/lim)+1;
   const pj=$('#pjump');pj.innerHTML='';
   for(let i=1;i<=pages;i++){const o=document.createElement('option');
     o.value=(i-1)*lim;o.textContent='第 '+i+' / '+pages+' 页';if(i===cur)o.selected=true;pj.appendChild(o);}
-  $('#page').textContent=(off+1)+'–'+Math.min(off+lim,d.total);
+  const _ids=(d.rows||[]).map(r=>r.id);
+  $('#page').textContent=_ids.length?('当前 id '+Math.min.apply(null,_ids)+'–'+Math.max.apply(null,_ids)):'';
   saveState();}
 function adsText(s){try{const a=JSON.parse(s||'[]');if(!a||!a.length)return '';
   const f=t=>{t=Math.max(0,Math.round(t));const m=Math.floor(t/60),ss=t%60;
