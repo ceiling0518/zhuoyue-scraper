@@ -6348,7 +6348,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <select id="b-libsel" title="切换媒体库（每个库独立数据库）" style="min-width:132px"></select>
   <button id="b-libs" title="媒体库设置">⚙ 库</button>
-  <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select>
+  <span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap"><span class="muted">模型</span><select id="cfg-model" style="width:156px"></select></span>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
   
