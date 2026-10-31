@@ -4969,6 +4969,37 @@ def mp4_index_cut(src, dst, head_skip, tail_skip):
     return total, trunc_at, len(out)
 
 
+def restore_index_cut(vpath):
+    """用 .orig 回滚包恢复索引裁剪前的原片（原地替换）。"""
+    bp = vpath + '.orig'
+    b = open(bp, 'rb').read()
+    if len(b) < 24:
+        raise RuntimeError('回滚包损坏')
+    total, trunc_at, moov_off = struct.unpack('>QQQ', b[:24])
+    tail_len = max(0, moov_off - trunc_at)
+    tail = b[24:24 + tail_len]
+    moov = b[24 + tail_len:]
+    head = bytearray(open(vpath, 'rb').read(trunc_at))
+    off = 0
+    while off + 8 <= len(head):
+        sz = struct.unpack('>I', head[off:off + 4])[0]
+        t = bytes(head[off + 4:off + 8])
+        if t == b'mdat':
+            if struct.unpack('>I', head[off:off + 4])[0] == 1:
+                struct.pack_into('>Q', head, off + 8, total - off)
+            else:
+                struct.pack_into('>I', head, off, total - off)
+            break
+        off += sz
+    tmp = vpath + '.restore.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(head)
+        f.write(tail)
+        f.write(moov)
+    os.replace(tmp, vpath)
+    return {'ok': True, 'size': os.path.getsize(vpath)}
+
+
 def cut_ads_index(vpath, segs, log=None):
     """去头尾广告：只改索引 + 尾部截断；失败返回 {'ok':False,'error':...}。
 
@@ -5010,12 +5041,20 @@ def cut_ads_index(vpath, segs, log=None):
         for t in (0.5, max(0.5, nd - 1.5)):
             if not frame_at(tmp, t, width=320):
                 raise RuntimeError('抽帧失败 t=%.1f' % t)
+        # 轻量回滚包：头段只是 elst（数据没动），只需原 moov + 被截掉的尾段
         _bak = vpath + '.orig'
         try:
-            if not os.path.exists(_bak):
-                shutil.copy2(vpath, _bak)     # 与重封装路径一致的回滚点
+            _tail = data[trunc_at:moov_off] if trunc_at < moov_off else b''
+            _moo = data[moov_off:total]
+            with open(_bak, 'wb') as _fb:
+                _fb.write(struct.pack('>QQQ', total, trunc_at, moov_off))
+                _fb.write(_tail)
+                _fb.write(_moo)
+            _log('    回滚包 %.1f MB（尾部 %.1f + 索引 %.1f；不拷整片）'
+                 % ((len(_tail) + len(_moo)) / 1048576.0,
+                    len(_tail) / 1048576.0, len(_moo) / 1048576.0))
         except Exception as _e:
-            raise RuntimeError('回滚点备份失败: %s' % str(_e)[:60])
+            raise RuntimeError('回滚包写入失败: %s' % str(_e)[:60])
         os.replace(tmp, vpath)
         return {'ok': True, 'new_dur': nd, 'old_dur': dur,
                 'old_size': os.path.getsize(tmp) if False else t_total,
