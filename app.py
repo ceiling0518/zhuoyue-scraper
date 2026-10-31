@@ -603,13 +603,15 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                 return True
             if not mlib.hint_ok(x.get('plot') or '', 8):
                 return True
-            if not ai:                    # Web 补全还要补作者/年份
+            if web:                       # Web 补全：作者/年份/制作缺失也算信息不足
                 if not (x.get('actors') or '').strip():
                     return True
-                # 没有番号的条目搜不到发行年份，不算「缺」（否则每次全库都重跑）
-                if (not (x.get('year') or '').strip()
-                        and (x.get('code') or x.get('sem_code'))):
-                    return True
+                if (x.get('code') or x.get('sem_code')):
+                    # 没番号的条目搜不到年份/制作，不算「缺」（否则每次全库重跑）
+                    if not (x.get('year') or '').strip():
+                        return True
+                    if not (x.get('studio') or '').strip():
+                        return True
             return False
 
         if ids:
@@ -714,9 +716,20 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
     if not ai:
         weak = list(rows)          # Web 补全：选出来的就是需要补的，别再按标题/简介筛
     else:
-        weak = [r for r in rows
-                if _force or (not mlib.hint_ok(r.get('title') or '', 4)
-                              or not mlib.hint_ok(r.get('plot') or '', 8))]
+        def _weak_hit(r):
+            if _force or (not mlib.hint_ok(r.get('title') or '', 4)
+                          or not mlib.hint_ok(r.get('plot') or '', 8)):
+                return True
+            if web:                   # 缺作者/年份/制作：必须联网补
+                if not (r.get('actors') or '').strip():
+                    return True
+                if (r.get('code') or r.get('sem_code')):
+                    if not (r.get('year') or '').strip():
+                        return True
+                    if not (r.get('studio') or '').strip():
+                        return True
+            return False
+        weak = [r for r in rows if _weak_hit(r)]
     weak_ids = set(r['id'] for r in weak)
     rows = [r for r in rows if r['id'] not in weak_ids]
     srcs = []
