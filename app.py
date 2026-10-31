@@ -4333,7 +4333,7 @@ def stats():
         out['lowbpp'] = dbc.execute(
             "SELECT COUNT(*) c FROM items i JOIN media m ON m.item_id=i.id "
             "WHERE i.present=1 AND m.vbr>0 AND m.w>0 AND m.h>0 AND m.fps>0 "
-            "AND (m.vbr*1.0/(MIN(m.w*m.h,921600)*30.0))<0.04").fetchone()['c']
+            "AND (m.vbr*1.0/(MIN(m.w*m.h,921600)*30.0))<=0.03").fetchone()['c']
     except Exception:
         out.setdefault('hbad', 0); out.setdefault('adbad', 0); out.setdefault('lowbpp', 0)
     for r in dbc.execute("SELECT COALESCE(NULLIF(quality,''),'无') q, COUNT(*) c "
@@ -4422,11 +4422,11 @@ def items(params):
         _b = ("(COALESCE(m.vbr,0)*1.0/(MIN(m.w*m.h,921600)*30.0))")
         where.append('m.vbr>0 AND m.w>0 AND m.h>0 AND m.fps>0')
         if pq == '良好':
-            where.append(_b + '>=0.08')
+            where.append(_b + '>0.08')
         elif pq == '一般':
-            where.append(_b + '>=0.04 AND ' + _b + '<0.08')
+            where.append(_b + '>0.03 AND ' + _b + '<=0.08')
         else:
-            where.append(_b + '<0.04')
+            where.append(_b + '<=0.03')
     if q:
         where.append('(name LIKE ? OR title LIKE ? OR code LIKE ? OR sem_code LIKE ?)')
         args += ['%' + q + '%'] * 4
@@ -6041,7 +6041,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th style="width:136px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
     <th style="width:108px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 ⛔段数">属性</th>
     <th style="width:134px" title="系列-番号，下一行语义；均可双击修改">番号 / 语义</th>
-    <th style="width:116px" title="分辨率 · 平均码率 · bpp（按 720p/30帧 折算，<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
+    <th style="width:116px" title="分辨率 · 平均码率 · bpp（按 720p/30帧 折算；≤0.03 红，≤0.08 黄）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
@@ -6255,7 +6255,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     +'<td class="muted">'+(r.mw&&r.mh
       ?resLabel(r.mw,r.mh)+' <span style="color:var(--fg)">'
        +(r.kbps?(r.kbps>=1000?(r.kbps/1000).toFixed(1)+'Mb':r.kbps+'k'):'')+'</span>'
-      +'<div class="meta" style="color:'+((r.bpp&&r.bpp<0.04)?'var(--bad)':(r.bpp&&r.bpp<0.08)?'var(--warn)':'var(--ok)')     +'">'+(r.bpp?'bpp '+r.bpp.toFixed(3):'')+'</div>'
+      +'<div class="meta" style="color:'+((r.bpp&&r.bpp<=0.03)?'var(--bad)':(r.bpp&&r.bpp<=0.08)?'var(--warn)':'var(--ok)')     +'">'+(r.bpp?'bpp '+r.bpp.toFixed(3):'')+'</div>'
       +'<div class="meta">'+r.mw+'×'+r.mh+' @'+(Math.round((r.mfps||0)*10)/10)+'</div>'
       :'—')+'</td>'
     
