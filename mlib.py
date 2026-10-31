@@ -26,6 +26,8 @@ if os.name == 'nt':
         _CREATE_NO_WINDOW = 0x08000000
         _real_popen = subprocess.Popen
 
+        _LIVE = []
+
         def _hidden_popen(*a, **kw):
             kw['creationflags'] = int(kw.get('creationflags') or 0) | _CREATE_NO_WINDOW
             if kw.get('startupinfo') is None:
@@ -33,9 +35,29 @@ if os.name == 'nt':
                 _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 _si.wShowWindow = subprocess.SW_HIDE
                 kw['startupinfo'] = _si
-            return _real_popen(*a, **kw)
+            p = _real_popen(*a, **kw)
+            try:
+                _LIVE.append(p)
+                if len(_LIVE) > 64:
+                    del _LIVE[:32]
+            except Exception:
+                pass
+            return p
 
         subprocess.Popen = _hidden_popen
+
+        def kill_children():
+            """强制停止：杀掉本进程还在跑的 ffmpeg/ffprobe/powershell 等子进程。"""
+            n = 0
+            for _p in list(_LIVE):
+                try:
+                    if _p.poll() is None:
+                        _p.kill()
+                        n += 1
+                except Exception:
+                    pass
+            _LIVE[:] = [x for x in _LIVE if x.poll() is None]
+            return n
     except Exception:
         pass
 import requests

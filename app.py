@@ -5713,10 +5713,18 @@ class H(BaseHTTPRequestHandler):
                         _errs.append('id=%s %s' % (_r.get('id'), str(_e)[:80]))
                 return self._json({'ok': _ok, 'fail': _fail, 'errors': _errs[:20]})
             elif p == '/api/stop':
+                _force = (q.get('force') or '') in ('1', 'true', 'yes')
                 with _LOCK:
                     STATE['stop'] = True
                     LANES['light']['stop'] = True
-                return self._json({'ok': True})
+                    LANES['heavy']['stop'] = True
+                if _force:
+                    _n = mlib.kill_children()
+                    with _LOCK:
+                        STATE['abort'] = True
+                        _cur()['stop'] = True
+                    _log('===== 强制停止：已终止 %d 个子进程，当前任务退出 =====' % _n)
+                return self._json({'ok': True, 'force': _force})
             else:
                 return self._json({'error': 'bad path'}, 404)
             return self._json({'ok': ok, 'busy': not ok})
@@ -6864,7 +6872,8 @@ $('#q-del-sel').onclick=async()=>{
 $('#q-clear-all').onclick=async()=>{
   if(!confirm(T('清空整个队列？')))return;
   await post('/api/queue/clear');$('#qcount').textContent=0;await loadQueue();};
-$('#b-stop').onclick=()=>post('/api/stop');
+$('#b-stop').onclick=e=>post('/api/stop'+(e.shiftKey?'?force=1':''));
+$('#b-stop').title='停止：不再开始新任务；按住 Shift 点击 = 强制退出当前任务';
 $('#b-refresh').onclick=()=>list();
 $('#b-reload').onclick=()=>list();   // 只重拉列表，不动整页
 $('#a-thumbs').onclick=async()=>{if(!SEL.size)return;
