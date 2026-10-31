@@ -4508,15 +4508,25 @@ def detect_mosaic(vpath, dur=None, model=None, log=None, n=16):
             log('    去码抽帧：无有效画面 -> 默认无码')
         return '好'
     c2 = sum(1 for v in vals if v >= 2) / len(vals)
+    c1 = sum(1 for v in vals if v == 1) / len(vals)
     c0 = sum(1 for v in vals if v == 0) / len(vals)
     if log:
-        log('    去码抽帧：清晰 %.0f%% / 遮挡 %.0f%% / 一般 %.0f%%（%d 帧）'
-            % (c2 * 100, c0 * 100, (1 - c2 - c0) * 100, len(vals)))
-    if c0 >= 0.5:
+        log('    去码抽帧：清晰 %.0f%% / 偏软 %.0f%% / 遮挡 %.0f%%（%d 帧）'
+            % (c2 * 100, c1 * 100, c0 * 100, len(vals)))
+    # 口径（按有码/无码/去码的定义收紧）：
+    #   有码   = 画面里确实有马赛克格子/厚码（哪怕只占三成，也算有码在播）
+    #   无码   = 几乎看不到马赛克，且大多数帧清晰锐利
+    #   去码   = 既有马赛克痕迹（被抹平的格子/涂抹感），又大面积细节偏软
+    #   其它   = 证据不足 -> 返回 ''，交给番号规则回填，绝不默认算去码
+    if c0 >= 0.30:
         return '有'
-    if c2 >= 0.8:
+    if c0 <= 0.05 and c2 >= 0.85:
         return '好'
-    return '一般'
+    if c0 >= 0.10 and c1 >= 0.50:
+        return '一般'
+    if c2 >= 0.60 and c0 < 0.10:
+        return '好'
+    return ''
 
 
 def detect_subs_burn(vpath, dur=None, model=None, log=None, n=12):
