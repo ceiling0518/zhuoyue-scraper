@@ -2042,7 +2042,7 @@ def _rename_one(dbc, iid, new_dir, new_file):
 
 
 def _job_down(ids=None, target='auto', fix=False, ad=False, fpsout=0):
-    """降分辨率：按 bpp/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
+    """降分辨率：帧单位码率/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
     _begin('downscale', 1)
     mlib.unload_ai(force=True)          # 编码/插帧要用显卡，先让模型让位
     dbc = mlib.db()
@@ -6089,7 +6089,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
-  <span class="muted">输出码率</span><select id="cfg-encmode" title="输出码率：动态质量（CRF）/ 固定码率 / 源码倍数 / 按 bpp（720p/30 帧口径）"><option value="crf">动态质量（CRF）</option><option value="kbps">固定码率</option><option value="scale">源码倍数</option><option value="bpp">按 bpp</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数">
+  <span class="muted">输出码率</span><select id="cfg-encmode" title="输出码率：动态质量（CRF）/ 固定码率 / 源码倍数 / 帧单位码率（bpp，720p/30 帧口径）"><option value="crf">动态质量（CRF 0-51）</option><option value="kbps">固定码率（kbps）</option><option value="scale">源码倍数（×）</option><option value="bpp">帧单位码率（bpp）</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数；bpp 填 0.08-0.12"><span class="muted" id="cfg-encunit" style="margin-left:4px">CRF</span>
   <span class="muted">最短广告</span><input id="cfg-admin" type="number" min="0" step="1" style="width:56px" title="短于这个秒数的广告段直接忽略（默认 10 秒）"> <span class="muted">秒</span>
   <button id="cfg-models" title="查看在用模型、下载开源模型">其他模型</button>
   <button id="cfg-save">保存设置</button>
@@ -6862,11 +6862,13 @@ $('#cfg-save').onclick=async()=>{await fetch('/api/config?model='+encodeURICompo
     +'&ad_min='+encodeURIComponent($('#cfg-admin').value||''),{method:'POST'})).json();
   if(n.msg)console.log(n.msg); if(n.urls&&n.urls.length)console.log(T('访问地址: ')+n.urls.join('  '));
   cfg();};
+function encUnit(){const m=$('#cfg-encmode').value;const U={crf:'CRF',kbps:'kbps',scale:'\u00d7 \u6e90',bpp:'bpp'};const el=$('#cfg-encunit');if(el)el.textContent=U[m]||'';const inp=$('#cfg-encval');if(inp)inp.step=(m==='bpp')?'0.01':((m==='scale')?'0.1':'1');}
 (async()=>{try{const n=await(await fetch('/api/net')).json();
   $('#cfg-port').value=n.port||8800; $('#cfg-lan').checked=!!n.lan;
   if(n.bak_days!==undefined)$('#cfg-bakdays').value=n.bak_days;
   if(n.enc_mode!==undefined){$('#cfg-encmode').value=n.enc_mode;
     $('#cfg-encval').value=(n.enc_mode==='crf')?n.enc_crf:((n.enc_mode==='kbps')?n.enc_kbps:((n.enc_mode==='bpp')?n.enc_bpp:n.enc_scale));}
+  encUnit();$('#cfg-encmode').onchange=encUnit;
   if(n.ad_min_sec!==undefined)$('#cfg-admin').value=n.ad_min_sec;
   if(n.lan)console.log(T('局域网已开启: ')+(n.urls||[]).join('  '));}catch(e){}})();
 $('#b-pipeline').onclick=()=>post('/api/pipeline?limit='+$('#limit').value+'&group='+$('#semg').value+'&ai_group='+$('#aig').value);
