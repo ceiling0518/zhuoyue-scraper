@@ -6335,7 +6335,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数；bpp 填 0.08-0.12"><span class="muted" id="cfg-encunit" style="margin-left:4px">CRF</span><span class="muted" id="cfg-enchelp" title="" style="cursor:help;border:1px solid #39455a;border-radius:9px;padding:0 6px;margin-left:4px">?</span>
-  <span class="muted">最短广告</span><input id="cfg-admin" type="number" min="0" step="1" style="width:56px" title="短于这个秒数的广告段直接忽略（默认 10 秒）"> <span class="muted">秒</span>
+  
   <button id="cfg-models" title="查看在用模型、下载开源模型">其他模型</button>
   <button id="cfg-save">保存设置</button>
   <span id="ollama" class="muted right">ollama …</span>
@@ -6379,23 +6379,23 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="b-archive">档案</button>
   </div>
   <div class="bar" id="actbar" style="background:#171c25">
-    <button class="primary" id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
+    <button id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
     <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
     <label class="muted" title="勾选后：AI 补全 / Web 补全 都会先抽帧看片（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
     <button id="a-fill" title="按简介补标签；勾了看片则先看片补信息">AI 补全</button>
-    <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button>
+    <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button><button id="a-series" title="编辑语义/系列表：系列、是否有番号、语义、备注、出版商">系列表</button>
     <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
     <label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
     <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
     <span class="muted">|</span>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
-    <button id="a-selall">全选本页</button>
+    <button id="a-selall" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">全选本页</button>
     <button id="a-selnone">取消选择</button>
     <span class="muted">|</span>
     <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
-    <button id="a-open">打开目录</button>
-    <button id="a-series" title="编辑语义/系列表：系列、是否有番号、语义、备注、出版商">系列表</button>
+    <button id="a-open" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">打开目录</button>
+    
      <label class="muted" title="勾上后：降分辨率/裁剪/字幕/检测/补全 等按钮只把条目加入队列，不立即执行；可边跑边攒批次"><input type="checkbox" id="qadd-chk"> 加入队列</label> <span class="muted" style="margin-left:4px">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="infobar" style="background:#141922">
@@ -6416,7 +6416,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="zone"><span class="zlab">检测</span>
       <button id="a-adtect" title="内容检测：字幕 + 去码（勾无效段才查）；勾「广告」才顺带查广告">字幕和内容检测</button>
       <label class="muted" title="顺带检测头尾广告（较慢；不勾只做字幕/去码）"><input type="checkbox" id="chk-ads"> 广告</label>
-      <select id="admode" style="min-width:92px" title="广告检测范围：头尾=只扫开头/结尾各 4 分钟；全片=30 秒全网扫，能命中中插"><option value="headtail">广告头尾</option><option value="full">全片</option></select>
+      <select id="admode" style="min-width:92px" title="广告检测范围：头尾=只扫开头/结尾各 4 分钟；全片=30 秒全网扫，能命中中插"><option value="headtail">广告头尾</option><option value="full">全片</option></select><span class="muted">最短广告</span><input id="cfg-admin" type="number" min="0" step="1" style="width:56px" title="短于这个秒数的广告段直接忽略（默认 10 秒）"> <span class="muted">秒</span>
       <label class="muted" title="按私密部位像素清晰度判去码"><input type="checkbox" id="chk-demodet" checked> 去码</label>
       <label class="muted" title="内容检测时一并检无效段（无女性画面），较慢"><input type="checkbox" id="chk-badseg"> 无效段</label>
     </span>
