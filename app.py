@@ -585,7 +585,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
     ai_group = int(ai_group or 0)
     if web or scan:
         # 勾了来源：按内容判断是否真的需要补全（tags 可能是 '[]'，也可能是垃圾标题）
-        q = ("SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality "
+        q = ("SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality,sem_kind "
              "FROM items WHERE present=1 AND COALESCE(kind,'')<>'nested' ORDER BY id")
         _all = [dict(r) for r in dbc.execute(q).fetchall()]
 
@@ -620,7 +620,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                     _chunk = _ids[_i:_i + 400]
                     _ph = ','.join('?' * len(_chunk))
                     rows += [dict(r) for r in dbc.execute(
-                        "SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality "
+                        "SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality,sem_kind "
                         "FROM items WHERE id IN (%s) ORDER BY id" % _ph,
                         tuple(_chunk)).fetchall()]
             except Exception as _e:
@@ -634,6 +634,12 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             rows = [x for x in _all if _need(x)]
             _log('  需要补全 %d 条（缺 标签/简介/标题%s）'
                  % (len(rows), '/作者/年份' if not ai else ''))
+        if web and not ai:
+            _before = len(rows)
+            rows = [x for x in rows
+                    if (x.get('sem_kind') or '') in ('coded', 'uncensored')]
+            _log('  语义过滤：Web 补全只做 code/uncen，%d -> %d 条'
+                 % (_before, len(rows)))
         if limit > 0:
             rows = rows[:limit]
     else:
