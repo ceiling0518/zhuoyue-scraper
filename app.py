@@ -408,9 +408,9 @@ def _sem_pass(limit, force=False, group=None):
                             (r['id'],))
             try:
                 _sd0 = _subs_status({'path': (r.get('path') or '')})
-                if _sd0 != 'none':
-                    dbc.execute('UPDATE items SET subs_det=?, subs=?, subs_burn=? WHERE id=?',
-                                (_sd0, 1, 1 if _sd0 == 'burn' else 0, r['id']))
+                dbc.execute('UPDATE items SET subs_det=?, subs=?, subs_burn=? WHERE id=?',
+                            (_sd0, 1 if _sd0 in ('file', 'burn') else 0,
+                             1 if _sd0 == 'burn' else 0, r['id']))
             except Exception:
                 pass
             if (s or {}).get('nested'):
@@ -6516,9 +6516,9 @@ function adIcon(r,short){try{const a=JSON.parse(r.ads||'[]');
   return '';}catch(e){return '';}}
 function subIcon(r){
   const k=r.subs_det||'';
-  if(k==='burn')return ' <span title="\u5b57\u5e55\uff1a\u5df2\u70e7\u5f55\u8fdb\u753b\u9762" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">S\ud83d\udd25</span>';
-  if(k==='file'||r.subs)return ' <span title="\u5b57\u5e55\uff1a\u6709\u5916\u6302\u5b57\u5e55" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">Sub</span>';
-  if(k==='none')return ' <span title="\u5b57\u5e55\u68c0\u6d4b\uff1a\u65e0" style="color:var(--muted);font-size:11px;font-weight:700">Sub</span>';
+  if(k==='burn')return ' <span title="\u5b57\u5e55\uff1a\u5df2\u70e7\u5f55\u8fdb\u753b\u9762" style="border:1px solid var(--ok);color:var(--ok);border-radius:3px;padding:0 4px;font-size:10px;font-weight:700;margin-left:2px">S\ud83d\udd25</span>';
+  if(k==='file'||r.subs)return ' <span title="\u5b57\u5e55\uff1a\u6709\u5916\u6302\u5b57\u5e55" style="border:1px solid var(--ok);color:var(--ok);border-radius:3px;padding:0 4px;font-size:10px;font-weight:700;margin-left:2px">Sub</span>';
+  if(k==='none')return ' <span title="\u5b57\u5e55\u68c0\u6d4b\uff1a\u65e0\u5b57\u5e55" style="border:1px solid #4a5568;color:#7b8798;border-radius:3px;padding:0 4px;font-size:10px;margin-left:2px;text-decoration:line-through">Sub</span>';
   return '';
 }
 function demoIcon(r){
