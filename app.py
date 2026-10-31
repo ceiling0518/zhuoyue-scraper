@@ -6351,7 +6351,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
     <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
-    <button id="a-subonly" title="只检测字幕：外挂字幕或烧录抽帧（很快）">字幕检测</button><button id="a-adtect" title="内容检测：字幕 + 去码（勾无效段才查）；勾「广告」才顺带查广告">字幕和内容检测</button><label class="muted" title="顺带检测头尾广告（较慢；不勾只做字幕/去码）"><input type="checkbox" id="chk-ads"> 广告</label><select id="admode" style="min-width:92px" title="广告检测范围：头尾=只扫开头/结尾各 4 分钟；全片=30 秒全网扫，能命中中插"><option value="headtail">广告头尾</option><option value="full">全片</option></select><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码</label>
+    <button id="a-adtect" title="内容检测：字幕 + 去码（勾无效段才查）；勾「广告」才顺带查广告">字幕和内容检测</button><label class="muted" title="顺带检测头尾广告（较慢；不勾只做字幕/去码）"><input type="checkbox" id="chk-ads"> 广告</label><select id="admode" style="min-width:92px" title="广告检测范围：头尾=只扫开头/结尾各 4 分钟；全片=30 秒全网扫，能命中中插"><option value="headtail">广告头尾</option><option value="full">全片</option></select><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码</label>
     <label class="muted" title="广告和内容检测时一并检无效段（无女性画面），跃慢"><input type="checkbox" id="chk-badseg"> 无效段</label>
     <button id="a-segs" title="自定义编辑：自己填要保留的区间；可改起止、加段、删段">自定义编辑</button>
      <button id="a-addel" title="剪切合并：按广告/无效段切掉，剩余可用段拼接成一个文件；勾「合并可用段」把多视频也拼进来">剪切合并</button><label class="muted" title="把同一条目多个视频的可用段合并到第一个文件（源文件保留，可回滚）"><input type="checkbox" id="chk-merge"> 合并可用段</label>
@@ -6361,7 +6361,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
      <select id="subs-engine" style="min-width:98px" title="字幕引擎：SenseVoice 快且省资源；Whisper v3 Turbo 更准但慢（PotPlayer CUDA）"><option value="sensevoice">SenseVoice</option><option value="whisper">Whisper v3 Turbo</option></select>
      <button id="a-subs" title="语音转字幕：输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
-    <select id="downtgt" style="min-width:96px" title="目标分辨率：保持分辨率=不缩放（配合修复只提质）；1080/720/480 才降"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
+    <select id="downtgt" style="min-width:96px" title="目标分辨率：保持分辨率=不缩放（配合修复只提质）；1080/720/480 才降"><option value="auto">Res.-auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <select id="downfps" style="min-width:86px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">Fps-auto</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
     <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 修复</label>
     <label class="muted" title="降分辨率前先按自定义区间裁剪（勾了合并的视频先拼成一个）"><input type="checkbox" id="downad"> 裁剪合并</label>
@@ -6914,13 +6914,6 @@ $('#a-adtect').onclick=async()=>{
     await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+$('#admode').value
       +'&force='+($('#force').checked?1:0)+'&subs='+_o.subs+'&demo='+_o.demo
       +'&bad='+_o.bad+'&ads='+_o.ads);};
-$('#a-subonly').onclick=async()=>{
-  const ids=[...SEL].join(',');
-  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做字幕检测，继续？')))return;
-    const _o={mode:$('#admode').value,subs:1,demo:0,bad:0,ads:0};
-    if($('#qadd-chk').checked&&SEL.size){await qAdd('adtect',[...SEL],_o);return;}
-    await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+$('#admode').value
-      +'&force='+($('#force').checked?1:0)+'&subs=1&demo=0&bad=0&ads=0');};
 $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
