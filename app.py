@@ -2825,6 +2825,12 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
                                     _code0 or '-'))
                         if _dm:
                             dbc.execute('UPDATE items SET demo=? WHERE id=?', (_dm, it['id']))
+                            # 语义拿不准(none/空)但 AI 判无码 -> 直接归无码
+                            if _dm == '好' and _sem0 in ('', 'none'):
+                                dbc.execute("UPDATE items SET sem_kind='uncensored' "
+                                            "WHERE id=? AND COALESCE(sem_kind,'') IN ('','none')",
+                                            (it['id'],))
+                                _log('    语义补判：none + AI无码 -> uncensored')
                     if subs and _need_subs:
                         _sd = _subs_status(it, _vp0)
                         if _sd == 'none' and _vp0:
@@ -5650,6 +5656,15 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
         _poster_save(im, newp)
         made = newp
         note = ('AI选图+补完' if comp else 'AI选图') + ('（人脸裁切）' if (comp and bbox) else '')
+        # 顺手判一次烧录字幕：命中就直接点亮字幕徽标
+        try:
+            _dd = mlib.video_duration(vp) or 0
+            if _dd > 30 and mlib.detect_subs_burn(vp, _dd, n=8, log=lambda m: None):
+                dbc.execute('UPDATE items SET subs_burn=1, subs=1 WHERE id=?', (iid,))
+                dbc.commit()
+                note += '+字幕'
+        except Exception:
+            pass
         if enh:
             up = os.path.join(p, 'poster.up.png')
             if _esrgan_up(newp, up, 2):

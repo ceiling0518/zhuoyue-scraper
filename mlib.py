@@ -4536,14 +4536,14 @@ def detect_subs_burn(vpath, dur=None, model=None, log=None, n=12):
         return False
     times = [round(dur * (i + 0.5) / n, 2) for i in range(n)]
     vals = [v for v in vis_batch_vals(vpath, times, SUBS_PROMPT,
-                                      model=model, log=log) if v >= 0]
+                                      model=model, log=log, width=720) if v >= 0]
     if not vals:
         return False
     ratio = sum(1 for v in vals if v) / len(vals)
     if log:
         log('    字幕抽帧：%.0f%% 帧有字幕（%d 帧）'
             % (ratio * 100, len(vals)))
-    return ratio >= 0.3
+    return ratio >= 0.12
 
 
 def ensure_segs():
