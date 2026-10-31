@@ -4836,6 +4836,7 @@ def items(params):
                        ' ORDER BY ' + order_by + ' LIMIT ? OFFSET ?',
                        args + [limit, offset]).fetchall()
     out = [dict(r) for r in rows]
+    _lazy = [0]
     for o in out:
         o['skey'] = mlib.series_key(o.get('sem_code') or o.get('code') or '')
         v = int(o.get('vbr') or 0)
@@ -4854,6 +4855,9 @@ def items(params):
             o['tbpp'] = 0
         try:
             _pw, _ph, _pb = poster_stat_of(o['id'])
+            if not _pw and _lazy[0] < 60:
+                _lazy[0] += 1
+                _pw, _ph, _pb = poster_stat_of(o['id'], refresh=True)
             o['pw'], o['ph'], o['pbpp'] = _pw, _ph, round(_pb, 4)
         except Exception:
             o['pw'], o['ph'], o['pbpp'] = 0, 0, 0
@@ -5386,9 +5390,12 @@ def poster_stat_of(iid, refresh=False):
     """封面原图的 (w,h,bpp)；带 size+mtime 缓存，没算过就返回 (0,0,0)。"""
     try:
         r = _LOGDB.execute('SELECT cover, path FROM items WHERE id=?', (iid,)).fetchone()
-        if not r or not r[0] or not r[1]:
+        if not r or not r[1]:
             return 0, 0, 0.0
-        dst = os.path.join(r[1], r[0])
+        # cover 字段可能是空的（老条目/AI 建档），此时按磁盘上的 poster.jpg 算
+        dst = os.path.join(r[1], (r[0] or '').strip() or 'poster.jpg')
+        if not os.path.exists(dst):
+            return 0, 0, 0.0
         st = os.stat(dst)
         row = None
         try:
@@ -5499,7 +5506,7 @@ def _poster_save(im, path, lo=100, hi=150, long_side=1200, minq=86):
     return 0.0
 
 
-def _poster_refresh_one(iid, ai=False, enh=False):
+def _poster_refresh_one(iid, ai=False, enh=False, force=False):
     """刷新一条封面。默认：有封面/目录图就沿用，没有才截帧。"""
     dbc = mlib.db()
     r = dbc.execute('SELECT path FROM items WHERE id=?', (iid,)).fetchone()
@@ -5511,10 +5518,10 @@ def _poster_refresh_one(iid, ai=False, enh=False):
     made = None
     note = ''
 
-    if enh and os.path.exists(dst):
+    if enh and os.path.exists(dst) and not force:
         _need, _b = _needs_enh(dst)
         if not _need:
-            return '跳过（bpp %.3f 已够）' % _b
+            return '跳过（bpp %.3f 已够，强制可覆盖）' % _b
 
     # 有封面又只要「提升画质」时，绝不重新抽帧：直接拿现有 poster 超分
     if ai and not (enh and os.path.exists(dst)):
@@ -5605,6 +5612,10 @@ def _poster_refresh_one(iid, ai=False, enh=False):
                 os.remove(fp)
         except Exception:
             pass
+    try:
+        poster_stat_of(iid, refresh=True)     # 让框色跟着新封面走
+    except Exception:
+        pass
     return note
 
 
@@ -5628,7 +5639,7 @@ def _run_bounded(fn, timeout, *a):
     return box.get('v')
 
 
-def _job_poster_refresh(ids=None, ai=False, enh=False):
+def _job_poster_refresh(ids=None, ai=False, enh=False, force=False):
     _begin('poster', 1)
     try:
         its = _items_by_ids(ids)
@@ -5640,7 +5651,8 @@ def _job_poster_refresh(ids=None, ai=False, enh=False):
                 _log('! 已请求停止')
                 break
             try:
-                msg = _run_bounded(_poster_refresh_one, lim, it['id'], bool(ai), bool(enh))
+                msg = _run_bounded(_poster_refresh_one, lim, it['id'], bool(ai), bool(enh),
+                                   bool(force))
             except TimeoutError as e:
                 msg = '超时跳过（%s）' % str(e)[:60]
             except Exception as e:
@@ -6378,11 +6390,18 @@ class H(BaseHTTPRequestHandler):
                 tids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 _ai = (q.get('ai') or '') in ('1', 'true', 'yes')
                 _enh = (q.get('enh') or '') in ('1', 'true', 'yes')
+                _fo = (q.get('force') or '') in ('1', 'true', 'yes')
                 if _ai or _enh:
-                    ok = start_job(_job_poster_refresh, tids or None, _ai, _enh,
+                    ok = start_job(_job_poster_refresh, tids or None, _ai, _enh, _fo,
                                    lane='light', exclusive=bool(_ai))
                     return self._json({'ok': True, 'queued': bool(ok)})
-                return self._json({'ok': True, 'n': refresh_thumbs(tids or None, make=True)})
+                n = refresh_thumbs(tids or None, make=True)
+                for _iid in (tids or []):
+                    try:
+                        poster_stat_of(_iid, refresh=True)
+                    except Exception:
+                        pass
+                return self._json({'ok': True, 'n': n, 'force': _fo})
             elif p == '/api/poster_stats/scan':
                 _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_poster_stats, _ids or None, lane='light')
