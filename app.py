@@ -5441,7 +5441,7 @@ def doc_page(name):
 
 # ---------------------------------------------------------------- http
 class H(BaseHTTPRequestHandler):
-    server_version = 'ZhuoYue-Scraper/2.1.0'
+    server_version = 'ZhuoYue-Scraper/2.2.0'
 
     def _send(self, code, body, ctype='application/json; charset=utf-8'):
         b = body.encode('utf-8') if isinstance(body, str) else body
@@ -6079,7 +6079,7 @@ tr.sel .selbtn{background:var(--acc);border-color:var(--acc);color:#08121f;font-
 pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;overflow:auto;font-size:11px}
 </style></head><body>
 <header>
-  <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.1.0</span> 
+  <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.2.0</span> 
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
   <button id="b-sites">站点</button>
   <button id="b-restart" title="重启服务：加载新代码 / 任务卡死时恢复">重启</button> <span class="muted">语言</span><select id="sublang" style="min-width:88px" title="内容语言：字幕 / AI 补全 / Web 补全 共用；SenseVoice 支持中/英/日/韩/粤"><option value="zh">中文</option><option value="ja">日文</option><option value="en">英文</option><option value="ko">韩文</option><option value="yue">粤语</option><option value="es">西班牙语</option></select>
@@ -6234,7 +6234,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th style="width:80px">大小</th><th style="width:150px">许可</th><th style="width:120px">操作</th>
   </tr></thead><tbody id="mdl-rows"></tbody></table></div>
   <div class="muted" style="padding:6px 4px;font-size:12px">
-    开源模型可直接下载到 app 的 models 目录；Topaz 为商业授权模型，只能在本机安装后由软件调用，不提供下载。  <span class="muted">｜ 版本 v2.1.0</span>
+    开源模型可直接下载到 app 的 models 目录；Topaz 为商业授权模型，只能在本机安装后由软件调用，不提供下载。  <span class="muted">｜ 版本 v2.2.0</span>
   </div>
 </div></div>
 <div class="modal" id="modal8"><div class="box" style="max-width:1280px">
