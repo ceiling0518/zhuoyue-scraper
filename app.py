@@ -5790,6 +5790,12 @@ h1{font-size:15px;margin:0;font-weight:600}
 .card{background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:8px 12px;min-width:86px}
 .card b{display:block;font-size:19px;line-height:1.2}.card span{color:var(--dim);font-size:11px}
 .bar{display:flex;gap:7px;flex-wrap:wrap;align-items:center;background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:9px 11px;margin-bottom:10px}
+header{padding:8px 14px;gap:7px}
+header select,header input,header button{padding:2px 5px;font-size:11.5px}
+header .muted{font-size:11px}
+#fbar{flex-wrap:nowrap;overflow-x:auto;gap:5px;padding:7px 9px}
+#fbar select,#fbar input,#fbar button{font-size:11.5px;padding:2px 6px}
+#fbar #f-q{width:170px}
 button{background:#26303f;color:var(--fg);border:1px solid #39455a;border-radius:7px;padding:6px 11px;cursor:pointer;font-size:12px}
 button:hover{background:#2f3b4d}button:disabled{opacity:.45;cursor:not-allowed}
 button.primary{background:var(--acc);border-color:var(--acc);color:#08121f;font-weight:600}
@@ -5867,7 +5873,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   <div id="prog"><i></i></div>
   <div class="logwrap"><div id="log"></div><button id="logjump" title="跳到最新一行">↓ 最新</button></div>
-  <div class="bar">
+  <div class="bar" id="fbar">
     <select id="f-quality"><option value="">质量:全部</option><option value="有">有</option><option value="缺">缺</option><option value="有误">有误</option><option value="无">无</option><option value="删除">删除</option></select>
     <select id="f-source"><option value="">来源:全部</option><option value="Web">Web</option><option value="AI">AI</option></select>
     <select id="f-kind"><option value="">语义:全部</option><option>coded</option><option>uncensored</option><option>none</option><option>(未跑)</option></select>
