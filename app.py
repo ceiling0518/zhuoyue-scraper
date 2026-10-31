@@ -403,6 +403,16 @@ def _sem_pass(limit, force=False, group=None):
                                    1 if code else 0, kind, _pub, _pub, dbc)
             except Exception:
                 pass
+            if kind == 'uncensored':
+                dbc.execute("UPDATE items SET demo='好' WHERE id=? AND COALESCE(demo,'')=''",
+                            (r['id'],))
+            try:
+                _sd0 = _subs_status({'path': (r.get('path') or '')})
+                if _sd0 != 'none':
+                    dbc.execute('UPDATE items SET subs_det=?, subs=?, subs_burn=? WHERE id=?',
+                                (_sd0, 1, 1 if _sd0 == 'burn' else 0, r['id']))
+            except Exception:
+                pass
             if (s or {}).get('nested'):
                 dbc.execute("UPDATE items SET quality='有误' WHERE id=?", (r['id'],))
             dbc.commit()
@@ -2716,25 +2726,43 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
             if subs or demo:
                 try:
                     _vp0 = vids[0] if vids else ''
+                    _dur0 = 0
+                    if _vp0:
+                        try:
+                            _dur0 = mlib.video_duration(_vp0)
+                        except Exception:
+                            _dur0 = 0
+                    if demo:
+                        _r0 = dbc.execute('SELECT code, sem_code, sem_kind FROM items WHERE id=?',
+                                          (it['id'],)).fetchone()
+                        _code0 = ((_r0['sem_code'] or _r0['code'] or '') if _r0 else '')
+                        _sem0 = ((_r0['sem_kind'] or '') if _r0 else '')
+                        _cu = _code0.upper()
+                        if _sem0 == 'uncensored' or 'UNCEN' in _cu or 'UNCON' in _cu:
+                            _dm = '好'          # 语义判为无码：默认去码优秀
+                            _log('    去码检测：无码（语义：uncensored）')
+                        else:
+                            _dm = mlib.detect_mosaic(_vp0, _dur0,
+                                                     log=lambda m: _log(m)) if _vp0 else ''
+                            if not _dm:
+                                _dm = _demo_by_code(_code0)
+                            _log('    去码检测：%s（%s）'
+                                 % ({'有': '有码', '一般': '去码一般',
+                                     '好': '无码/去码优秀'}.get(_dm, '未判定'),
+                                    _code0 or '-'))
+                        if _dm:
+                            dbc.execute('UPDATE items SET demo=? WHERE id=?', (_dm, it['id']))
                     if subs:
                         _sd = _subs_status(it, _vp0)
+                        if _sd == 'none' and _vp0:
+                            if mlib.detect_subs_burn(_vp0, _dur0, log=lambda m: _log(m)):
+                                _sd = 'burn'
                         dbc.execute('UPDATE items SET subs_det=?, subs=?, subs_burn=? WHERE id=?',
                                     (_sd, 1 if _sd in ('file', 'burn') else 0,
                                      1 if _sd == 'burn' else 0, it['id']))
                         _log('    字幕检测：%s' % {'file': '有外挂字幕',
                                                     'burn': '已烧录',
                                                     'none': '无字幕'}.get(_sd, _sd))
-                    if demo:
-                        _r0 = dbc.execute('SELECT code, sem_code FROM items WHERE id=?',
-                                          (it['id'],)).fetchone()
-                        _code0 = ((_r0['sem_code'] or _r0['code'] or '') if _r0 else '')
-                        _dm = _demo_by_code(_code0)
-                        if _dm:
-                            dbc.execute('UPDATE items SET demo=? WHERE id=?', (_dm, it['id']))
-                        _log('    去码检测：%s（%s）'
-                             % ({'有': '有码', '一般': '去码一般',
-                                 '好': '去码好'}.get(_dm, '无番号，未判定'),
-                                _code0 or '-'))
                     dbc.commit()
                 except Exception as _e:
                     _log('    内容检测 ERR %s' % str(_e)[:120])

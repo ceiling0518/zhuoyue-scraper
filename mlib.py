@@ -4416,6 +4416,123 @@ def vis_batch(vpath, times, prompt_tpl, model=None, log=None, width=320):
     return out
 
 
+MOSAIC_PROMPT = (
+    '下面是同一个视频在不同时间点截取的 {N} 张画面（编号 1..{N}）。\n'
+    '只看画面里女性生殖器/性器官部位的清晰程度，每张给一个档位：\n'
+    '2 = 清晰可见（无马赛克、无厚码、无贴纸遮挡）\n'
+    '1 = 中等：部分清晰、薄码、局部模糊\n'
+    '0 = 完全模糊/马赛克/厚码遮挡，看不清\n'
+    '-1 = 画面里没有相关部位\n'
+    '只输出 JSON：{{"v":[[1,2],[2,0],...]}}，不要解释。'
+)
+
+SUBS_PROMPT = (
+    '下面是同一个视频在不同时间点截取的 {N} 张画面（编号 1..{N}）。\n'
+    '判断每张画面上是否有【烧录/内嵌的对白字幕】（通常在画面下方）。\n'
+    '台标、水印、片头标题、站点广告文字不算字幕。\n'
+    '只输出 JSON：{{"v":[[1,1],[2,0],...]}}，1=有字幕，0=没有。不要解释。'
+)
+
+
+def vis_batch_vals(vpath, times, prompt_tpl, model=None, log=None, width=320):
+    """同 vis_batch，但保留整数档位：返回与 times 等长的 int 列表（无值=-1）。"""
+    model = model or ai_model()
+    out = [-1] * len(times)
+    try:
+        chunk = max(1, min(24, int(os.environ.get('MS_AD_BATCH') or 24)))
+    except Exception:
+        chunk = 20
+    for st in range(0, len(times), chunk):
+        ts = times[st:st + chunk]
+        imgs, keep = [], []
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            _w = min(8, max(1, (os.cpu_count() or 4)))
+            with ThreadPoolExecutor(max_workers=_w) as _ex:
+                bs = list(_ex.map(lambda _t: frame_at(vpath, _t, width=width), ts))
+        except Exception:
+            bs = [frame_at(vpath, t, width=width) for t in ts]
+        for i, b in enumerate(bs):
+            if b:
+                imgs.append(base64.b64encode(b).decode('ascii'))
+                keep.append(i)
+        if not imgs:
+            continue
+        prompt = prompt_tpl.replace('{N}', str(len(imgs)))
+        try:
+            r = requests.post(OLLAMA + '/api/chat', timeout=900,
+                              json={'model': model, 'stream': False,
+                                    'keep_alive': AI_KEEP_ALIVE, 'think': False,
+                                    'options': {'temperature': 0.1, 'num_predict': 240},
+                                    'messages': [{'role': 'user', 'content': prompt,
+                                                  'images': imgs}]})
+            txt = ((r.json() or {}).get('message') or {}).get('content') or ''
+        except Exception as e:
+            if log:
+                log('    视觉批次失败: %s' % str(e)[:80])
+            continue
+        arr = extract_json_array(txt) or []
+        vals = {}
+        _pairs = bool(arr) and all(isinstance(it, (list, tuple)) and len(it) >= 2
+                                   for it in arr)
+        if _pairs:
+            for it in arr:
+                try:
+                    vals[int(it[0])] = int(it[1])
+                except Exception:
+                    pass
+        else:
+            # 模型常直接返回扁平数组：[0,1,2] 对应第 1..N 张
+            for k, v in enumerate(arr, 1):
+                try:
+                    vals[k] = int(v)
+                except Exception:
+                    pass
+        for j, idx in enumerate(keep):
+            if (j + 1) in vals:
+                out[st + idx] = vals[j + 1]
+    return out
+
+
+def detect_mosaic(vpath, dur=None, model=None, log=None, n=12):
+    """抽帧判断去码程度：'好'（无码）/ '一般' / '有'（马赛克）。"""
+    dur = dur or video_duration(vpath)
+    if not dur or dur < 20:
+        return ''
+    times = [round(dur * (i + 0.5) / n, 2) for i in range(n)]
+    vals = [v for v in vis_batch_vals(vpath, times, MOSAIC_PROMPT,
+                                      model=model, log=log) if v >= 0]
+    if not vals:
+        return ''
+    c2 = sum(1 for v in vals if v >= 2) / len(vals)
+    c0 = sum(1 for v in vals if v == 0) / len(vals)
+    if log:
+        log('    去码抽帧：清晰 %.0f%% / 遮挡 %.0f%%（%d 帧）'
+            % (c2 * 100, c0 * 100, len(vals)))
+    if c2 >= 0.6:
+        return '好'
+    if c0 >= 0.6:
+        return '有'
+    return '一般'
+
+
+def detect_subs_burn(vpath, dur=None, model=None, log=None, n=10):
+    """抽帧判断是否有烧录字幕。"""
+    dur = dur or video_duration(vpath)
+    if not dur or dur < 20:
+        return False
+    times = [round(dur * (i + 0.5) / n, 2) for i in range(n)]
+    vals = [v for v in vis_batch_vals(vpath, times, SUBS_PROMPT,
+                                      model=model, log=log) if v >= 0]
+    if not vals:
+        return False
+    ratio = sum(1 for v in vals if v) / len(vals)
+    if log:
+        log('    字幕抽帧：%.0f%% 帧有字幕（%d 帧）'
+            % (ratio * 100, len(vals)))
+    return ratio >= 0.3
+
+
 def ensure_segs():
     d = db()
     d.execute('CREATE TABLE IF NOT EXISTS segs_file(item_id INTEGER, file TEXT, kind TEXT, '
