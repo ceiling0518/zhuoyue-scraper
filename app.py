@@ -5790,15 +5790,9 @@ h1{font-size:15px;margin:0;font-weight:600}
 .card{background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:8px 12px;min-width:86px}
 .card b{display:block;font-size:19px;line-height:1.2}.card span{color:var(--dim);font-size:11px}
 .bar{display:flex;gap:7px;flex-wrap:wrap;align-items:center;background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:9px 11px;margin-bottom:10px}
-header{padding:7px 12px;gap:5px;flex-wrap:nowrap;overflow-x:auto}
-header select,header input,header button{padding:1px 4px;font-size:11px}
-header .muted{font-size:10.5px}
-header h1{font-size:14px}
-#cfg-model{width:140px}
-#b-libsel{width:118px}
-#sublang{min-width:78px}
-#b-lang{min-width:86px}
-#cfg-port{width:70px}
+header{padding:8px 14px;gap:7px}
+header select,header input,header button{padding:2px 5px;font-size:11.5px}
+header .muted{font-size:11px}
 #fbar{flex-wrap:nowrap;overflow-x:auto;gap:5px;padding:7px 9px}
 #fbar select,#fbar input,#fbar button{font-size:11.5px;padding:2px 6px}
 #fbar #f-q{width:170px}
