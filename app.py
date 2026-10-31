@@ -2869,9 +2869,9 @@ def _job_addel(ids=None, nested=False):
                 if _dur0 and _dur0 - _cur > 0.15:
                     _keep.append((_cur, _dur0))
 
-                _big = os.path.getsize(vp) > 3 * 1024 ** 3
+                _big = os.path.getsize(vp) > 6 * 1024 ** 3
                 if _big:
-                    _log('  文件大于 3GB，索引裁剪内存占用过高 -> 走重封装')
+                    _log('  文件大于 6GB -> 走重封装')
                 if len(_keep) == 1 and not _big:
                     # 头/尾广告：只改索引（elst + 尾部截断），不动视频数据
                     _log('  切 %s（头/尾广告）—— 只改索引，不重封装；操作中请勿中断'
@@ -5247,9 +5247,10 @@ class H(BaseHTTPRequestHandler):
                 mlib.ensure_series()
                 _d = mlib.db()
                 _rows = [dict(x) for x in _d.execute(
-                    "SELECT series,has_code,sem_kind,note,publisher,IFNULL(alias,'') alias FROM series "
+                    "SELECT series,has_code,sem_kind,note,publisher,IFNULL(alias,'') alias,"
+                    "IFNULL(manual,0) manual FROM series "
                     "WHERE series LIKE ? OR IFNULL(note,'') LIKE ? OR IFNULL(publisher,'') LIKE ? "
-                    "ORDER BY series LIMIT ?",
+                    "ORDER BY IFNULL(manual,0) DESC, series LIMIT ?",
                     ('%' + _q + '%', '%' + _q + '%', '%' + _q + '%', _lim))]
                 return self._json({'rows': _rows})
             if p == '/api/organize/plan':
@@ -5680,7 +5681,7 @@ class H(BaseHTTPRequestHandler):
                 mlib.series_upsert(_s, bool(_b.get('has_code')),
                                    _b.get('sem_kind') or '', _b.get('note') or '',
                                    _b.get('publisher') or '',
-                                   _b.get('alias') or '')
+                                   _b.get('alias') or '', manual=True)
                 return self._json({'ok': True})
             elif p == '/api/organize/apply':
                 try:
@@ -5895,7 +5896,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 <div class="modal" id="modal9"><div class="box" style="max-width:1080px">
   <div class="bar"><b>系列表</b>
     <input id="sr-q" placeholder="搜索系列 / 备注 / 出版商" style="width:240px">
-    <button id="sr-find">搜索</button>
+    <button id="sr-find">搜索</button> <button id="sr-add" title="新建系列（人工建的置顶）">+ 新增系列</button>
     <span class="muted">|</span>
     <button id="sr-build" title="按语义库重建：系列/有无番号/语义/公司">从库重建</button>
     <button id="sr-enrich" title="对没有出版商的系列联网搜索补全">联网完善</button>
@@ -6174,6 +6175,17 @@ async function loadSeries(q){
 }
 $('#a-series').onclick=async()=>{$('#modal9').classList.add('on');loadSeries($('#sr-q').value);};
 $('#sr-find').onclick=()=>loadSeries($('#sr-q').value);
+$('#sr-add').onclick=()=>{
+  const tb=$('#sr-rows');
+  const tr=document.createElement('tr');
+  tr.innerHTML='<td><input class="sr-name" placeholder="新系列名" style="width:180px"></td>'
+   +'<td><input type="checkbox" class="sr-hc"></td>'
+   +'<td><select class="sr-k">'+['coded','uncensored','none',''].map(k=>'<option>'+k+'</option>').join('')+'</select></td>'
+   +'<td><input class="sr-note"></td>'
+   +'<td><input class="sr-pub"></td>'
+   +'<td><input class="sr-alias"></td>'
+   +'<td><button class="sr-save" data-s="">保存</button></td>';
+  tb.insertBefore(tr,tb.firstChild);};
 $('#sr-build').onclick=async()=>{await post('/api/series/run?build=1');loadSeries($('#sr-q').value);};
 $('#sr-enrich').onclick=async()=>{await post('/api/series/run?build=0&enrich=1&limit='+$('#sr-lim').value);
   setTimeout(()=>loadSeries($('#sr-q').value),3000);};
@@ -6186,13 +6198,17 @@ $('#sr-rows').onclick=async e=>{
     if(r.ok)loadSeries($('#sr-q').value);return;}
   const b=e.target.closest('.sr-save'); if(!b)return;
   const tr=b.closest('tr');
-  const body={series:b.dataset.s, has_code:tr.querySelector('.sr-hc').checked?1:0,
+  const _nm=((tr.querySelector('.sr-name')||{}).value||'').trim();
+  const _s=_nm||b.dataset.s;
+  if(!_s){b.textContent='名字空';setTimeout(()=>b.textContent='保存',1200);return;}
+  const body={series:_s, has_code:tr.querySelector('.sr-hc').checked?1:0,
     sem_kind:tr.querySelector('.sr-k').value, note:tr.querySelector('.sr-note').value,
     publisher:tr.querySelector('.sr-pub').value,
     alias:(tr.querySelector('.sr-alias')||{}).value||''};
   const r=await(await fetch('/api/series/save',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
-  b.textContent=r.ok?'已存':'失败'; setTimeout(()=>b.textContent='保存',1200);};
+  b.textContent=r.ok?'已存':'失败';
+  if(r.ok){loadSeries($('#sr-q').value);}else{setTimeout(()=>b.textContent='保存',1200);}};
 async function openRenamePlan(){
   if(!SEL.size)return alert(T('先选条目'));
   const ids=[...SEL].join(',');

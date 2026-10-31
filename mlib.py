@@ -1116,6 +1116,10 @@ def ensure_series(dbc=None):
             d.execute('ALTER TABLE series ADD COLUMN %s TEXT' % _col)   # 旧库补列
         except Exception:
             pass
+    try:
+        d.execute('ALTER TABLE series ADD COLUMN manual INTEGER DEFAULT 0')  # 人工新建
+    except Exception:
+        pass
     d.commit()
     try:
         rows = [dict(x) for x in d.execute('SELECT * FROM series').fetchall()]
@@ -1138,17 +1142,19 @@ def ensure_series(dbc=None):
     return d
 
 
-def series_upsert(series, has_code, sem_kind='', note='', publisher='', alias='', dbc=None):
+def series_upsert(series, has_code, sem_kind='', note='', publisher='', alias='', dbc=None,
+                  manual=False):
     """有则更新；空值不覆盖已有语义/备注。"""
     series = (series or '').strip()
     if not series:
         return None
     d = dbc or db()
     ensure_series(d)
-    d.execute("""INSERT INTO series(series,has_code,sem_kind,note,publisher,alias,updated)
-                 VALUES(?,?,?,?,?,?,?)
+    d.execute("""INSERT INTO series(series,has_code,sem_kind,note,publisher,alias,updated,manual)
+                 VALUES(?,?,?,?,?,?,?,?)
                  ON CONFLICT(series) DO UPDATE SET
                    has_code=excluded.has_code,
+                   manual=CASE WHEN excluded.manual=1 THEN 1 ELSE series.manual END,
                    sem_kind=CASE WHEN excluded.sem_kind<>'' THEN excluded.sem_kind
                                  ELSE series.sem_kind END,
                    note=CASE WHEN excluded.note<>'' THEN excluded.note
@@ -1158,8 +1164,8 @@ def series_upsert(series, has_code, sem_kind='', note='', publisher='', alias=''
                    alias=CASE WHEN excluded.alias<>'' THEN excluded.alias
                               ELSE series.alias END,
                    updated=excluded.updated""",
-              (series, 1 if has_code else 0, sem_kind or '', note or '',
-               publisher or '', alias or '', now()))
+               (series, 1 if has_code else 0, sem_kind or '', note or '',
+                publisher or '', alias or '', now(), 1 if manual else 0))
     d.commit()
     return series
 
