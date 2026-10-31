@@ -6400,11 +6400,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="f-order" title="正序 / 倒序"><option value="asc">正序 ↑</option><option value="desc">倒序 ↓</option></select>
   </div>
   <div class="bar" id="actbar" style="background:#171c25">
-    <button id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
-    <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
-    <label class="muted" title="勾选后：AI 补全 / Web 补全 都会先抽帧看片（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
-    <button id="a-fill" title="按简介补标签；勾了看片则先看片补信息">AI 补全</button>
-    <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button>
     <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
     <label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
     <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
@@ -6425,6 +6420,13 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 去码 <b style="color:#a8b3c4">●</b>有码 <b style="color:#d8dde6">◍</b>一般 <b style="color:#8fd0ff">◉</b>无码 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">Sub</b>有 <b style="color:var(--ok)">S🔥</b>烧录 <b style="color:#7b8798;text-decoration:line-through">Sub</b>无</span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
+    <span class="zone" style="border-left:0"><span class="zlab">刮削</span>
+      <button id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
+      <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
+      <label class="muted" title="勾选后：AI 补全 / Web 补全 都会先抽帧看片（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
+      <button id="a-fill" title="按简介补标签；勾了看片则先看片补信息">AI 补全</button>
+      <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button>
+    </span>
     <span class="zone"><span class="zlab">维护</span>
       <button id="a-thumbs">刷新缩略图</button>
       <label class="muted" title="AI 自动选帧并裁剪到女性；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI选图</label>
