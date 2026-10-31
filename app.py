@@ -6361,7 +6361,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
      <select id="subs-engine" style="min-width:98px" title="字幕引擎：SenseVoice 快且省资源；Whisper v3 Turbo 更准但慢（PotPlayer CUDA）"><option value="sensevoice">SenseVoice</option><option value="whisper">Whisper v3 Turbo</option></select>
      <button id="a-subs" title="语音转字幕：输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
-    <select id="downtgt" style="min-width:96px" title="目标分辨率：保持分辨率=不缩放（配合修复只提质）；1080/720/480 才降"><option value="auto">保持分辨率</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
+    <select id="downtgt" style="min-width:96px" title="目标分辨率：保持分辨率=不缩放（配合修复只提质）；1080/720/480 才降"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
     <select id="downfps" style="min-width:86px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">Fps-auto</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
     <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 修复</label>
     <label class="muted" title="降分辨率前先按自定义区间裁剪（勾了合并的视频先拼成一个）"><input type="checkbox" id="downad"> 裁剪合并</label>
