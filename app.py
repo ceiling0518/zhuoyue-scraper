@@ -5611,7 +5611,7 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False):
         im = _focus_crop(_crop_bars(im), bbox)
         im.save(newp, 'JPEG', quality=92)
         made = newp
-        note = 'AI选图' + ('+裁剪' if bbox else '')
+        note = 'AI裁图' + ('+裁剪' if bbox else '')
         if enh:
             up = os.path.join(p, 'poster.up.png')
             if _esrgan_up(newp, up, 2):
@@ -6810,7 +6810,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
     <button id="a-selall" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">全选本页</button>
-    <button id="a-selnone">取消选择</button>
+    <button id="a-selnone">取消勾选</button>
     <span class="muted">|</span>
     <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
     <button id="a-open" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">打开目录</button><button id="b-refresh" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">刷新</button>
@@ -6834,7 +6834,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     </span>
     <span class="zone"><span class="zlab">维护</span>
       <button id="a-thumbs" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">刷新缩略图</button>
-      <label class="muted" title="AI 自动选帧并裁剪到女性；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI选图</label>
+      <label class="muted" title="AI 自动裁图：优先整体身体，其次脸部，再局部体态；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI裁图</label>
       <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
       <button id="a-coverdel">删除封面图</button>
       <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
@@ -6885,7 +6885,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th style="width:136px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
     <th style="width:108px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 ⛔段数">属性</th>
     <th style="width:134px" title="系列-番号，下一行语义；均可双击修改">番号 / 语义</th>
-    <th style="width:116px" title="分辨率 · 平均码率 · bpp（按 720p/30帧 折算；≤0.03 红，≤0.08 黄）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
+    <th style="width:116px" title="分辨率 · 平均码率 · bpp（按 720p/30帧 折算；≤0.03 红，≤0.08 黄）">画质</th><th>标题 / 元信息</th><th style="width:70px">勾选</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
@@ -7145,7 +7145,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     +'<div class="meta">标签: <span class="tags">'+esc(tagsOf(r.tags))+'</span></div>'
     +'<div class="meta">作者: '+esc(tagsOf(r.actors))+' ｜ 年份: '+esc(r.year||'')+' ｜ 制作: '+esc(r.studio||'')+'</div>'
     +'</div></td>'
-    +'<td><button class="selbtn" data-id="'+r.id+'">选择</button></td></tr>';}).join('');
+    +'<td><button class="selbtn" data-id="'+r.id+'">勾选</button></td></tr>';}).join('');
   stripWinOnly();
   document.querySelectorAll('.selbtn').forEach(b=>{if(SEL.has(b.dataset.id))selSet(b,true);});
   const pages=Math.max(1,Math.ceil(d.total/lim)),cur=Math.floor(off/lim)+1;
@@ -7175,7 +7175,7 @@ function fsize(n){n=+n||0;if(!n)return '—';
 function selinfo(){$('#seln').textContent=SEL.size;}
 function selSet(b,on){const id=b.dataset.id,tr=b.closest('tr');
   if(on){SEL.add(id);tr.classList.add('sel');b.textContent='✓ 已选';}
-  else{SEL.delete(id);tr.classList.remove('sel');b.textContent='选择';}}
+  else{SEL.delete(id);tr.classList.remove('sel');b.textContent='勾选';}}
 $('#a-selall').onclick=()=>{document.querySelectorAll('.selbtn').forEach(b=>selSet(b,true));selinfo();};
 $('#a-selnone').onclick=()=>{SEL.clear();document.querySelectorAll('.selbtn').forEach(b=>selSet(b,false));selinfo();};
 function batchRun(mode){return async()=>{if(!SEL.size)return alert(T('先选条目'));
