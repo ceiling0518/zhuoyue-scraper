@@ -1912,6 +1912,7 @@ def _rename_one(dbc, iid, new_dir, new_file):
 def _job_down(ids=None, target='auto', fix=False, ad=False, fpsout=0):
     """降分辨率：按 bpp/分辨率选 720p 或 480p，60fps -> 30fps，按设置的码率重编码。"""
     _begin('downscale', 1)
+    mlib.unload_ai(force=True)          # 编码/插帧要用显卡，先让模型让位
     dbc = mlib.db()
     try:
         _ensure_media(dbc)
@@ -2134,6 +2135,7 @@ def _job_openbeautify(ids=None, engine='esrgan', scale=2, ad=False):
     """开源美化：抽帧 -> Real-ESRGAN 超分 / RIFE 插帧 -> 分段编码 -> 合并。"""
     import shutil
     _begin('beautify', 1)
+    mlib.unload_ai(force=True)          # ESRGAN/RIFE 要用显卡
     dbc = mlib.db()
     exe = RIFE_EXE if engine == 'rife' else ESRGAN_EXE
     if not os.path.exists(exe):
@@ -5393,6 +5395,8 @@ class H(BaseHTTPRequestHandler):
                                (q.get('web') or '') in ('1', 'true', 'yes'),
                                (q.get('scan') or '') in ('1', 'true', 'yes'),
                                (q.get('ai') or '1') in ('1', 'true', 'yes'))
+            elif p == '/api/model/unload':
+                ok = mlib.unload_ai(force=True)
             elif p == '/api/vscan':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_vscan, lim, ids, lane='heavy')
@@ -5858,7 +5862,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="mode"><option value="auto">auto</option><option value="ai">ai</option>
       <option value="website">website</option></select>
     <span class="muted" title="每批送多少条给语义模型；0 = 全部">语义组</span><input id="semg" type="number" value="20" style="width:56px">
-    <span class="muted" title="每次请求给 AI 多少条；0 = 全部">AI组</span><input id="aig" type="number" value="5" style="width:52px">
+    <span class="muted" title="每次请求给 AI 多少条；0 = 全部">AI组</span><input id="aig" type="number" value="5" style="width:52px"><button id="a-unload-ai" title="立即释放常驻模型显存（下次使用重新加载）">释放模型</button>
     <label class="muted"><input type="checkbox" id="force"> force</label>
   </div>
   <div id="prog"><i></i></div>
@@ -6209,6 +6213,7 @@ async function fillRun(web){
   await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value
     +(ids?'&ids='+ids:'')+'&web='+(web?1:0)+'&scan='+scan+'&ai=1');}
 $('#a-fill').onclick=()=>fillRun(false);
+$('#a-unload-ai').onclick=async()=>{await post('/api/model/unload');alert(T('模型已释放'));};
 $('#a-fill-web').onclick=()=>fillRun(true);
 
 $('#md8-close').onclick=()=>$('#modal8').classList.remove('on');

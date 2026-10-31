@@ -101,6 +101,7 @@ AI_MODEL = 'qwen38-27b-uncen'
 # User chose 30m: keep the uncensored 27B resident between items so we don't pay
 # ~40s reload per call. Uses `unload_ai()` to release the card at the end of a run.
 AI_KEEP_ALIVE = '30m'
+KEEP_MODEL = (os.environ.get('MS_KEEP_MODEL', '1') or '1') != '0'  # 1=模型常驻，避免每次冷启动
 ROOT_DEFAULT = os.environ.get('MS_ROOT') or r'\\CeilingNAS\usbshare1\movie'
 VIDEO_EXT = COVER.VIDEO_EXT
 
@@ -3372,8 +3373,10 @@ def ai_tags_batch(items, model=None):
     return out
 
 
-def unload_ai(model=None):
+def unload_ai(model=None, force=False):
     """Release the local model's VRAM now instead of squatting on the GPU."""
+    if KEEP_MODEL and not force:
+        return True                     # 常驻：交给 keep_alive 超时释放
     model = model or ai_model()
     try:
         requests.post(OLLAMA + '/api/generate', timeout=30,
