@@ -2472,6 +2472,107 @@ def _job_proteus(ids=None, ad=False):
         _log('ERR ' + traceback.format_exc()[:1200]); _end('proteus 失败')
 
 
+def _job_convert(ids=None):
+    """格式转换：按「输出码率」重编码为 HEVC（分辨率不变），
+    替换原片并保留 .orig 回滚点。"""
+    _begin('convert', 1)
+    dbc = mlib.db()
+    try:
+        if not ids:
+            _log('! 格式转换必须先选中条目（不做全库）')
+            _end('convert 跳过'); return
+        _ensure_media(dbc)
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok = 0
+        for i, it in enumerate(its):
+            if _stop_req():
+                _log('! 已请求停止'); break
+            v = mlib.biggest_video(it['path'] or '')
+            if not v:
+                _log('[%d/%d] id=%s 没有视频' % (i + 1, len(its), it['id']))
+                _tick(i + 1); continue
+            vp = os.path.join(it['path'], v)
+            w, h, fps, kbps, dur = _vinfo(vp)
+            if not (w and h and dur):
+                _log('  %s 读不到媒体信息，跳过' % v[:50]); _tick(i + 1); continue
+            _old_sz = os.path.getsize(vp)
+            _log('[%d/%d] id=%s %s  %dx%d@%.0f  %.0fkbps  %.0f MB'
+                 % (i + 1, len(its), it['id'], v[:44], w, h, fps, kbps, _old_sz / 1048576.0))
+            loc = mlib.stage_local(vp, _log)
+            tmp = os.path.splitext(loc)[0] + '.conv.mp4'
+            base = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', loc,
+                    '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn'] + _gpu_enc(loc)
+            t0 = time.time()
+            rc, err = _run_prog(base + ['-c:a', 'copy', '-movflags', '+faststart', tmp],
+                                dur, _log, '转换', timeout=86400)
+            if rc != 0 or not os.path.exists(tmp):
+                _log('    音频直通不行，改 AAC 重试')
+                rc, err = _run_prog(base + ['-c:a', 'aac', '-b:a', '192k',
+                                            '-movflags', '+faststart', tmp],
+                                    dur, _log, '转换', timeout=86400)
+            if rc != 0 or not os.path.exists(tmp):
+                _log('    转换失败: %s' % ((err or b'')[-200:].decode('utf-8', 'replace')))
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                _tick(i + 1); continue
+            nd = repair.video_duration(tmp) or 0
+            _new_sz = os.path.getsize(tmp)
+            _log('    完成 %.1f 秒 / %.1f MB（%.1f 分钟） 体积为源的 %.0f%%'
+                 % (nd, _new_sz / 1048576.0, (time.time() - t0) / 60.0,
+                    _new_sz * 100.0 / max(1, _old_sz)))
+            bad = 0
+            for t in (1.0, max(1.0, nd - 10)):
+                try:
+                    rr = subprocess.run([mlib.FFMPEG, '-v', 'error', '-ss', '%.1f' % t,
+                                         '-i', tmp, '-t', '8', '-f', 'null', '-'],
+                                        capture_output=True, timeout=600)
+                    bad += len([x for x in (rr.stderr or b'').decode('utf-8', 'replace').splitlines()
+                                if x.strip()])
+                except Exception:
+                    bad += 1
+            if not nd or abs(nd - dur) > max(3.0, dur * 0.01) or bad > 5:
+                _log('    ! 校验失败（时长 %.1f/%.1f，尾端错误行 %d）' % (nd, dur, bad))
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+                _tick(i + 1); continue
+            try:
+                bk = _swap_in(loc, tmp)
+                _log('    本地成品 OK（回滚点 %s）' % os.path.basename(bk or ''))
+                if not mlib.commit_back(loc, vp, _log):
+                    _log('    ! 回拷失败，NAS 原片未动；成品留在 %s' % loc)
+                    _tick(i + 1); continue
+                if not _verify_out(vp, nd, _log):
+                    _log('    ! 回拷文件校验失败，源副本已保留在 %s.orig' % loc)
+                    _tick(i + 1); continue
+                mlib.stage_backup(loc + '.orig', _log)
+                mlib.drop_work(loc)
+            except Exception as e:
+                _log('    ! 替换失败: %s' % str(e)[:120])
+                _tick(i + 1); continue
+            nw, nh, nfps, nkbps, ndur = _vinfo(vp)
+            try:
+                dbc.execute('UPDATE media SET w=?, h=?, fps=?, vbr=?, size=?, dur=?, '
+                            'ts=? WHERE item_id=?',
+                            (nw, nh, nfps, int(nkbps * 1000), os.path.getsize(vp),
+                             ndur or dur, mlib.now(), it['id']))
+                dbc.execute('DELETE FROM health WHERE item_id=? AND file=?', (it['id'], v))
+                dbc.execute('DELETE FROM deepscan WHERE item_id=? AND file=?', (it['id'], v))
+                dbc.commit()
+            except Exception as e:
+                _log('    库更新失败: %s' % str(e)[:90])
+            ok += 1
+            _media_refresh(it['id'], _log)
+            _tick(i + 1)
+        _end('convert %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:1200]); _end('convert 失败')
+
+
 def _job_adtect(ids=None, mode='headtail', nested=False, force=False):
     """广告检测：30s 粗扫 + 精修 -> ads_file（逐文件）/ media（最大文件）。
 
@@ -5569,6 +5670,11 @@ class H(BaseHTTPRequestHandler):
                     return self._json({'ok': ok, 'engine': _eng})
                 ok = start_job(_job_proteus, ids,
                                (q.get('ad') or '') in ('1', 'true', 'yes'), lane='heavy')
+            elif p == '/api/convert':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                if not ids:
+                    return self._json({'ok': False, 'error': '先选中条目'}, 400)
+                ok = start_job(_job_convert, ids, lane='heavy')
             elif p == '/api/health':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 ok = start_job(_job_health, ids, (q.get('force') or '') in ('1', 'true', 'yes'),
@@ -5935,7 +6041,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
-  <span class="muted">修复码率</span><select id="cfg-encmode" title="重编码时的码率策略"><option value="crf">CRF</option><option value="kbps">固定 kbps</option><option value="scale">源码率×N</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数">
+  <span class="muted">输出码率</span><select id="cfg-encmode" title="重编码/格式转换时的输出码率策略"><option value="crf">CRF</option><option value="kbps">固定 kbps</option><option value="scale">源码率×N</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数">
   <span class="muted">最短广告</span><input id="cfg-admin" type="number" min="0" step="1" style="width:56px" title="短于这个秒数的广告段直接忽略（默认 10 秒）"> <span class="muted">秒</span>
   <button id="cfg-models" title="查看在用模型、下载开源模型">其他模型</button>
   <button id="cfg-save">保存设置</button>
@@ -6035,6 +6141,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="beaut-engine" style="min-width:104px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">Real-ESRGAN</option><option value="rife">RIFE 插帧</option></select>
     <select id="beaut-scale" style="min-width:56px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
     <button id="a-proteus" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE；会替换原片并保留回滚点">画质修复</button>
+    <button id="a-convert" title="格式转换：按「输出码率」重编码为 HEVC（分辨率不变），替换原片并保留回滚点">格式转换</button>
   </div>
   </div>
   <table id="tbl"><thead><tr>
@@ -6584,6 +6691,11 @@ $('#a-proteus').onclick=async()=>{
   if(!confirm(T(_tip+'，且会【替换原片】。继续？')))return;
   await post('/api/proteus?'+(ids?'ids='+ids+'&':'')+'ad='+($('#downad').checked?1:0)
     +'&engine='+_eng+'&scale='+$('#beaut-scale').value);};
+$('#a-convert').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size)return alert(T('先选条目'));
+  if(!confirm(T('按「输出码率」转成 HEVC（分辨率不变），会【替换原片】并保留 .orig 回滚点。继续？')))return;
+  await post('/api/convert'+(ids?'?ids='+ids:''));};
 $('#a-media').onclick=async()=>{
   const ids=[...SEL].join(',');
   const fq=((document.getElementById('force')||{}).checked)?((ids?'&':'?')+'force=1'):'';
