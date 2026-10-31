@@ -4576,7 +4576,12 @@ def _keyframe_times(vpath, start=0.0, span=30.0):
         return []
 
 
-def _try_copy_cut(vpath, t_in, t_out, tmp, log=None, max_shift=5.0):
+# 头/尾吸附容差：找不到 5s 内的关键帧时，宁可多切掉几秒正片（片头片尾本来
+# 就是广告区），也不整片重编码（几十分钟 GPU）。MS_AD_SNAP 可调。
+AD_SNAP_MAX = float(os.environ.get('MS_AD_SNAP', '20'))
+
+
+def _try_copy_cut(vpath, t_in, t_out, tmp, log=None, max_shift=AD_SNAP_MAX):
     """头/尾广告：只重封装，不重编码（画质零损失、秒级完成）。
 
     起点必须落在关键帧：优先取「>= t_in」的最近关键帧（宁可少留一点正片，
@@ -4603,7 +4608,11 @@ def _try_copy_cut(vpath, t_in, t_out, tmp, log=None, max_shift=5.0):
         k = min(after)
         if k - t_in <= max_shift:
             start = k
-            _log('    起点取关键帧 %.2fs（正片少 %.2fs）' % (k, k - t_in))
+            if k - t_in > 5.0:
+                _log('    起点取关键帧 %.2fs（正片少 %.2fs，超 5s 但仍比重编码划算）'
+                     % (k, k - t_in))
+            else:
+                _log('    起点取关键帧 %.2fs（正片少 %.2fs）' % (k, k - t_in))
     if start is None:
         before = [k for k in kfs if k <= t_in + 0.02]
         if before:
@@ -4753,7 +4762,7 @@ def drop_work(path, log=None):
         pass
 
 
-def _try_copy_cut_multi(vpath, keep, tmp, log=None, max_shift=5.0):
+def _try_copy_cut_multi(vpath, keep, tmp, log=None, max_shift=AD_SNAP_MAX):
     """多段保留区间：每段零重编码精裁 -> concat -c copy（全程不重编码）。
 
     每个拼接点必须落在关键帧，所以每段末端可能少 0~max_shift 秒。
@@ -5335,9 +5344,20 @@ def cut_ads_index(vpath, segs, log=None):
         nd = video_duration(vpath)
         if not nd or abs(nd - (b0 - a0)) > max(1.5, (b0 - a0) * 0.005):
             raise RuntimeError('时长校验失败 %.1f != %.1f' % (nd or 0, b0 - a0))
-        for t in (0.5, max(0.5, nd - 1.5)):
-            if not frame_at(vpath, t, width=320):
-                raise RuntimeError('抽帧失败 t=%.1f' % t)
+        if not frame_at(vpath, 0.5, width=320):
+            raise RuntimeError('抽帧失败 t=0.5')
+        # 尾部抽帧只为验证「能解码」；末 1.5s 往往落在最后一个样本之外，
+        # 抽不出来不代表片子坏了 —— 逐级往前退，绝不因此整片重编码。
+        _ok = False
+        for _t in (max(0.5, nd - 1.5), max(0.5, nd - 3.0),
+                   max(0.5, nd - 6.0), max(0.5, nd * 0.9)):
+            if frame_at(vpath, _t, width=320):
+                _ok = True
+                if _t < nd - 1.5:
+                    _log('    尾部抽帧退到 %.1fs 才成功（末尾属正常截断）' % _t)
+                break
+        if not _ok:
+            raise RuntimeError('尾部抽帧失败（退到 90%% 位置仍失败）')
         return {'ok': True, 'new_dur': nd, 'old_dur': dur, 'old_size': total,
                 'new_size': os.path.getsize(vpath), 'mode': 'index'}
     except Exception as e:
