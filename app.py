@@ -5183,72 +5183,108 @@ def _esrgan_up(src, dst, scale=2):
         shutil.rmtree(td, ignore_errors=True)
 
 
-def _poster_ai_frame(vp):
-    """抽帧 + 打分，选一张有女性且清晰的。
+def _poster_ai_frame(vp, n=48, width=320):
+    """两段式选帧：先用小图批量扫脸定位时间点，再取该点大图精确定位。
 
-    优先横板（Jellyfin 缩略图是横向槽位），其次正方，最后竖版；
-    同等朝向下再比人脸占比和清晰度。
+    小图扫得快、覆盖全片；大图只取一帧，用来拿到准确的脸框和最终像素。
+    排序：整体身体 > 脸/特写 > 无脸；同档宽图优先，再比清晰度。
     """
     import tempfile
     import numpy as np
     from PIL import Image
     import cover as _cv
+
     det = _cv.face_detector()
     try:
         _dur = mlib.video_duration(vp)
     except Exception:
         _dur = 0.0
-    _ms = _cv.MIN_START if (_dur and _dur / 3.0 > _cv.MIN_START) else 0.0
-    cands = []
-    for n in (12, 24, 36):
-        tmpf = os.path.join(tempfile.gettempdir(), 'pai_%d.jpg' % n)
-        try:
-            r = _cv.pick(vp, tmpf, n=n, width=0, verbose=False, rand=True,
-                         min_start=_ms)
-        except Exception:
-            r = None
-        if not r:
-            continue
-        try:
-            im = Image.open(tmpf).convert('RGB')
-        except Exception:
-            continue
-        arr = np.array(im)[:, :, ::-1]
-        h, w = arr.shape[:2]
-        bbox, fa = None, 0
-        if det is not None:
-            try:
-                for (x, y, fw, fh) in det(arr):
-                    a = int(fw) * int(fh)
-                    if a > fa:
-                        fa, bbox = a, (int(x), int(y), int(fw), int(fh))
-            except Exception:
-                pass
-        sc = _cv.score(arr, det)
-        ratio = fa / float(w * h) if bbox else 0.0
-        cands.append((ratio, sc.get('sharp') or 0, im, bbox, w, h))
-        if bbox and ratio >= 0.004 and (sc.get('sharp') or 0) >= 60 and w >= h:
-            break
-
-    if not cands:
+    if not _dur or _dur < 20:
+        return (None, None)
+    _a = max(_cv.MIN_START, _dur * 0.05)
+    _b = min(_dur * 0.90, max(_a, _dur - _cv.TAIL))
+    if _b <= _a:
         return (None, None)
 
     def orank(w, h):
-        a = w / float(h) if h else 1.0
-        return 0 if a >= 1.25 else (1 if a >= 0.9 else 2)
+        r = w / float(h) if h else 1.0
+        return 0 if r >= 1.25 else (1 if r >= 0.9 else 2)
 
     def bodyrank(ratio):
-        # 脸占比小 = 景别远 = 能看到整体身体；脸占比大 = 大特写
-        if 0.0004 <= ratio <= 0.012:
+        if 0.0002 <= ratio <= 0.012:
             return 0          # 整体身体
         if ratio > 0.012:
             return 1          # 脸/局部特写
-        return 2              # 没检测到脸
+        return 2              # 没脸
 
-    cands.sort(key=lambda c: (bodyrank(c[0]), orank(c[4], c[5]),
-                              -c[1], -c[0]))
-    best = cands[0]
-    return best[2], best[3]
+    def scan(times, w, use_det=True):
+        try:
+            imgs = _cv.grab_batch(vp, times, w)
+        except Exception:
+            imgs = []
+        rows = []
+        for i, img in enumerate(imgs):
+            t = times[min(i, len(times) - 1)]
+            h, ww = img.shape[:2]
+            bbox, fa = None, 0
+            _d = det if use_det else None
+            if _d is not None:
+                try:
+                    for _f in (_d(img) or []):
+                        _f = list(_f)
+                        if len(_f) < 4:
+                            continue
+                        x, y, fw, fh = _f[0], _f[1], _f[2], _f[3]
+                        a2 = int(fw) * int(fh)
+                        if a2 > fa:
+                            fa, bbox = a2, (int(x), int(y), int(fw), int(fh))
+                except Exception:
+                    pass
+            sc = _cv.score(img, det)
+            rows.append((t, fa / float(ww * h) if bbox else 0.0,
+                         sc.get('sharp') or 0, ww, h))
+        return rows
+
+    times = [_a + (_b - _a) * i / float(n - 1) for i in range(n)]
+    rows = scan(times, width)
+    if not rows:
+        return (None, None)
+
+    rows.sort(key=lambda r: (bodyrank(r[1]), orank(r[3], r[4]), -r[2], -r[1]))
+    # 前 5 个候选逐个试大图，直到拿到脸框
+    picked = None
+    for t, ratio, _sh, _w, _h in rows[:5]:
+        img = None
+        try:
+            img = _cv.grab(vp, t, 0)
+        except Exception:
+            img = None
+        if img is None:
+            continue
+        hh, ww = img.shape[:2]
+        bbox, fa = None, 0
+        if det is not None:
+            try:
+                for _f in (det(img) or []):
+                    _f = list(_f)
+                    if len(_f) < 4:
+                        continue
+                    x, y, fw, fh = _f[0], _f[1], _f[2], _f[3]
+                    a2 = int(fw) * int(fh)
+                    if a2 > fa:
+                        fa, bbox = a2, (int(x), int(y), int(fw), int(fh))
+            except Exception:
+                pass
+        if picked is None:
+            picked = (img, bbox, fa / float(ww * hh) if bbox else 0.0)
+        if bbox and fa > 0:
+            picked = (img, bbox, fa / float(ww * hh))
+            break
+
+    if picked is None:
+        return (None, None)
+    img, bbox, _r = picked
+    return (Image.fromarray(img[:, :, ::-1]), bbox)
 
 
 def _focus_crop(im, bbox):
@@ -5258,8 +5294,8 @@ def _focus_crop(im, bbox):
     w, h = im.size
     x, y, fw, fh = bbox
     cx, cy = x + fw / 2.0, y + fh / 2.0
-    cw = min(w, max(fw * 4.0, w * 0.35))
-    ch = min(h, max(fh * 4.0, h * 0.45))
+    cw = min(w, max(fw * 5.0, w * 0.60))
+    ch = min(h, max(fh * 5.0, h * 0.60))
     ar = w / float(h)
     if cw / ch > ar:
         cw = ch * ar
@@ -5611,7 +5647,7 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
         im = _crop_bars(im)
         if comp:
             im = _focus_crop(im, bbox)
-        im.save(newp, 'JPEG', quality=92)
+        _poster_save(im, newp)
         made = newp
         note = ('AI选图+补完' if comp else 'AI选图') + ('（人脸裁切）' if (comp and bbox) else '')
         if enh:
@@ -5637,7 +5673,7 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
             from PIL import Image as _Im
             im = _Im.open(dst).convert('RGB')
             im = _focus_crop(_crop_bars(im), None)
-            im.save(newp, 'JPEG', quality=92)
+            _poster_save(im, newp)
             made, note = newp, 'AI补完'
         except Exception as e:
             return '补完失败: %s' % str(e)[:60]
