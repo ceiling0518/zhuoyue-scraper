@@ -851,33 +851,19 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                     (_title or '')[:26], (_actors or '-')[:24],
                     (_studio or '-')[:16], (_year or '-')))
             _tick(wi)
-            if ai and batch > 0 and wi % batch == 0:
-                _grp = weak[wi - batch:wi]
-                _todo = []
-                for _g in _grp:
-                    _c = dbc.execute('SELECT tags, plot FROM items WHERE id=?',
-                                     (_g['id'],)).fetchone()
-                    if _c and (_c['plot'] or '').strip() and \
-                            not (_c['tags'] or '').strip('[] ,"'):
-                        _todo.append(dict(_g, plot=_c['plot'], tags=_c['tags']))
-                if _todo:
-                    _ai_fill(_todo)
 
     if not ai:                       # Web 补全：只走网站/看片，不跑模型补标签
         return ok, len(weak)
-    if ai and (web or scan):
-        _left = weak[(len(weak) // batch) * batch:] if batch > 0 else []
-        _todo = []
-        for _g in _left:
-            _c = dbc.execute('SELECT tags, plot FROM items WHERE id=?',
-                             (_g['id'],)).fetchone()
-            if _c and (_c['plot'] or '').strip() and \
-                    not (_c['tags'] or '').strip('[] ,"'):
-                _todo.append(dict(_g, plot=_c['plot'], tags=_c['tags']))
-        if _todo:
-            _ai_fill(_todo)
-    if ai and rows:
-        _ai_fill(rows)
+    # 先把所有条目集中搜索完，再按 AI 组统一跑标签分析
+    _todo = []
+    for _g in list(weak) + list(rows):
+        _c = dbc.execute('SELECT tags, plot FROM items WHERE id=?',
+                         (_g['id'],)).fetchone()
+        if _c and (_c['plot'] or '').strip() and \
+                not (_c['tags'] or '').strip('[] ,"'):
+            _todo.append(dict(_g, plot=_c['plot'], tags=_c['tags']))
+    if _todo:
+        _ai_fill(_todo)
     return ok, len(rows) + len(weak)
 
 
