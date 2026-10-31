@@ -2510,9 +2510,7 @@ def _file_keep_ranges(dbc, iid, file_, dur):
                 ks = json.loads(r['segs'] or '[]')
             except Exception:
                 ks = []
-            ks = _norm_ranges(ks, dur)
-            if ks:
-                return [[a, b] for a, b in ks]
+            return [[a, b] for a, b in _norm_ranges(ks, dur)]   # 空 = 用户全删了
     except Exception:
         pass
     cuts = []
@@ -2560,6 +2558,66 @@ def keep_rows(iid):
         dbc.close()
 
 
+def _reconcile_marks(dbc, iid, kept):
+    """按用户保留的区间清理广告/无效段：被切掉的部分不再算广告。
+    kept: {file: [[a,b],...]}，只处理出现在里面的文件；空列表 = 全切掉。"""
+    def _inter(a, b, rs):
+        out = []
+        for x, y in (rs or []):
+            lo, hi = max(a, x), min(b, y)
+            if hi - lo > 0.15:
+                out.append([round(lo, 2), round(hi, 2)])
+        return out
+
+    ts = mlib.now()
+    mrow = None
+    try:
+        mrow = dbc.execute('SELECT file FROM media WHERE item_id=?', (iid,)).fetchone()
+    except Exception:
+        mrow = None
+    mfile = (mrow['file'] if mrow else '') or ''
+
+    try:
+        arows = dbc.execute('SELECT file,ads FROM ads_file WHERE item_id=?', (iid,)).fetchall()
+    except Exception:
+        arows = []
+    for r in arows:
+        f = r['file']
+        if f not in kept:
+            continue
+        try:
+            old = json.loads(r['ads'] or '[]')
+        except Exception:
+            old = []
+        new = []
+        for a, b in old:
+            new += _inter(a, b, kept[f])
+        dbc.execute('UPDATE ads_file SET ads=?, ts=? WHERE item_id=? AND file=?',
+                    (json.dumps(new), ts, iid, f))
+        if f == mfile:
+            dbc.execute('UPDATE media SET ads=?, ads_ts=? WHERE item_id=?',
+                        (json.dumps(new), ts, iid))
+
+    try:
+        srows = dbc.execute("SELECT file,kind,segs FROM segs_file WHERE item_id=? "
+                            "AND kind IN ('ad','invalid')", (iid,)).fetchall()
+    except Exception:
+        srows = []
+    for r in srows:
+        f = r['file']
+        if f not in kept:
+            continue
+        try:
+            old = json.loads(r['segs'] or '[]')
+        except Exception:
+            old = []
+        new = []
+        for a, b in old:
+            new += _inter(a, b, kept[f])
+        dbc.execute('UPDATE segs_file SET segs=?, ts=? WHERE item_id=? AND file=? AND kind=?',
+                    (json.dumps(new), ts, iid, f, r['kind']))
+
+
 def keep_save(payload):
     iid = int(payload.get('item') or 0)
     rows = payload.get('rows') or []
@@ -2567,16 +2625,19 @@ def keep_save(payload):
     try:
         _ensure_keep(dbc)
         dbc.execute('DELETE FROM keep_file WHERE item_id=?', (iid,))
-        k = 0
+        kept, k = {}, 0
         for r in rows:
             f = (r.get('file') or '').strip()
+            if not f:
+                continue
             segs = _norm_ranges(r.get('segs') or [], 0)
             mg = 1 if r.get('merge') else 0
-            if f and (segs or mg):
-                dbc.execute('INSERT INTO keep_file(item_id,file,segs,ts,merge) '
-                            'VALUES(?,?,?,?,?)',
-                            (iid, f, json.dumps([[a, b] for a, b in segs]), mlib.now(), mg))
-                k += 1
+            dbc.execute('INSERT INTO keep_file(item_id,file,segs,ts,merge) '
+                        'VALUES(?,?,?,?,?)',
+                        (iid, f, json.dumps([[a, b] for a, b in segs]), mlib.now(), mg))
+            kept[f] = [[a, b] for a, b in segs]
+            k += 1
+        _reconcile_marks(dbc, iid, kept)
         dbc.commit()
         return {'ok': True, 'files': k}
     finally:
@@ -6296,6 +6357,9 @@ $('#seg-save').onclick=async()=>{
   merges.forEach(function(f){if(!groups[f])groups[f]=[[0,segDurOf(f)||0]];});
   const rows=Object.keys(groups).map(function(f){
     return {file:f,segs:groups[f],merge:(merges.indexOf(f)>=0?1:0)};});
+  (window.SEGFILES||[]).forEach(function(f){
+    if(!Object.prototype.hasOwnProperty.call(groups,f))
+      rows.push({file:f,segs:[],merge:0});});   // 清空的文件也要保存
   const r=await fetch('/api/keep/save',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({item:+iid,rows:rows})});
   const j=await r.json().catch(function(){return {};});
