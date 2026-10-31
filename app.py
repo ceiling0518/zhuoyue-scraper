@@ -578,14 +578,14 @@ def _nested_mark(dbc, r):
     return False
 
 
-def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
+def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, force=False):
     """AI 补全：给【有简介但没标签】的条目按**简介**补 tag（**不看文件名**）。"""
     dbc = mlib.db()
     limit = int(limit or 0)
     ai_group = int(ai_group or 0)
     if web or scan:
         # 勾了来源：按内容判断是否真的需要补全（tags 可能是 '[]'，也可能是垃圾标题）
-        q = ("SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality,sem_kind "
+        q = ("SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality,sem_kind,source "
              "FROM items WHERE present=1 AND COALESCE(kind,'')<>'nested' ORDER BY id")
         _all = [dict(r) for r in dbc.execute(q).fetchall()]
 
@@ -622,7 +622,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                     _chunk = _ids[_i:_i + 400]
                     _ph = ','.join('?' * len(_chunk))
                     rows += [dict(r) for r in dbc.execute(
-                        "SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality,sem_kind "
+                        "SELECT id,name,title,plot,tags,code,sem_code,path,actors,studio,year,quality,sem_kind,source "
                         "FROM items WHERE id IN (%s) ORDER BY id" % _ph,
                         tuple(_chunk)).fetchall()]
             except Exception as _e:
@@ -636,6 +636,17 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             rows = [x for x in _all if _need(x)]
             _log('  需要补全 %d 条（缺 标签/简介/标题%s）'
                  % (len(rows), '/作者/年份' if not ai else ''))
+        # 硬过滤：AI 来源 / 已删除 的条目不许跑 Web 补全（force 可强制）
+        if (web or scan) and not force:
+            _bf = len(rows)
+            rows = [x for x in rows
+                    if (x.get('source') or '') != 'AI'
+                    and (x.get('quality') or '') != '删除']
+            if _bf != len(rows):
+                _log('  跳过 %d 条（AI 来源 / 已删除；要强制请勾「强制」或传 force=1）'
+                     % (_bf - len(rows)))
+                if not rows:
+                    return 0, 0
         if web and not ai:
             _before = len(rows)
             rows = [x for x in rows
@@ -879,7 +890,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
     return ok, len(rows) + len(weak)
 
 
-def _job_fill(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
+def _job_fill(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, force=False):
     _begin('fill' if ai else 'web 补全')
     _mode = ('Web+AI 补全' if (web and ai) else ('Web 补全' if web else 'AI 补全'))
     _log('  模式：%s | 来源：%s | 选中：%d 条'
@@ -887,7 +898,7 @@ def _job_fill(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             '+'.join(x for x, on in (('web', web), ('看片', scan)) if on) or '无',
             len(ids or [])))
     try:
-        ok, tot = _fill_pass(limit, ai_group, ids, web, scan, ai)
+        ok, tot = _fill_pass(limit, ai_group, ids, web, scan, ai, force)
         if ai:
             mlib.unload_ai()
         _end(('fill' if ai else 'web 补全') + ' %d/%d' % (ok, tot))
@@ -1037,7 +1048,7 @@ def _job_queue(batches=None):
                     ok += 1
                     _job_fill(0, p.get('ai_group') or None, ids,
                               bool(p.get('web')), bool(p.get('scan')),
-                              bool(p.get('ai', 1)))
+                              bool(p.get('ai', 1)), bool(p.get('force')))
                 elif task == 'down':
                     _job_down(ids, p.get('target') or 'auto', bool(p.get('fix')),
                               bool(p.get('ad')), int(p.get('fps') or 0))
@@ -5392,7 +5403,8 @@ class H(BaseHTTPRequestHandler):
                 ok = start_job(_job_fill, lim, int(q.get('ai_group') or 0), ids,
                                (q.get('web') or '') in ('1', 'true', 'yes'),
                                (q.get('scan') or '') in ('1', 'true', 'yes'),
-                               (q.get('ai') or '1') in ('1', 'true', 'yes'))
+                               (q.get('ai') or '1') in ('1', 'true', 'yes'),
+                               (q.get('force') or '') in ('1', 'true', 'yes'))
             elif p == '/api/model/unload':
                 ok = mlib.unload_ai(force=True)
             elif p == '/api/vscan':
@@ -5887,6 +5899,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
     <label class="muted" title="勾选后：AI 补全 / Web 补全 都会先抽帧看片（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
     <button id="a-fill" title="按简介补标签；勾了看片则先看片补信息">AI 补全</button>
+    <label class="muted" title="强制：连 AI 来源 / 已删除 的条目也跑（默认跳过）"><input type="checkbox" id="fill-force"> 强制</label>
     <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button>
     <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
     <label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
@@ -6205,14 +6218,15 @@ function batchRun(mode){return async()=>{if(!SEL.size)return alert(T('先选条�
 $('#a-web').onclick=batchRun('website');
 $('#a-ai').onclick=batchRun('ai');
 async function fillRun(web){
-  const ids=[...SEL].join(','), scan=$('#fill-scan').checked?1:0;
+  const ids=[...SEL].join(','), scan=$('#fill-scan').checked?1:0,
+        force=$('#fill-force').checked?1:0;
   const tip=web?T('未选中条目 —— 先联网搜索信息，再按 AI 组跑标签分析（勾了看片则叠加看片），继续？')
                :T('未选中条目 —— 将对【全部需要补全】的条目补标签（勾了看片则先看片），继续？');
   if(!SEL.size&&!confirm(tip))return;
   if($('#qadd-chk').checked&&SEL.size){await qAdd('fill',[...SEL],
-    {web:web,scan:!!scan,ai:1,ai_group:+$('#aig').value});return;}
+    {web:web,scan:!!scan,ai:1,ai_group:+$('#aig').value,force:!!force});return;}
   await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value
-    +(ids?'&ids='+ids:'')+'&web='+(web?1:0)+'&scan='+scan+'&ai=1');}
+    +(ids?'&ids='+ids:'')+'&web='+(web?1:0)+'&scan='+scan+'&ai=1'+'&force='+force);}
 $('#a-fill').onclick=()=>fillRun(false);
 $('#a-unload-ai').onclick=async()=>{await post('/api/model/unload');alert(T('模型已释放'));};
 $('#a-fill-web').onclick=()=>fillRun(true);
