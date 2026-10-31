@@ -2685,7 +2685,7 @@ def backfill_demo(dbc=None, log=None):
 
 
 def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
-                subs=False, demo=False, bad=False):
+                subs=False, demo=False, bad=False, ads=True):
     """广告检测：30s 粗扫 + 精修 -> ads_file（逐文件）/ media（最大文件）。
 
     多视频条目：先只测最大的那个。它没有广告就跳过同组其余
@@ -2710,7 +2710,7 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
             vids = sorted(vids, key=lambda p: os.path.getsize(p), reverse=True)
             fb = os.path.basename(vids[0])
             _done = 0
-            if not force:
+            if ads and not force:
                 _done = dbc.execute('SELECT COUNT(*) c FROM ads_file WHERE item_id=? AND file=?',
                                     (it['id'], fb)).fetchone()['c']
             _q0 = dbc.execute("SELECT COALESCE(subs_det,'') ss, COALESCE(demo,'') dd "
@@ -2720,17 +2720,17 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
             _need_subs = bool(subs and (force or not _sd_now))
             _need_demo = bool(demo and (force or not _dm_now))
             _need_content = bool(_need_subs or _need_demo or bad)
-            _content_only = bool(_done and _need_content)
-            if _done and not _content_only:
-                _log('[%d/%d] id=%s 已检测过（%s），跳过（勾 force 可重测）'
+            _do_ads = bool(ads and (force or not _done))
+            if not _do_ads and not _need_content:
+                _log('[%d/%d] id=%s 已检测过（%s），跳过（勾对应项可补测）'
                      % (i + 1, len(its), it['id'], fb[:32]))
                 ok += 1
                 _tick(i + 1)
                 continue
-            if _content_only:
-                _log('[%d/%d] id=%s 广告已检测过，跳过广告，只做内容检测（%s）'
+            if not _do_ads:
+                _log('[%d/%d] id=%s 只做内容检测（%s）'
                      % (i + 1, len(its), it['id'], fb[:32]))
-            else:
+            if _do_ads:
                 try:
                     dur = mlib.video_duration(vids[0])
                     _log('[%d/%d] id=%s 检测 %s (%.0fs，共 %d 个视频，%s)'
@@ -2781,8 +2781,27 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
                             _dm = '好'          # 语义判为无码：默认去码优秀
                             _log('    去码检测：无码（语义：uncensored）')
                         else:
-                            _dm = mlib.detect_mosaic(_vp0, _dur0,
-                                                     log=lambda m: _log(m)) if _vp0 else ''
+                            _dms = []
+                            for _vi in range(min(3, len(vids))):
+                                if _stop_req():
+                                    break
+                                try:
+                                    _dv = _dur0 if _vi == 0 else mlib.video_duration(vids[_vi])
+                                    _x = mlib.detect_mosaic(vids[_vi], _dv,
+                                                            log=lambda m: _log('      ' + m))
+                                except Exception:
+                                    _x = ''
+                                _dms.append(_x)
+                                if _x == '有':
+                                    break
+                            if '有' in _dms:
+                                _dm = '有'
+                            elif _dms and all(x == '好' for x in _dms):
+                                _dm = '好'
+                            elif any(x == '一般' for x in _dms):
+                                _dm = '一般'
+                            else:
+                                _dm = (_dms[0] if _dms else '')
                             if not _dm:
                                 _dm = _demo_by_code(_code0)
                             _log('    去码检测：%s（%s）'
@@ -5790,6 +5809,7 @@ class H(BaseHTTPRequestHandler):
                 ok = start_job(_job_adtect, ids, (q.get('mode') or 'headtail'),
                                False, _tr('force'),
                                _tr('subs'), _tr('demo'), _tr('bad'),
+                               _tr('ads') if 'ads' in q else True,
                                lane='heavy')
             elif p == '/api/vdetect':
                 _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
@@ -6307,7 +6327,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
      <select id="admode" style="min-width:86px" title="头尾：只扫开头/结尾各 4 分钟（能只重封装，秒级）；全片：30 秒全网扫（可能命中中插广告）"><option value="headtail">头尾</option><option value="full">全片</option></select>
-    <button id="a-adtect" title="广告 + 内容检测：抽帧判广告（默认只查头尾），可勾选字幕 / 去码 / 无效段一起检">广告和内容检测</button><label class="muted" title="同时检测字幕：外挂 .srt/.ass 或已烧录"><input type="checkbox" id="chk-subdet" checked> 字幕</label><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码</label>
+    <button id="a-subonly" title="只检测字幕：外挂字幕或烧录抽帧（很快）">字幕检测</button><button id="a-adtect" title="内容检测：字幕 + 去码（勾无效段才查）；勾「广告」才顺带查广告">字幕和内容检测</button><label class="muted" title="顺带检测头尾广告（较慢；不勾只做字幕/去码）"><input type="checkbox" id="chk-ads"> 广告</label><label class="muted" title="同时检测字幕：外挂 .srt/.ass 或已烧录"><input type="checkbox" id="chk-subdet" checked> 字幕</label><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码</label>
     <label class="muted" title="广告和内容检测时一并检无效段（无女性画面），跃慢"><input type="checkbox" id="chk-badseg"> 无效段</label>
     <button id="a-segs" title="自定义编辑：自己填要保留的区间；可改起止、加段、删段">自定义编辑</button>
      <button id="a-addel" title="按已检出的头/尾广告切掉开头和结尾；原文件留 .orig 回滚点">头尾删除</button>
@@ -6862,12 +6882,21 @@ $('#a-subs').onclick=async()=>{
     +'&engine='+$('#subs-engine').value);};
 $('#a-adtect').onclick=async()=>{
   const ids=[...SEL].join(',');
-  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做广告检测（逐条抽帧调视觉模型，很慢），继续？')))return;
+  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做内容检测，继续？')))return;
     const _o={mode:$('#admode').value,subs:$('#chk-subdet').checked?1:0,
-      demo:$('#chk-demodet').checked?1:0,bad:$('#chk-badseg').checked?1:0};
+      demo:$('#chk-demodet').checked?1:0,bad:$('#chk-badseg').checked?1:0,
+      ads:$('#chk-ads').checked?1:0};
     if($('#qadd-chk').checked&&SEL.size){await qAdd('adtect',[...SEL],_o);return;}
     await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+$('#admode').value
-      +'&force='+($('#force').checked?1:0)+'&subs='+_o.subs+'&demo='+_o.demo+'&bad='+_o.bad);};
+      +'&force='+($('#force').checked?1:0)+'&subs='+_o.subs+'&demo='+_o.demo
+      +'&bad='+_o.bad+'&ads='+_o.ads);};
+$('#a-subonly').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size&&!confirm(T('未选中条目 —— 将对【全部】条目做字幕检测，继续？')))return;
+    const _o={mode:$('#admode').value,subs:1,demo:0,bad:0,ads:0};
+    if($('#qadd-chk').checked&&SEL.size){await qAdd('adtect',[...SEL],_o);return;}
+    await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+$('#admode').value
+      +'&force='+($('#force').checked?1:0)+'&subs=1&demo=0&bad=0&ads=0');};
 $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));

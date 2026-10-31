@@ -4519,7 +4519,7 @@ def detect_mosaic(vpath, dur=None, model=None, log=None, n=16):
     return '一般'
 
 
-def detect_subs_burn(vpath, dur=None, model=None, log=None, n=30):
+def detect_subs_burn(vpath, dur=None, model=None, log=None, n=12):
     """抽帧判断是否有烧录字幕。"""
     dur = dur or video_duration(vpath)
     if not dur or dur < 20:
