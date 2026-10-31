@@ -6155,13 +6155,13 @@ $('#a-web').onclick=batchRun('website');
 $('#a-ai').onclick=batchRun('ai');
 async function fillRun(web){
   const ids=[...SEL].join(','), scan=$('#fill-scan').checked?1:0;
-  const tip=web?T('未选中条目 —— 将对【全部信息不足】的条目联网补全（勾了看片则叠加看片），继续？')
+  const tip=web?T('未选中条目 —— 先联网搜索信息，再按 AI 组跑标签分析（勾了看片则叠加看片），继续？')
                :T('未选中条目 —— 将对【全部需要补全】的条目补标签（勾了看片则先看片），继续？');
   if(!SEL.size&&!confirm(tip))return;
   if($('#qadd-chk').checked&&SEL.size){await qAdd('fill',[...SEL],
-    {web:web,scan:!!scan,ai:(web?0:1),ai_group:+$('#aig').value});return;}
+    {web:web,scan:!!scan,ai:1,ai_group:+$('#aig').value});return;}
   await post('/api/fill?limit='+$('#limit').value+'&ai_group='+$('#aig').value
-    +(ids?'&ids='+ids:'')+'&web='+(web?1:0)+'&scan='+scan+'&ai='+(web?0:1));}
+    +(ids?'&ids='+ids:'')+'&web='+(web?1:0)+'&scan='+scan+'&ai=1');}
 $('#a-fill').onclick=()=>fillRun(false);
 $('#a-fill-web').onclick=()=>fillRun(true);
 
