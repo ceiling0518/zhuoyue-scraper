@@ -5611,7 +5611,7 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False):
         im = _focus_crop(_crop_bars(im), bbox)
         im.save(newp, 'JPEG', quality=92)
         made = newp
-        note = 'AI裁图' + ('+裁剪' if bbox else '')
+        note = 'AI补完' + ('+裁剪' if bbox else '')
         if enh:
             up = os.path.join(p, 'poster.up.png')
             if _esrgan_up(newp, up, 2):
@@ -6834,7 +6834,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     </span>
     <span class="zone"><span class="zlab">维护</span>
       <button id="a-thumbs" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">刷新缩略图</button>
-      <label class="muted" title="AI 自动裁图：优先整体身体，其次脸部，再局部体态；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI裁图</label>
+      <label class="muted" title="AI 补完：由 AI 判定是裁切还是补全，优先整体身体，其次脸部，再局部体态；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI补完</label>
       <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
       <button id="a-coverdel">删除封面图</button>
       <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
