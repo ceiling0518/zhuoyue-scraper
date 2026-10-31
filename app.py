@@ -787,10 +787,13 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
                 if not tags:
                     one = mlib.ai_tags_batch([r])
                     tags = one[0] if one else None
-                if tags and not res:
-                    tags = mlib.translate_tags(tags)
-                    _old = [x.strip() for x in (r.get('tags') or '').strip('[]').split(',')
-                            if x.strip()]
+                if tags:
+                    if not res:
+                        tags = mlib.translate_tags(tags)
+                    # force：整段重生成（替换旧标签），否则合并
+                    _old = ([] if force else
+                            [x.strip() for x in (r.get('tags') or '').strip('[]').split(',')
+                             if x.strip()])
                     _seen = set(_old)
                     for _t in tags:
                         if _t not in _seen:
@@ -974,6 +977,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
     # 先把所有条目集中搜索完，再按 AI 组统一跑标签分析
     # web/看片模式下：只要有简介就跑 AI（web 已补出标签也照样分析，标签合并）
     _todo = []
+    _skip_nop, _skip_has = [], []
     for _g in list(weak) + list(rows):
         _c = dbc.execute('SELECT tags, plot FROM items WHERE id=?',
                          (_g['id'],)).fetchone()
@@ -981,9 +985,17 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
             continue
         _pl = (_c['plot'] or '').strip()
         if not _pl:
+            _skip_nop.append(_g['id'])
             continue
-        if (web or scan) or not (_c['tags'] or '').strip('[] ,"'):
+        if (web or scan) or force or not (_c['tags'] or '').strip('[] ,"'):
             _todo.append(dict(_g, plot=_pl, tags=_c['tags']))
+        else:
+            _skip_has.append(_g['id'])
+    if _skip_nop:
+        _log('  跳过 %d 条（没有简介，AI 无从判断）: %s'
+             % (len(_skip_nop), ','.join(str(x) for x in _skip_nop[:12])))
+    if _skip_has:
+        _log('  跳过 %d 条（已有标签，勾「强制」可重跑）' % len(_skip_has))
     if _todo:
         _ai_fill(_todo)
     return ok, len(rows) + len(weak)
