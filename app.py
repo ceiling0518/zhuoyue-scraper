@@ -6096,7 +6096,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <option value="website">website</option></select>
     <span class="muted" title="每批送多少条给语义模型；0 = 全部">语义组</span><input id="semg" type="number" value="20" style="width:56px">
     <span class="muted" title="每次请求给 AI 多少条；0 = 全部">AI组</span><input id="aig" type="number" value="5" style="width:52px"><button id="a-unload-ai" title="立即释放常驻模型显存（下次使用重新加载）">释放模型</button>
-    <label class="muted"><input type="checkbox" id="force"> force</label>
+    <label class="muted" title="强制：连 AI 来源 / 已删除 的条目也跑（默认跳过）"><input type="checkbox" id="force"> 强制</label>
   </div>
   <div id="prog"><i></i></div>
   <div class="logwrap"><div id="log"></div><button id="logjump" title="跳到最新一行">↓ 最新</button></div>
@@ -6119,7 +6119,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
     <label class="muted" title="勾选后：AI 补全 / Web 补全 都会先抽帧看片（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
     <button id="a-fill" title="按简介补标签；勾了看片则先看片补信息">AI 补全</button>
-    <label class="muted" title="强制：连 AI 来源 / 已删除 的条目也跑（默认跳过）"><input type="checkbox" id="fill-force"> 强制</label>
     <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button>
     <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
     <label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
@@ -6440,7 +6439,7 @@ $('#a-web').onclick=batchRun('website');
 $('#a-ai').onclick=batchRun('ai');
 async function fillRun(web){
   const ids=[...SEL].join(','), scan=$('#fill-scan').checked?1:0,
-        force=$('#fill-force').checked?1:0;
+        force=$('#force').checked?1:0;
   const tip=web?T('未选中条目 —— 先联网搜索信息，再按 AI 组跑标签分析（勾了看片则叠加看片），继续？')
                :T('未选中条目 —— 将对【全部需要补全】的条目补标签（勾了看片则先看片），继续？');
   if(!SEL.size&&!confirm(tip))return;
