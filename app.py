@@ -2655,7 +2655,33 @@ def _demo_by_code(code):
         return '一般'
     if 'UNCEN' in c or 'UNCON' in c or _re.search(r'UC$', c):
         return '好'
-    return '有'
+    return ''
+
+
+def backfill_demo(dbc=None, log=None):
+    """按语义/番号回填去码状态（只写空值）。"""
+    dbc = dbc or mlib.db()
+    rows = dbc.execute(
+        "SELECT id, COALESCE(sem_kind,'') AS k, "
+        "COALESCE(NULLIF(TRIM(sem_code),''), TRIM(COALESCE(code,''))) AS c "
+        "FROM items WHERE COALESCE(demo,'')=''").fetchall()
+    nh = ng = 0
+    for r in rows:
+        d = '好' if r['k'] == 'uncensored' else _demo_by_code(r['c'])
+        if not d:
+            continue
+        dbc.execute('UPDATE items SET demo=? WHERE id=?', (d, r['id']))
+        if d == '好':
+            nh += 1
+        else:
+            ng += 1
+    dbc.commit()
+    if log:
+        try:
+            log('去码回填：无码 %d 条，一般 %d 条' % (nh, ng))
+        except Exception:
+            pass
+    return nh + ng
 
 
 def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
@@ -7442,6 +7468,7 @@ def main():
     # 启动即迁移：补齐 media.ads / ads_ts（否则 /api/items 会报 no such column）
     try:
         _ensure_media(mlib.db())
+        backfill_demo(log=print)
     except Exception as _e:
         print('    migrate: %s' % str(_e)[:120])
     try:
