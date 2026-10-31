@@ -5936,8 +5936,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   <table id="tbl"><thead><tr>
     <th style="width:136px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
-    <th style="width:92px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 ⛔段数">属性</th>
-    <th style="width:150px" title="系列-番号，下一行语义；均可双击修改">番号 / 语义</th>
+    <th style="width:108px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 ⛔段数">属性</th>
+    <th style="width:134px" title="系列-番号，下一行语义；均可双击修改">番号 / 语义</th>
     <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
@@ -6142,7 +6142,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
-    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字</span>':'')+(r.subs_burn?' <span title="字幕已烧录" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字🔥</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔'+r.nw+'</span>':'')+'<div class="meta">'+fsize(r.tsize||r.fsize)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
+    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字</span>':'')+(r.subs_burn?' <span title="字幕已烧录" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字🔥</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔'+r.nw+'</span>':'')+'<div class="meta" title="大小 '+fsize(r.tsize||r.fsize)+' ｜ 时长 '+fdur(r.mdur)+'">'+fsz(r.tsize||r.fsize)+' '+fdur(r.mdur)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
     +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'')+'" title="双击修改系列">'+esc(r.series||r.skey||'—')+'</span></div>'
     +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'—')+'</span></div>'
@@ -6178,6 +6178,11 @@ function adsText(s){try{const a=JSON.parse(s||'[]');if(!a||!a.length)return '';
 const SEL=new Set();
 function fext(f){var m=/(\.(avi|mp4|m4v|mkv|wmv|mov|ts|m2ts|flv|rmvb|rm|webm|mpg|mpeg|iso|vob))$/i.exec(f||'');
   return m?m[1].slice(1).toUpperCase():'—';}
+function fsz(n){n=+n||0;if(!n)return '—';const g=n/1073741824;
+  if(g>=10)return Math.round(g)+'G';if(g>=1)return g.toFixed(1)+'G';
+  const m=n/1048576;if(m>=1)return Math.round(m)+'M';return Math.round(n/1024)+'K';}
+function fdur(s){s=+s||0;if(!s)return '—';const tm=Math.round(s/60),h=Math.floor(tm/60),m=tm%60;
+  return h?(h+'h'+String(m).padStart(2,'0')+'m'):(m+'m');}
 function fsize(n){n=+n||0;if(!n)return '—';
   if(n>=1073741824)return Math.round(n/1073741824)+' GB';
   if(n>=1048576)return Math.round(n/1048576)+' MB';
