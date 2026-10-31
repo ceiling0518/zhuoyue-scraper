@@ -6300,7 +6300,7 @@ PAGE = r"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 header{padding:10px 16px;background:var(--card);border-bottom:1px solid #2a3140;display:flex;gap:12px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:11}
 .stickytop{position:sticky;z-index:10;background:var(--bg);padding-top:8px;box-shadow:0 8px 14px -10px #000}
 h1{font-size:15px;margin:0;font-weight:600}
-.applogo{height:34px;width:auto;display:block;border-radius:6px;flex:0 0 auto}
+.applogo{height:40px;width:auto;display:block;border-radius:6px;flex:0 0 auto}
 .wrap{padding:14px 16px;max-width:1600px;margin:0 auto}
 .cards{display:flex;gap:6px;flex-wrap:nowrap;margin-bottom:12px;overflow-x:auto}
 .card{background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:6px 9px;min-width:70px;flex:0 0 auto}
