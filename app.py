@@ -7132,13 +7132,13 @@ function tcls(r){
   const w=+r.pw||0,h=+r.ph||0,b=+r.pbpp||0;
   if(w&&h){
     const mn=Math.min(w,h),mx=Math.max(w,h);
-    if(b<=0.03||mn<300)return ' tbad';
+    if(b<=0.03||mn<300)return '';                         // 差的缩略图不再描红
     if(mn>=420)return (w/h>=1.25)?' tgood':' tgreen';   // 宽图=彩框，非宽图=绿框
     return (w/h>=1.25)?'':' tgray';                      // 中等质量：非宽幅给灰框
   }
   const t=+r.tbpp||0;
   if(!t)return '';
-  if(t<=0.03)return ' tbad';
+  if(t<=0.03)return '';          // 差的不描红（与删除同款）
   if(t>0.08)return ' tgood';
   return '';
 }
