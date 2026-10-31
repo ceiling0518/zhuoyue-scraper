@@ -5185,15 +5185,17 @@ def cut_ads_index(vpath, segs, log=None):
                     cur_spc = sc[si][1]
                 chunk_samples.append(cur_spc)
 
-            remaining, trunc_off, kept_chunks = keep_n, offs[0], 0
+            # 每个 chunk 实际保留的样本数（最后一个 chunk 可能只保留一部分）
+            remaining, trunc_off = keep_n, offs[0]
+            takes = []
             for ci, cnt in enumerate(chunk_samples):
                 if remaining <= 0:
                     break
                 take = min(cnt, remaining)
-                start = keep_n - remaining
-                trunc_off = offs[ci] + sum(keep_sizes[start:start + take])
+                _start = keep_n - remaining
+                takes.append(take)
+                trunc_off = offs[ci] + sum(keep_sizes[_start:_start + take])
                 remaining -= take
-                kept_chunks = ci + 1
             trunc_at = max(trunc_at, trunc_off)
 
             stsz.payload = _build_stsz(keep_sizes)[8:]
@@ -5205,14 +5207,21 @@ def cut_ads_index(vpath, segs, log=None):
                 nt.append((take, delta))
                 left -= take
             stts.payload = _build_stts(nt)[8:]
+
+            # stsc 必须按「实际每块样本数」重建；直接沿用原表会多算样本 -> wrong sample count
+            _sd = sc[0][2] if sc else 1
+            ent = []
+            for ci, take in enumerate(takes):
+                if not ent or ent[-1][1] != take:
+                    ent.append([ci + 1, take])
             stsc.payload = _mkbox(b'stsc',
-                                  _p32(0) + _p32(len([1 for a, _b, _c in sc if a <= kept_chunks])) +
-                                  b''.join(_p32(a) + _p32(bb) + _p32(cc)
-                                           for a, bb, cc in sc if a <= kept_chunks))[8:]
+                                  _p32(0) + _p32(len(ent)) +
+                                  b''.join(_p32(a) + _p32(t) + _p32(_sd)
+                                           for a, t in ent))[8:]
             stco.payload = _mkbox(stco.t,
-                                  _p32(0) + _p32(kept_chunks) +
+                                  _p32(0) + _p32(len(takes)) +
                                   b''.join((struct.pack('>Q', x) if is64 else _p32(x))
-                                           for x in offs[:kept_chunks]))[8:]
+                                           for x in offs[:len(takes)]))[8:]
             stss = _f1(stbl.children, b'stss')
             if stss:
                 sn = [_u32(stss.payload, 8 + 4 * i) for i in range(_u32(stss.payload, 4))]
