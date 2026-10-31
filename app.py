@@ -4852,6 +4852,11 @@ def items(params):
             o['tbpp'] = round(thumb_bpp(o['id']), 4)
         except Exception:
             o['tbpp'] = 0
+        try:
+            _pw, _ph, _pb = poster_stat_of(o['id'])
+            o['pw'], o['ph'], o['pbpp'] = _pw, _ph, round(_pb, 4)
+        except Exception:
+            o['pw'], o['ph'], o['pbpp'] = 0, 0, 0
     # 类型计数：MP4(2), AVI(1)
     _ids = [o['id'] for o in out]
     _tm = {}
@@ -5296,6 +5301,9 @@ def _crop_bars(im, frac=0.02, thr=26, keep=0.02, inset=0.012):
     return im.crop((int(c0), int(r0), int(c1) + 1, int(r1) + 1))
 
 
+_SCAN_ONLY = False
+
+
 def _ensure_tstat():
     try:
         _LOGDB.execute('CREATE TABLE IF NOT EXISTS thumb_stat('
@@ -5336,6 +5344,94 @@ def thumb_bpp(iid):
         except Exception:
             return 0.0
     return 0.0
+
+
+def _poster_stat(dst):
+    """返回 (bpp, w, h)；口径同视频：比特 /(MIN(w*h,720p)*30)。"""
+    try:
+        st = os.stat(dst)
+        from PIL import Image
+        with Image.open(dst) as im:
+            w, h = im.size
+        if not (w and h):
+            return 0.0, 0, 0
+        bpp = (st.st_size * 8.0) / (min(w * h, 1280 * 720) * 30.0)
+        return bpp, w, h
+    except Exception:
+        return 0.0, 0, 0
+
+
+def _needs_enh(dst, bpp_hi=0.03, short_lo=600):
+    """要不要做提升画质：bpp<=0.03（红框）或短边<600 才做。
+
+    一般/良好（彩框）的封面不再重复超分——重复超分只会糊。
+    """
+    bpp, w, h = _poster_stat(dst)
+    if not (w and h):
+        return True, bpp
+    return (bpp <= bpp_hi or min(w, h) < short_lo), bpp
+
+
+def _ensure_pstat():
+    try:
+        _LOGDB.execute('CREATE TABLE IF NOT EXISTS poster_stat('
+                       'id INTEGER PRIMARY KEY, size INTEGER, mtime REAL, '
+                       'w INTEGER, h INTEGER, bpp REAL)')
+        _LOGDB.commit()
+    except Exception:
+        pass
+
+
+def poster_stat_of(iid, refresh=False):
+    """封面原图的 (w,h,bpp)；带 size+mtime 缓存，没算过就返回 (0,0,0)。"""
+    try:
+        r = _LOGDB.execute('SELECT cover, path FROM items WHERE id=?', (iid,)).fetchone()
+        if not r or not r[0] or not r[1]:
+            return 0, 0, 0.0
+        dst = os.path.join(r[1], r[0])
+        st = os.stat(dst)
+        row = None
+        try:
+            row = _LOGDB.execute('SELECT size,mtime,w,h,bpp FROM poster_stat WHERE id=?',
+                                 (iid,)).fetchone()
+        except Exception:
+            _ensure_pstat()
+        if row and row[0] == st.st_size and abs(row[1] - st.st_mtime) < 1.0 and not refresh:
+            return row[2], row[3], row[4] or 0.0
+        if not refresh and row is None and not _SCAN_ONLY:
+            return 0, 0, 0.0
+        from PIL import Image
+        with Image.open(dst) as im:
+            w, h = im.size
+        bpp = (st.st_size * 8.0) / (min(w * h, 1280 * 720) * 30.0) if (w and h) else 0.0
+        _LOGDB.execute('INSERT OR REPLACE INTO poster_stat(id,size,mtime,w,h,bpp) '
+                       'VALUES(?,?,?,?,?,?)', (iid, st.st_size, st.st_mtime, w, h, bpp))
+        return w, h, bpp
+    except Exception:
+        return 0, 0, 0.0
+
+
+def _job_poster_stats(ids=None):
+    """把封面原图的分辨率/bpp 扫进缓存（供列表画框用）。"""
+    _begin('pstat', 1)
+    try:
+        its = _items_by_ids(ids)
+        _tick(0, max(1, len(its)))
+        ok, skip = 0, 0
+        for i, it in enumerate(its):
+            if _stop_req():
+                break
+            w, h, bpp = poster_stat_of(it['id'], refresh=True)
+            if w and h:
+                ok += 1
+            else:
+                skip += 1
+            if i % 20 == 0:
+                _tick(i + 1)
+                _log('  已扫 %d/%d（成功 %d）' % (i + 1, len(its), ok))
+        _end('pstat %d/%d' % (ok, len(its)))
+    except Exception:
+        _log('ERR ' + traceback.format_exc()[:800]); _end('pstat 失败')
 
 
 def _poster_save(im, path, lo=100, hi=150, long_side=1200, minq=86):
@@ -5414,6 +5510,11 @@ def _poster_refresh_one(iid, ai=False, enh=False):
     newp = os.path.join(p, 'poster.new.jpg')
     made = None
     note = ''
+
+    if enh and os.path.exists(dst):
+        _need, _b = _needs_enh(dst)
+        if not _need:
+            return '跳过（bpp %.3f 已够）' % _b
 
     # 有封面又只要「提升画质」时，绝不重新抽帧：直接拿现有 poster 超分
     if ai and not (enh and os.path.exists(dst)):
@@ -6282,6 +6383,10 @@ class H(BaseHTTPRequestHandler):
                                    lane='light', exclusive=bool(_ai))
                     return self._json({'ok': True, 'queued': bool(ok)})
                 return self._json({'ok': True, 'n': refresh_thumbs(tids or None, make=True)})
+            elif p == '/api/poster_stats/scan':
+                _ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                ok = start_job(_job_poster_stats, _ids or None, lane='light')
+                return self._json({'ok': True, 'queued': bool(ok)})
             elif p == '/api/covers/drop':
                 tids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 return self._json({'ok': True, 'n': drop_covers(tids) if tids else 0})
@@ -6896,6 +7001,20 @@ function demoIcon(r){
 }
 function resLabel(w,h){const m=Math.min(w,h),M=Math.max(w,h);
   return (m>=2000)?'4K':(m>=1400?'1440p':(m>=1000?'1080p':(m>=700?'720p':M+'×'+m)));}
+function tcls(r){
+  const w=+r.pw||0,h=+r.ph||0,b=+r.pbpp||0;
+  if(w&&h){
+    const mn=Math.min(w,h),mx=Math.max(w,h);
+    if(b<=0.03||mn<360)return ' tbad';
+    if(mn>=480&&mx>=854)return ' tgood';   // 480p/150dpi 够用，不再苛求
+    return '';
+  }
+  const t=+r.tbpp||0;
+  if(!t)return '';
+  if(t<=0.03)return ' tbad';
+  if(t>0.08)return ' tgood';
+  return '';
+}
 async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
   quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,code:$('#f-code').value,
   health:$('#f-health').value,bad:$('#f-bad').value,subf:$('#f-subs').value,pq:$('#f-pq').value,
@@ -6905,7 +7024,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图'
     +(r.tbpp?'｜缩略图 bpp '+r.tbpp.toFixed(3):'')+'">'
-    +'<span class="tframe'+(r.tbpp?(r.tbpp<=0.03?' tbad':(r.tbpp<=0.08?'':' tgood')):'')+'">'
+    +'<span class="tframe'+tcls(r)+'">'
     +'<img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" '
     +'onerror="this.style.opacity=.15"></span></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
