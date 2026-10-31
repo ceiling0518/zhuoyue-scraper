@@ -736,7 +736,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
         if not chunk:
             return
         _res = None
-        if ai:
+        if ai and web:          # 看片没有搜索摘要，交给后面的 AI 标签阶段
             _res = mlib.ai_web_batch(chunk)
             if _res is None:
                 _log('  组内 AI 判定失败 -> 逐条兜底')
@@ -754,7 +754,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
                  % sum(len(x) for x in _raw))
         for _k, _it in enumerate(chunk):
             _d = _res[_k] if _res and _k < len(_res) else None
-            if ai and not _d:
+            if ai and web and not _d:
                 _one = mlib.ai_web_batch([_it])
                 _d = _one[0] if _one else None
                 if _d:
@@ -970,7 +970,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
             _flush(_staged)
             del _staged[:]
 
-    if web or scan:                  # Web/看片：AI 已在组内判定并写入
+    if web:                          # Web：AI 已在组内判定并写入
         return ok, len(weak)
     if not ai:                       # AI 补全：下面按组跑标签
         return ok, len(weak)
