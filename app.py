@@ -4801,6 +4801,10 @@ def items(params):
             where.append(_b + '>0.03 AND ' + _b + '<=0.08')
         else:
             where.append(_b + '<=0.03')
+    dc = params.get('code')
+    if dc in ('有码', '一般', '无码'):
+        where.append("COALESCE(items.demo,'')=?")
+        args.append({'有码': '有', '一般': '一般', '无码': '好'}[dc])
     if q:
         where.append('(name LIKE ? OR title LIKE ? OR code LIKE ? OR sem_code LIKE ?)')
         args += ['%' + q + '%'] * 4
@@ -6328,13 +6332,19 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 .zone{display:inline-flex;align-items:center;gap:5px;border-left:1px solid #2a3342;padding-left:10px;margin-left:6px}
 .zlab{font-size:11px;color:#8b97a8;letter-spacing:1px}
 #cfg-enchelp{font-size:10px;line-height:14px;height:14px;min-width:14px;text-align:center;padding:0 3px;border-radius:7px;margin:0 2px}
-.helpq{display:inline-block;width:14px;height:14px;line-height:12px;border:1px solid #39455a;border-radius:50%;text-align:center;font-size:10px;cursor:help;margin:0 4px;color:#8b97a8;vertical-align:middle}
+.helpq{position:relative;display:inline-block;width:14px;height:14px;line-height:12px;border:1px solid #39455a;border-radius:50%;text-align:center;font-size:10px;cursor:help;margin:0 4px;color:#8b97a8;vertical-align:middle}
+.helpq::after{content:attr(data-tip);position:absolute;top:150%;left:50%;transform:translateX(-50%);background:#0b0e13;border:1px solid #39455a;border-radius:6px;padding:6px 8px;color:#d8dde6;font-size:11px;line-height:1.45;white-space:pre-wrap;width:280px;text-align:left;opacity:0;transition:opacity .12s ease;pointer-events:none;z-index:3000}
+.helpq:hover::after{opacity:1;transition-delay:.6s}
+#fbar select{min-width:112px}
 </style></head><body>
 <header>
   <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.2.0</span> 
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
+  <button id="b-restart" title="重启服务：加载新代码 / 任务卡死时恢复">重启</button>
   <button id="b-sites">站点</button>
-  <button id="b-restart" title="重启服务：加载新代码 / 任务卡死时恢复">重启</button> <span class="muted">语言</span><select id="sublang" style="min-width:88px" title="内容语言：字幕 / AI 补全 / Web 补全 共用；SenseVoice 支持中/英/日/韩/粤"><option value="zh">中文</option><option value="ja">日文</option><option value="en">英文</option><option value="ko">韩文</option><option value="yue">粤语</option><option value="es">西班牙语</option></select>
+  <button id="b-archive">档案</button>
+  <button id="a-series" title="编辑语义/系列表：系列、是否有番号、语义、备注、出版商">系列表</button>
+  <button id="cfg-save">保存设置</button> <span class="muted">语言</span><select id="sublang" style="min-width:88px" title="内容语言：字幕 / AI 补全 / Web 补全 共用；SenseVoice 支持中/英/日/韩/粤"><option value="zh">中文</option><option value="ja">日文</option><option value="en">英文</option><option value="ko">韩文</option><option value="yue">粤语</option><option value="es">西班牙语</option></select>
   <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <select id="b-libsel" title="切换媒体库（每个库独立数据库）" style="min-width:132px"></select>
   <button id="b-libs" title="媒体库设置">⚙ 库</button>
@@ -6342,8 +6352,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
   
-  <button id="cfg-models" title="查看在用模型、下载开源模型">其他模型</button>
-  <button id="cfg-save">保存设置</button>
+  <button id="cfg-models" title="查看在用模型、下载开源模型">其他模型</button> <span class="muted">|</span> <button id="a-unload-ai" title="立即释放常驻模型显存（下次使用重新加载）" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">释放模型</button>
   <span id="ollama" class="muted right">ollama …</span>
 </header>
 <div class="wrap">
@@ -6365,7 +6374,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="mode"><option value="auto">auto</option><option value="ai">ai</option>
       <option value="website">website</option></select>
     <span class="muted" title="每批送多少条给语义模型；0 = 全部">语义组</span><input id="semg" type="number" value="20" style="width:56px">
-    <span class="muted" title="每次请求给 AI 多少条；0 = 全部">AI组</span><input id="aig" type="number" value="5" style="width:52px"><button id="a-unload-ai" title="立即释放常驻模型显存（下次使用重新加载）">释放模型</button>
+    <span class="muted" title="每次请求给 AI 多少条；0 = 全部">AI组</span><input id="aig" type="number" value="5" style="width:52px">
     <label class="muted" title="强制：连 AI 来源 / 已删除 的条目也跑（默认跳过）"><input type="checkbox" id="force"> 强制</label>
   </div>
   <div id="prog"><i></i></div>
@@ -6377,19 +6386,17 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="f-health"><option value="">体检:全部</option><option>深检</option><option>浅检</option><option>both</option><option>无</option><option>未做</option></select>
     <select id="f-bad"><option value="">无效段:全部</option><option>广告</option><option>无效段</option><option>both</option><option>无</option><option>未做</option></select>
     <select id="f-subs"><option value="">字幕:全部</option><option>有</option><option>无</option><option>烧录</option></select>
-    <select id="f-pq"><option value="">画质:全部</option><option>良好</option><option>一般</option><option>差</option></select>
+    <select id="f-pq"><option value="">画质:全部</option><option>良好</option><option>一般</option><option>差</option></select><select id="f-code"><option value="">去码:全部</option><option>有码</option><option>一般</option><option>无码</option></select>
     <input id="f-q" placeholder="搜索 名字/标题/番号" style="width:200px">
     <select id="f-sort" title="排序字段"><option value="id">排序:编号</option><option value="first_seen">排序:入库时间</option><option value="last_update">排序:最后编辑</option><option value="bitrate">排序:码率</option></select>
     <select id="f-order" title="正序 / 倒序"><option value="asc">正序 ↑</option><option value="desc">倒序 ↓</option></select>
-    <button id="b-refresh">刷新</button>
-    <button id="b-archive">档案</button>
   </div>
   <div class="bar" id="actbar" style="background:#171c25">
     <button id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
     <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
     <label class="muted" title="勾选后：AI 补全 / Web 补全 都会先抽帧看片（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
     <button id="a-fill" title="按简介补标签；勾了看片则先看片补信息">AI 补全</button>
-    <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button><button id="a-series" title="编辑语义/系列表：系列、是否有番号、语义、备注、出版商">系列表</button>
+    <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button>
     <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
     <label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
     <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
@@ -6400,7 +6407,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-selnone">取消选择</button>
     <span class="muted">|</span>
     <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
-    <button id="a-open" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">打开目录</button>
+    <button id="a-open" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">打开目录</button><button id="b-refresh" style="background:#2e7d32;border-color:#2e7d32;color:#fff">刷新</button>
     
      <label class="muted" title="勾上后：降分辨率/裁剪/字幕/检测/补全 等按钮只把条目加入队列，不立即执行；可边跑边攒批次"><input type="checkbox" id="qadd-chk"> 加入队列</label> <span class="muted" style="margin-left:4px">队列 <b id="qcount">0</b></span>
   </div>
@@ -6441,7 +6448,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <label class="muted" title="调整码率：按目标分辨率/帧率重编码"><input type="checkbox" id="e-br"> 调整码率</label>
       <select id="downtgt" style="min-width:86px" title="目标分辨率：Res.-auto=不缩放（配合提质）；1080/720/480 才降"><option value="auto">Res.-auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
       <select id="downfps" style="min-width:86px" title="目标帧率：Fps-auto=保持（>45 自动降 30）；高于原帧率插帧，低于则丢帧"><option value="0">Fps-auto</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
-      <label class="muted" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE"><input type="checkbox" id="e-beaut"> 画质修复</label><span class="helpq" title="画质修复：用 AI 模型重绘细节、提升清晰度。Topaz Proteus：去噪/修复压缩痕迹，质量最好（需本机装 Topaz）；ESRGAN：超分放大 2x/3x/4x（适合低分辨率）；RIFE：插帧提升流畅度（适合低帧率）。会替换原片并保留 .orig 回滚点，耗时较长。">?</span>
+      <label class="muted" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE"><input type="checkbox" id="e-beaut"> 画质修复</label><span class="helpq" data-tip="画质修复：用 AI 模型重绘细节、提升清晰度。Topaz Proteus：去噪/修复压缩痕迹，质量最好（需本机装 Topaz）；ESRGAN：超分放大 2x/3x/4x（适合低分辨率）；RIFE：插帧提升流畅度（适合低帧率）。会替换原片并保留 .orig 回滚点，耗时较长。">?</span>
       <select id="beaut-engine" style="min-width:72px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">ESRGAN</option><option value="rife">RIFE 插帧</option></select>
       <select id="beaut-scale" style="min-width:46px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
       <label class="muted" title="格式转换：按「输出码率」重编码为 HEVC（分辨率不变）"><input type="checkbox" id="e-conv"> 格式转换</label>   <span class="helpq" id="cfg-enchelp" title="">?</span><select id="cfg-encmode" style="min-width:72px" title="输出码率：恒定质量 / 动态码率 / 源码倍数 / 帧单位码率"><option value="bpp">帧单位码率</option><option value="kbps">动态码率</option><option value="cbr">固定码率</option><option value="crf">恒定质量</option></select><input id="cfg-encval" type="text" inputmode="decimal" style="width:48px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数；bpp 填 0.08-0.12"><span class="muted" id="cfg-encunit" style="margin-left:4px">CRF</span>
@@ -6627,7 +6634,7 @@ function setLog(lines){
   });
 })();
 function saveState(){try{localStorage.setItem('ms_state',JSON.stringify({off:off,
-  quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,
+  quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,code:$('#f-code').value,
   sort:$('#f-sort').value,order:$('#f-order').value}));}catch(e){}}
 function loadState(){try{const s=JSON.parse(localStorage.getItem('ms_state')||'{}');
   if(typeof s.off==='number'&&s.off>=0)off=s.off;
@@ -6675,7 +6682,7 @@ function demoIcon(r){
 function resLabel(w,h){const m=Math.min(w,h),M=Math.max(w,h);
   return (m>=2000)?'4K':(m>=1400?'1440p':(m>=1000?'1080p':(m>=700?'720p':M+'×'+m)));}
 async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
-  quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,
+  quality:$('#f-quality').value,source:$('#f-source').value,kind:$('#f-kind').value,q:$('#f-q').value,code:$('#f-code').value,
   health:$('#f-health').value,bad:$('#f-bad').value,subf:$('#f-subs').value,pq:$('#f-pq').value,
   sort:$('#f-sort').value,order:$('#f-order').value});
   const d=await(await fetch('/api/items?'+qs)).json();
@@ -7165,7 +7172,7 @@ $('#cfg-save').onclick=async()=>{await fetch('/api/config?model='+encodeURICompo
     +'&ad_min='+encodeURIComponent($('#cfg-admin').value||''),{method:'POST'})).json();
   if(n.msg)console.log(n.msg); if(n.urls&&n.urls.length)console.log(T('访问地址: ')+n.urls.join('  '));
   cfg();};
-const ENC_DOC={crf:'恒定质量（CRF 0-51）\n按画质目标编码，码率随画面复杂度浮动，不保证文件大小。\n0=几乎无损（18左右视觉无损，23默认，28明显省体积，35+明显糊，51=最差）。\n适合：画质优先、体积无所谓。',cbr:'固定码率（CBR，kbps）\n按固定码率编码，流量稳定；画面复杂时画质会下降。\n适合限流量/稳定传输。\u4f8b：3000 = 3 Mbps。',kbps:'动态码率（VBR，kbps）\n给定平均码率，复杂画面多给、简单画面少给，峰值不超过 1.4×。\n体积可预期，适合减肥。例：3000 = 平均 3 Mbps。',scale:'源码倍数（×）\n目标码率 = 源码率 × 倍数。\n例：0.6 = 压到源的 60%；1.0 = 与源码率相同。',bpp:'帧单位码率（bpp）\n每像素每帧分到的比特：目标码率 = bpp × min(宽×高,720p) × 30。\n0.08 良好线，0.10-0.12 推荐，<0.03 信息量不足。\n不同分辨率自动适配（前提：720p/30 帧口径）。'};function encUnit(){const m=$('#cfg-encmode').value;const U={crf:'CRF',kbps:'kbps',cbr:'kbps',scale:'\u00d7 \u6e90',bpp:'bpp'};const el=$('#cfg-encunit');if(el)el.textContent=U[m]||'';const inp=$('#cfg-encval');if(inp)inp.step=(m==='bpp')?'0.01':((m==='scale')?'0.1':'1');const sel=$('#cfg-encmode');if(sel)sel.title=ENC_DOC[m]||'';const hp=$('#cfg-enchelp');if(hp)hp.title=(ENC_DOC[m]||'')+'\n\n\u5176\u4ed6\u6a21\u5f0f\uff1a\n'+['crf','kbps','scale','bpp'].map(k=>'\u00b7 '+ENC_DOC[k].split('\n')[0]).join('\n');}
+const ENC_DOC={crf:'恒定质量（CRF 0-51）\n按画质目标编码，码率随画面复杂度浮动，不保证文件大小。\n0=几乎无损（18左右视觉无损，23默认，28明显省体积，35+明显糊，51=最差）。\n适合：画质优先、体积无所谓。',cbr:'固定码率（CBR，kbps）\n按固定码率编码，流量稳定；画面复杂时画质会下降。\n适合限流量/稳定传输。\u4f8b：3000 = 3 Mbps。',kbps:'动态码率（VBR，kbps）\n给定平均码率，复杂画面多给、简单画面少给，峰值不超过 1.4×。\n体积可预期，适合减肥。例：3000 = 平均 3 Mbps。',scale:'源码倍数（×）\n目标码率 = 源码率 × 倍数。\n例：0.6 = 压到源的 60%；1.0 = 与源码率相同。',bpp:'帧单位码率（bpp）\n每像素每帧分到的比特：目标码率 = bpp × min(宽×高,720p) × 30。\n0.08 良好线，0.10-0.12 推荐，<0.03 信息量不足。\n不同分辨率自动适配（前提：720p/30 帧口径）。'};function encUnit(){const m=$('#cfg-encmode').value;const U={crf:'CRF',kbps:'kbps',cbr:'kbps',scale:'\u00d7 \u6e90',bpp:'bpp'};const el=$('#cfg-encunit');if(el)el.textContent=U[m]||'';const inp=$('#cfg-encval');if(inp)inp.step=(m==='bpp')?'0.01':((m==='scale')?'0.1':'1');const sel=$('#cfg-encmode');if(sel)sel.title=ENC_DOC[m]||'';const hp=$('#cfg-enchelp');if(hp)hp.setAttribute('data-tip',(ENC_DOC[m]||'')+'\n\n\u5176\u4ed6\u6a21\u5f0f\uff1a\n'+['crf','kbps','scale','bpp'].map(k=>'\u00b7 '+ENC_DOC[k].split('\n')[0]).join('\n');}
 (async()=>{try{const n=await(await fetch('/api/net')).json();
   $('#cfg-port').value=n.port||8800; $('#cfg-lan').checked=!!n.lan;
   if(n.bak_days!==undefined)$('#cfg-bakdays').value=n.bak_days;
@@ -7507,7 +7514,7 @@ $('#b-archive').onclick=async()=>{const d=await(await fetch('/api/archive?limit=
 $('#b-prev').onclick=()=>{off=Math.max(0,off-lim);list();};
 $('#b-next').onclick=()=>{off+=lim;list();};
 $('#pjump').onchange=e=>{off=parseInt(e.target.value,10)||0;list();};
-['f-quality','f-source','f-kind','f-health','f-bad','f-subs','f-pq','f-sort','f-order'].forEach(i=>$('#'+i).onchange=()=>{off=0;list();});
+['f-quality','f-source','f-kind','f-health','f-bad','f-subs','f-pq','f-code','f-sort','f-order'].forEach(i=>$('#'+i).onchange=()=>{off=0;list();});
 $('#f-q').onkeydown=e=>{if(e.key==='Enter'){off=0;list();}};
 const rawList=v=>{if(v==null)return '';let a=v;try{a=JSON.parse(v)}catch(e){}
   if(Array.isArray(a))return a.join(',');return String(v);};
