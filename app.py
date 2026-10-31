@@ -4333,7 +4333,7 @@ def stats():
         out['lowbpp'] = dbc.execute(
             "SELECT COUNT(*) c FROM items i JOIN media m ON m.item_id=i.id "
             "WHERE i.present=1 AND m.vbr>0 AND m.w>0 AND m.h>0 AND m.fps>0 "
-            "AND (m.vbr*1.0/(MIN(m.w*m.h,921600)*30.0))<0.08").fetchone()['c']
+            "AND (m.vbr*1.0/(MIN(m.w*m.h,921600)*30.0))<0.04").fetchone()['c']
     except Exception:
         out.setdefault('hbad', 0); out.setdefault('adbad', 0); out.setdefault('lowbpp', 0)
     for r in dbc.execute("SELECT COALESCE(NULLIF(quality,''),'无') q, COUNT(*) c "
