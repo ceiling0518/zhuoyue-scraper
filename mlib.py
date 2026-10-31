@@ -776,13 +776,14 @@ def web_complete(item, model=None, log=None):
     plot = strip_noise(item.get('plot') or '')
     qs = []
     if code and hint_ok(code, 0):
-        qs += [code + ' Released Date', code + ' Maker', code + ' Tag']
+        qs += [code + ' Released Date', code + ' Maker', code + ' Tag',
+               code + ' 出演者', code + ' actor']
     if hint_ok(title):
         qs.append(title[:60])
     if not qs:
         qs.append(title[:60] or code)
     hits, seen = [], set()
-    for q in qs[:4]:
+    for q in qs[:7]:
         hs = web_search(q, 4)
         _log('    搜索「%s」-> %d 条' % (q[:40], len(hs)))
         for h in hs:
@@ -819,8 +820,19 @@ def web_complete(item, model=None, log=None):
             if not c2:
                 return None
             t2 = c2           # 标题无效但有合法番号 -> 用番号做标题
+        _actors = _clean_people(j.get('actors'))
+        if not _actors and c2:
+            # 通用搜索结果（missav/thisav 等）通常没有出演者，javdb 详情页有
+            try:
+                _jd = fetch_javdb(c2) or {}
+                _ja = _clean_people(_jd.get('actors') or [])
+                if _ja:
+                    _actors = _ja
+                    _log('    javdb 演员: %s' % ','.join(_ja)[:40])
+            except Exception as _e:
+                _log('    javdb 取演员失败: %s' % str(_e)[:60])
         return {'title': t2, 'plot': p2, 'tags': tg[:12],
-                'actors': _clean_people(j.get('actors')),
+                'actors': _actors,
                 'studio': strip_noise(j.get('studio') or '')[:40],
                 'year': _clean_year(j.get('year')),
                 'code': c2.upper() if c2 else ''}
