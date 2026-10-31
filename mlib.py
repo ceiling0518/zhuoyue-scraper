@@ -5030,32 +5030,47 @@ def mp4_index_cut(src, dst, head_skip, tail_skip):
 
 
 def restore_index_cut(vpath):
-    """用 .orig 回滚包恢复索引裁剪前的原片（原地替换）。"""
+    """用 .orig 回滚包恢复索引裁剪前的原片（原地替换）。
+
+    包格式：24 字节头(total, trunc_at, moov_off) + data[trunc_at:total]。
+    moov 在头部（faststart）时，回滚还要把被改名成 free 的原 moov 改回来。
+    """
     bp = vpath + '.orig'
     b = open(bp, 'rb').read()
     if len(b) < 24:
         raise RuntimeError('回滚包损坏')
     total, trunc_at, moov_off = struct.unpack('>QQQ', b[:24])
-    tail_len = max(0, moov_off - trunc_at)
-    tail = b[24:24 + tail_len]
-    moov = b[24 + tail_len:]
+    payload = b[24:]
     head = bytearray(open(vpath, 'rb').read(trunc_at))
-    off = 0
+    off, mdat_off, mdat_hl = 0, None, 8
     while off + 8 <= len(head):
         sz = struct.unpack('>I', head[off:off + 4])[0]
         t = bytes(head[off + 4:off + 8])
+        hl = 8
+        if sz == 1:
+            hl = 16
         if t == b'mdat':
-            if struct.unpack('>I', head[off:off + 4])[0] == 1:
-                struct.pack_into('>Q', head, off + 8, moov_off - off)
-            else:
-                struct.pack_into('>I', head, off, moov_off - off)
+            mdat_off, mdat_hl = off, hl
+            break
+        if sz < 8:
             break
         off += sz
+    _fast = moov_off < trunc_at          # 原 moov 在头部
+    if mdat_off is not None:
+        if _fast:
+            new_sz = total - mdat_off     # 原 mdat 一直到文件尾
+        else:
+            new_sz = moov_off - mdat_off
+        if mdat_hl == 16:
+            struct.pack_into('>Q', head, mdat_off + 8, new_sz)
+        else:
+            struct.pack_into('>I', head, mdat_off, new_sz)
+    if _fast and moov_off + 8 <= len(head):
+        head[moov_off + 4:moov_off + 8] = b'moov'
     tmp = vpath + '.restore.tmp'
     with open(tmp, 'wb') as f:
         f.write(head)
-        f.write(tail)
-        f.write(moov)
+        f.write(payload)
     os.replace(tmp, vpath)
     return {'ok': True, 'size': os.path.getsize(vpath)}
 
@@ -5123,8 +5138,6 @@ def cut_ads_index(vpath, segs, log=None):
             if not moov_b:
                 raise RuntimeError('没有 moov')
             _, moov_off, moov_sz, _ = moov_b
-            if moov_off + moov_sz != total:
-                raise RuntimeError('moov 不在文件末尾，暂不支持')
             f.seek(moov_off)
             moov_bytes = f.read(moov_sz)
 
@@ -5255,6 +5268,10 @@ def cut_ads_index(vpath, segs, log=None):
                 idx = tr.children.index(tkhd) + 1 if tkhd else 0
                 tr.children.insert(idx, _Box(b'edts', b'', [elst]))
 
+        # 布局判定：moov 在保留头部内（faststart）还是尾部
+        _moov_in_head = (moov_off + moov_sz <= trunc_at)
+        if not _moov_in_head and moov_off < trunc_at:
+            raise RuntimeError('moov 跨越截断点，暂不支持')
         mb = bytearray(mvhd.payload)
         if mv_ver == 0:
             struct.pack_into('>I', mb, 16, keep_movie)
@@ -5270,14 +5287,11 @@ def cut_ads_index(vpath, segs, log=None):
     try:
         with open(vpath, 'rb') as f:
             f.seek(trunc_at)
-            _tail = f.read(max(0, moov_off - trunc_at))
+            _tail = f.read(total - trunc_at)
         with open(_bak, 'wb') as fb:
             fb.write(struct.pack('>QQQ', total, trunc_at, moov_off))
             fb.write(_tail)
-            fb.write(moov_bytes)
-        _log('    回滚包 %.1f MB（尾部 %.1f + 索引 %.1f；不拷整片）'
-             % ((len(_tail) + len(moov_bytes)) / 1048576.0,
-                len(_tail) / 1048576.0, len(moov_bytes) / 1048576.0))
+        _log('    回滚包 %.1f MB（不拷整片）' % (len(_tail) / 1048576.0))
 
         _modified = True
         with open(vpath, 'r+b') as f:
@@ -5295,6 +5309,10 @@ def cut_ads_index(vpath, segs, log=None):
             f.flush()
             os.fsync(f.fileno())
         os.truncate(vpath, trunc_at + len(new_moov))
+        if _moov_in_head:
+            with open(vpath, 'r+b') as f:
+                f.seek(moov_off + 4)
+                f.write(b'free')          # 原 moov 让位，末尾的新 moov 生效
         _log('    索引裁剪：%.1f MB -> %.1f MB（头 %.1f / 尾 %.1f 秒）'
              % (total / 1048576.0, (trunc_at + len(new_moov)) / 1048576.0,
                 head_skip, tail_skip))
