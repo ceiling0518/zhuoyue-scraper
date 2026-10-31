@@ -640,7 +640,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
         q = ("SELECT id,name,title,plot,code,sem_code,path,actors,studio,year "
              "FROM items WHERE present=1 AND COALESCE(plot,'')<>''")
         args = []
-        if ids:
+        if ids:                      # 明确选中的条目一律处理，不再要求「无标签」
             q += ' AND id IN (%s)' % ','.join('?' * len(ids))
             args += list(ids)
         else:
@@ -831,6 +831,10 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
 
 def _job_fill(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
     _begin('fill' if ai else 'web 补全')
+    _log('  模式：%s | 来源：%s | 选中：%d 条'
+         % ('Web 补全' if not ai else 'AI 补全',
+            '+'.join(x for x, on in (('web', web), ('看片', scan)) if on) or '无',
+            len(ids or [])))
     try:
         ok, tot = _fill_pass(limit, ai_group, ids, web, scan, ai)
         if ai:
