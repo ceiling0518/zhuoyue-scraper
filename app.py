@@ -6434,7 +6434,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
       <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
     </span>
-    <span class="zone"><span class="zlab">检测</span>
+    <span style="flex-basis:100%;height:0"></span><span class="zone"><span class="zlab">检测</span>
       <button id="a-adtect" title="内容检测：字幕 + 去码（勾无效段才查）；勾「广告」才顺带查广告">字幕和内容检测</button>
       <label class="muted" title="顺带检测头尾广告（较慢；不勾只做字幕/去码）"><input type="checkbox" id="chk-ads"> 广告</label>
       <select id="admode" style="min-width:92px" title="广告检测范围：头尾=只扫开头/结尾各 4 分钟；全片=30 秒全网扫，能命中中插"><option value="headtail">广告头尾</option><option value="full">全片</option></select><span class="muted">最短广告</span><input id="cfg-admin" type="number" min="0" step="1" style="width:56px" title="短于这个秒数的广告段直接忽略（默认 10 秒）"> <span class="muted">秒</span>
