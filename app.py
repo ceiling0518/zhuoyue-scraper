@@ -995,7 +995,7 @@ def _job_queue(batches=None):
                     _job_addel(ids, nested=True)
                     ok += 1
                 elif task == 'subs':
-                    _job_subs(ids, p.get('lang') or 'zh',
+                    _job_subs(ids, p.get('lang') or mlib.out_lang(),
                               bool(p.get('force')), bool(p.get('enhance', True)),
                               bool(p.get('burn')))
                     ok += 1
@@ -5308,7 +5308,7 @@ class H(BaseHTTPRequestHandler):
             elif p == '/api/subs':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 _eng = (q.get('engine') or '').strip()
-                _lang2 = (q.get('lang') or 'zh')
+                _lang2 = (q.get('lang') or mlib.out_lang())
                 _trans2 = (q.get('trans') or '') in ('1', 'true', 'yes')
                 if _lang2 == 'es':
                     _eng = 'whisper'
@@ -5703,11 +5703,11 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.1.0</span> 
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
   <button id="b-sites">站点</button>
-  <button id="b-restart" title="重启服务：加载新代码 / 任务卡死时恢复">重启</button>
+  <button id="b-restart" title="重启服务：加载新代码 / 任务卡死时恢复">重启</button> <span class="muted">语言</span><select id="sublang" style="min-width:88px" title="内容语言：字幕 / AI 补全 / Web 补全 共用；SenseVoice 支持中/英/日/韩/粤"><option value="zh">中文</option><option value="ja">日文</option><option value="en">英文</option><option value="ko">韩文</option><option value="yue">粤语</option><option value="es">西班牙语</option></select>
   <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <select id="b-libsel" title="切换媒体库（每个库独立数据库）" style="min-width:132px"></select>
   <button id="b-libs" title="媒体库设置">⚙ 库</button>
-  <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select><span class="muted">输出语言</span><select id="cfg-outlang" title="元数据输出语言" style="min-width:104px"><option value="">跟随界面</option><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
+  <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
   <span class="muted">修复码率</span><select id="cfg-encmode" title="重编码时的码率策略"><option value="crf">CRF</option><option value="kbps">固定 kbps</option><option value="scale">源码率×N</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数">
@@ -5795,7 +5795,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-vdetect" title="每 30 秒抽帧判断是否有女性；连续 2 点（≥60 秒）无女性判无效，边界 5 秒细化。仅初筛，需人工核实">检测无效段</button>
     <button id="a-segs" title="编辑有效段：每个视频要保留的区间；可改起止、加段、删段，可按文件选择">有效段编辑</button>
      <button id="a-addel" title="按有效段切掉区间（勾了「合并」的视频先拼成一个，用第一个视频的名字替换原片）；原文件留 .orig 回滚点，临时文件自动清理">有效段裁剪（合并）</button>
-     <select id="sublang" style="min-width:88px" title="字幕语言：Whisper 支持全部；SenseVoice 只支持中/英/日/韩/粤（西语自动用 Whisper）"><option value="zh">中文</option><option value="ja">日文</option><option value="en">英文</option><option value="ko">韩文</option><option value="yue">粤语</option><option value="es">西班牙语</option></select>
      <label class="muted" title="生成字幕后，用本地模型把字幕翻成简体中文（与字幕语言不同时）"><input type="checkbox" id="subtrans"> 字幕翻译</label>
      <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
      <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
@@ -6553,10 +6552,12 @@ async function setUILang(v){await fetch('/api/lang?lang='+encodeURIComponent(v),
   LANG=r.lang||'zh'; OUT_LANG=r.out_lang||LANG;
   const b=document.getElementById('b-lang'); if(b)b.value=LANG;
   const o=document.getElementById('cfg-outlang'); if(o)o.value=r.out_lang||'';
+  const ss=document.getElementById('sublang'); if(ss)ss.value=r.out_lang||'ja';
   applyLang();}catch(e){}})();
 const _bl=document.getElementById('b-lang'); if(_bl)_bl.onchange=()=>setUILang(_bl.value);
-const _co=document.getElementById('cfg-outlang');
-if(_co)_co.onchange=async()=>{await fetch('/api/lang?out_lang='+encodeURIComponent(_co.value),{method:'POST'});};
+const _ss=document.getElementById('sublang');
+if(_ss)_ss.onchange=async()=>{OUT_LANG=_ss.value;
+  await fetch('/api/lang?out_lang='+encodeURIComponent(_ss.value),{method:'POST'});};
 let LIBSROWS=[],ACTIVE=0;
 const KINDTXT={av:'AV',movie:'电影',tv:'剧集'};
 function libCard(L,i){

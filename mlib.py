@@ -544,11 +544,13 @@ def javdb_domain():
 
 
 def out_lang():
-    """模型输出语言：config.out_lang 优先；留空则跟随界面语言。"""
+    """内容语言（字幕 + 补全）：config.out_lang 优先；留空默认日语。"""
     v = cfg_get('out_lang')
     if v is None or not str(v).strip():
-        v = cfg_get('lang')
-    return norm_lang(v, 'zh')
+        v = cfg_get('work_lang')
+    if v is None or not str(v).strip():
+        return 'ja'                     # 预设日语
+    return norm_lang(v, 'ja')
 
 
 def lang_rule():
@@ -742,8 +744,10 @@ def lang_ok(t):
     t = t or ''
     han = len(re.findall(r'[\u4e00-\u9fff]', t))
     kana = len(re.findall(r'[\u3040-\u30ff]', t))
-    if L in ('zh', 'zh-Hant', 'ja'):
-        return (han + kana) >= 2          # 中文/日文都允许
+    if L == 'ja':
+        return kana >= 2                  # 日语：必须真有假名，纯中文视为需翻译
+    if L in ('zh', 'zh-Hant'):
+        return (han + kana) >= 2          # 中文允许保留日文原文
     return (han + kana) < 2               # en/es：出现中日文视为需要翻译
 
 
