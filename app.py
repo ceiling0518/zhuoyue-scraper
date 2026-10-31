@@ -5248,6 +5248,7 @@ def set_cell(iid, field, value):
     """
     if field not in ('quality', 'source', 'sem_kind', 'sem_code', 'series'):
         return False
+    value = (value or '').strip()          # 允许留空：只留空格当作清空
     c = mlib.db()
     if field in ('sem_kind', 'sem_code'):
         c.execute('UPDATE items SET %s=?, sem_manual=1, last_update=? WHERE id=?' % field,
@@ -5275,7 +5276,7 @@ def save_item(iid, kv):
     for f in MODAL_FIELDS:
         if f in kv:
             sets.append('%s=?' % f)
-            vals.append(kv[f])
+            vals.append(kv[f].strip() if isinstance(kv[f], str) else kv[f])
     if not sets:
         return False
     if ('sem_kind' in kv) or ('sem_code' in kv):
@@ -6382,8 +6383,8 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
     +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+(r.subs?' <span title="有字幕 (.srt)" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字</span>':'')+(r.subs_burn?' <span title="字幕已烧录" style="background:var(--ok);color:#0b0f14;border-radius:3px;padding:0 4px;font-size:11px;font-weight:700">字🔥</span>':'')+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔'+r.nw+'</span>':'')+'<div class="meta" title="大小 '+fsize(r.tsize||r.fsize)+' ｜ 时长 '+fdur(r.mdur)+'">'+fsz(r.tsize||r.fsize)+' '+fdur(r.mdur)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
-    +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(r.series||r.skey||'')+'" title="双击修改系列">'+esc(r.series||r.skey||'—')+'</span></div>'
-    +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(r.sem_code||r.code||'')+'" title="双击修改番号">'+esc(r.sem_code||r.code||'—')+'</span></div>'
+    +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(((r.series||'').trim())||r.skey||'')+'" title="双击修改系列">'+esc(((r.series||'').trim())||r.skey||'—')+'</span></div>'
+    +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(((r.sem_code||'').trim())||r.code||'')+'" title="双击修改番号">'+esc(((r.sem_code||'').trim())||r.code||'—')+'</span></div>'
     +'<div class="meta"><span class="ed" data-f="sem_kind" data-id="'+r.id+'" data-v="'+(r.sem_kind||'')+'" title="双击修改语义">'+kindLabel(r.sem_kind)+'</span>'
     +(r.sem_manual?' <span class="muted">(人工)</span>':'')+'</div></td>'
     
@@ -6812,7 +6813,7 @@ document.addEventListener('click',async e=>{
     +'<span class="muted">质量</span><select id="ed-quality">'+sel(d.quality||'',['有','缺','有误','无','删除'])+'</select>'
     +'<span class="muted">来源</span><select id="ed-source">'+sel(d.source||'',['Web','AI'])+'</select>'
     +'<span class="muted">语义</span><select id="ed-sem_kind">'+sel(d.sem_kind||'',['coded','uncensored','none'])+'</select>'
-    +'<span class="muted">番号</span><input id="ed-sem_code" value="'+esc(d.sem_code||d.code||'')+'" style="width:180px">'
+    +'<span class="muted">番号</span><input id="ed-sem_code" value="'+esc((d.sem_code||'').trim()||d.code||'')+'" style="width:180px">'
     +'<button class="primary" id="ed-save" data-id="'+d.id+'">保存</button>'
     +'<span class="muted right">status='+esc(d.status||'')+'</span></div>'
     +'<div class="bar"><span class="muted">标题</span><input id="ed-title" value="'+esc(d.title||'')+'" style="flex:1;min-width:300px"></div>'
