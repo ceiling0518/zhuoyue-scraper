@@ -4879,13 +4879,12 @@ def mp4_index_cut(src, dst, head_skip, tail_skip):
         keep_sizes = sizes[:keep_n]
 
         chunk_samples = []
-        for ci in range(len(offs)):
-            cur = 1
-            for first, spc, _d in sc:
-                if first - 1 <= ci:
-                    cur = spc
-                else:
-                    break
+        si, cur = 0, 1
+        for ci in range(len(offs)):        # 线性推进，避免 chunks × sc 的双重循环
+            while si + 1 < len(sc) and sc[si + 1][0] - 1 <= ci:
+                si += 1
+            if sc and sc[si][0] - 1 <= ci:
+                cur = sc[si][1]
             chunk_samples.append(cur)
 
         remaining, trunc_off, kept_chunks = keep_n, offs[0], 0

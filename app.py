@@ -2869,7 +2869,10 @@ def _job_addel(ids=None, nested=False):
                 if _dur0 and _dur0 - _cur > 0.15:
                     _keep.append((_cur, _dur0))
 
-                if len(_keep) == 1:
+                _big = os.path.getsize(vp) > 3 * 1024 ** 3
+                if _big:
+                    _log('  文件大于 3GB，索引裁剪内存占用过高 -> 走重封装')
+                if len(_keep) == 1 and not _big:
                     # 头/尾广告：只改索引（elst + 尾部截断），不动视频数据
                     _log('  切 %s（头/尾广告）—— 只改索引，不重封装；操作中请勿中断'
                          % v[:56])
