@@ -6323,6 +6323,7 @@ tr.sel .selbtn{background:var(--acc);border-color:var(--acc);color:#08121f;font-
 pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;overflow:auto;font-size:11px}
 .zone{display:inline-flex;align-items:center;gap:5px;border-left:1px solid #2a3342;padding-left:10px;margin-left:6px}
 .zlab{font-size:11px;color:#8b97a8;letter-spacing:1px}
+#cfg-enchelp{font-size:10px;line-height:14px;height:14px;min-width:14px;text-align:center;padding:0 3px;border-radius:7px;margin:0 2px}
 </style></head><body>
 <header>
   <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.2.0</span> 
@@ -6428,7 +6429,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <button id="a-subs" title="语音转字幕：输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
     </span>
     <span class="zone"><span class="zlab">编辑</span>
-      <button id="a-segs" title="自定义编辑：自己填要保留的区间；可改起止、加段、删段">自定义编辑</button>
+      <button id="a-segs" title="视频编辑：自己填要保留的区间；可改起止、加段、删段">视频编辑</button>
       <label class="muted" title="按广告/无效段切掉，剩余可用段拼成一个文件"><input type="checkbox" id="e-cut"> 剪辑</label>
       <label class="muted" title="把同一条目多个视频的可用段拼到第一个文件（源文件保留）"><input type="checkbox" id="e-merge"> 合并</label>
       <label class="muted" title="按体检结果修复：索引重建/容错重编码"><input type="checkbox" id="e-fix"> 修复</label>
@@ -6525,7 +6526,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="bar"><b id="md2-title">档案</b><button class="right" id="md2-close">关闭</button></div>
   <div id="md2-body"></div></div></div>
 <div class="modal" id="modalseg"><div class="box">
-  <div class="bar"><b>自定义编辑</b><span class="muted" id="seg-info"></span><button class="right" id="mdseg-close">关闭</button></div>
+  <div class="bar"><b>视频编辑</b><span class="muted" id="seg-info"></span><button class="right" id="mdseg-close">关闭</button></div>
   <p class="muted">这里填「要保留」的区间（每个视频可多段）。保存后「头尾删除」会切掉区间以外的部分；「裁剪合并」会把它们拼成一个新视频。</p>
   <div id="seg-files" style="margin:8px 0;font-size:12px;line-height:1.9"></div>
   <table id="seg-tbl"></table>
