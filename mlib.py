@@ -4418,12 +4418,13 @@ def vis_batch(vpath, times, prompt_tpl, model=None, log=None, width=320):
 
 MOSAIC_PROMPT = (
     '下面是同一个视频在不同时间点截取的 {N} 张画面（编号 1..{N}）。\n'
-    '只看画面里女性生殖器/性器官部位的清晰程度，每张给一个档位：\n'
-    '2 = 清晰可见（无马赛克、无厚码、无贴纸遮挡）\n'
-    '1 = 中等：部分清晰、薄码、局部模糊\n'
-    '0 = 完全模糊/马赛克/厚码遮挡，看不清\n'
-    '-1 = 画面里没有相关部位\n'
-    '只输出 JSON：{{"v":[[1,2],[2,0],...]}}，不要解释。'
+    '只聚焦画面中【下半身性器官：外阴/生殖器/会阴/肛门】区域的像素清晰度，按下面标准给每张打分：\n'
+    '0 = 该区域被马赛克格子、厚码、强模糊或大面积贴纸覆盖，看不清皮肤细节\n'
+    '1 = 能看到该区域，但像素偏软/模糊/局部马赛克，细节不锐利\n'
+    '2 = 该区域清晰锐利（能看到皮肤纹理、轮廓细节），没有马赛克或明显模糊\n'
+    '-1 = 画面里看不到该区域（衣物、姿势、角度、远景导致）；看不清不等于清晰\n'
+    '不要因为画面没有打码字样就给 2；只有真正看清细节才给 2。\n'
+    '只输出 JSON：{{"v":[[1,0],[2,1],...]}}，不要解释。'
 )
 
 SUBS_PROMPT = (
@@ -4494,25 +4495,25 @@ def vis_batch_vals(vpath, times, prompt_tpl, model=None, log=None, width=320):
     return out
 
 
-def detect_mosaic(vpath, dur=None, model=None, log=None, n=12):
+def detect_mosaic(vpath, dur=None, model=None, log=None, n=16):
     """抽帧判断去码程度：'好'（无码）/ '一般' / '有'（马赛克）。"""
     dur = dur or video_duration(vpath)
     if not dur or dur < 20:
         return ''
     times = [round(dur * (i + 0.5) / n, 2) for i in range(n)]
     vals = [v for v in vis_batch_vals(vpath, times, MOSAIC_PROMPT,
-                                      model=model, log=log) if v >= 0]
+                                      model=model, log=log, width=640) if v >= 0]
     if not vals:
         return ''
     c2 = sum(1 for v in vals if v >= 2) / len(vals)
     c0 = sum(1 for v in vals if v == 0) / len(vals)
     if log:
-        log('    去码抽帧：清晰 %.0f%% / 遮挡 %.0f%%（%d 帧）'
-            % (c2 * 100, c0 * 100, len(vals)))
-    if c2 >= 0.6:
-        return '好'
-    if c0 >= 0.6:
+        log('    去码抽帧：清晰 %.0f%% / 遮挡 %.0f%% / 一般 %.0f%%（%d 帧）'
+            % (c2 * 100, c0 * 100, (1 - c2 - c0) * 100, len(vals)))
+    if c0 >= 0.5:
         return '有'
+    if c2 >= 0.8:
+        return '好'
     return '一般'
 
 
