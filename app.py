@@ -680,6 +680,56 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
         _log('  单批上限 60（自动切），请求组=%d' % batch)
         batch = 60
     ok = 0
+    _staged = []                     # 搜索结果暂存：不写库，等凑够一组再让 AI 判定
+
+    def _write_one(it, add_tags=None):
+        """一次性写入：搜索结果 + AI 标签（合并去重）。"""
+        nonlocal ok
+        _old = [x.strip() for x in (it.get('tags') or '').strip('[]').split(',') if x.strip()]
+        _seen = set(_old)
+        _add = mlib.translate_tags(list(add_tags or []))
+        for _t in _add:
+            if _t and _t not in _seen:
+                _old.append(_t)
+                _seen.add(_t)
+        _tags = ','.join(_old[:16])
+        dbc.execute("UPDATE items SET title=?, plot=?, tags=?, actors=?, studio=?, "
+                    "year=?, quality=?, source=?, last_update=? WHERE id=?",
+                    (it['title'], it['plot'], _tags, it['actors'], it['studio'],
+                     it['year'], '有' if _tags else it['quality'],
+                     it['source'], mlib.now(), it['id']))
+        dbc.commit()
+        try:
+            _row = dict(dbc.execute('SELECT * FROM items WHERE id=?', (it['id'],)).fetchone())
+            mlib.write_nfo(_row)
+        except Exception:
+            pass
+        if it.get('changed') or _add:
+            ok += 1
+        _log('[%d/%d] id=%s %s（%s）: %s | 演员 %s | 公司 %s | %s%s'
+             % (it['seq'], len(weak), it['id'],
+                'OK' if (it.get('changed') or _add) else '无变化', it['src'],
+                (it['title'] or '')[:26], (it['actors'] or '-')[:24],
+                (it['studio'] or '-')[:16], (it['year'] or '-'),
+                (' | AI +%d 标签' % len(_add)) if _add else ''))
+
+    def _flush(chunk):
+        """一组搜索完 -> 集中 AI 判定 -> 集中写入（每条只写一次）。"""
+        if not chunk:
+            return
+        _res = None
+        if ai:
+            _res = mlib.ai_tags_batch(chunk)
+            if _res is None:
+                _log('  组内 AI 解析失败 -> 逐条兜底')
+            else:
+                _log('AI 判定 %d 条（组内一次判定，一次写入）' % len(chunk))
+        for _k, _it in enumerate(chunk):
+            _t = (_res[_k] if _res and _k < len(_res) else None)
+            if ai and not _t:
+                _one = mlib.ai_tags_batch([_it])
+                _t = _one[0] if _one else None
+            _write_one(_it, _t)
 
     def _ai_fill(items):
         """对一批条目跑 AI 标签分析（与 AI 补全同一段逻辑）。"""
@@ -848,29 +898,33 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
                              != (r.get('actors') or '').strip()),
                             ((_studio or '').strip() != (r.get('studio') or '').strip()),
                             ((_year or '').strip() != (r.get('year') or '').strip())))
-            dbc.execute("UPDATE items SET title=?, plot=?, tags=?, actors=?, studio=?, "
-                        "year=?, quality=?, source=?, last_update=? WHERE id=?",
-                        (_title, _plot, tags, _actors, _studio,
-                         _year, '有' if tags else (r.get('quality') or '缺'),
-                         ('Web' if not ai else '+'.join(
-                             ({'web': 'Web', '看片': 'AI'}.get(s, s)) for s, _ in cands)),
-                         mlib.now(), r['id']))
-            dbc.commit()
-            try:
-                it = dict(dbc.execute('SELECT * FROM items WHERE id=?', (r['id'],)).fetchone())
-                mlib.write_nfo(it)
-            except Exception:
-                pass
-            if _changed:
-                ok += 1
-            _log('[%d/%d] id=%d %s（%s）: %s | 演员 %s | 公司 %s | %s'
-                 % (wi, len(weak), r['id'], 'OK' if _changed else '无变化',
-                    '+'.join(s for s, _ in cands),
-                    (_title or '')[:26], (_actors or '-')[:24],
-                    (_studio or '-')[:16], (_year or '-')))
+            _srcs = '+'.join({'web': 'Web', '看片': 'AI'}.get(s, s) for s, _ in cands)
+            _final = {'id': r['id'], 'seq': wi,
+                      'code': r.get('code') or r.get('sem_code') or '',
+                      'title': _title, 'plot': _plot, 'tags': tags,
+                      'actors': _actors, 'studio': _studio, 'year': _year,
+                      'quality': '有' if tags else (r.get('quality') or '缺'),
+                      'source': ('Web' if not ai else _srcs), 'src': _srcs,
+                      'changed': _changed}
+            if web or scan:
+                # 只暂存，不写库：等组内 AI 判定完一次性写入
+                _staged.append(_final)
+                _log('[%d/%d] id=%d 搜索完成（%s）: %s —— 暂存'
+                     % (wi, len(weak), r['id'], _srcs, (_title or '')[:26]))
+                if len(_staged) >= batch:
+                    _flush(_staged)
+                    del _staged[:]
+            else:
+                _write_one(_final)
             _tick(wi)
 
-    if not ai:                       # Web 补全：只走网站/看片，不跑模型补标签
+        if _staged:                  # 最后不足一组的尾巴
+            _flush(_staged)
+            del _staged[:]
+
+    if web or scan:                  # Web/看片：AI 已在组内判定并写入
+        return ok, len(weak)
+    if not ai:                       # AI 补全：下面按组跑标签
         return ok, len(weak)
     # 先把所有条目集中搜索完，再按 AI 组统一跑标签分析
     # web/看片模式下：只要有简介就跑 AI（web 已补出标签也照样分析，标签合并）
