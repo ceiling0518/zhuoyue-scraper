@@ -2354,7 +2354,8 @@ def _job_openbeautify(ids=None, engine='esrgan', scale=2, ad=False):
                                    cwd=RIFE_DIR, capture_output=True, timeout=7200)
                     fps_out = fps * 2
                 else:
-                    subprocess.run([exe, '-i', fin, '-o', fout, '-s', str(scale),
+                    _sc = 4 if int(scale or 2) >= 4 else (3 if int(scale or 2) == 3 else 2)
+                    subprocess.run([exe, '-i', fin, '-o', fout, '-s', str(_sc),
                                     '-n', 'realesr-animevideov3', '-f', 'png'],
                                    cwd=os.path.dirname(exe), capture_output=True, timeout=7200)
                     fps_out = fps
@@ -5127,14 +5128,29 @@ def _esrgan_up(src, dst, scale=2):
             _Im.open(src).convert('RGB').save(tin, 'PNG')
         except Exception:
             shutil.copy2(src, tin)
-        r = subprocess.run([exe, '-i', tin, '-o', tout, '-s', str(scale),
-                            '-n', 'realesrgan-x4plus'],
-                           capture_output=True, timeout=600,
+        # 注意：ncnn 版 x4plus 只有 -s 4 是原生路径，-s 2/-s 3 走「4x 再缩」
+        # 的通道，实测会拼成错位马赛克（官方 issue 也就是这条）。所以固定跑
+        # -s 4，再用 PIL 缩到需要的倍数。
+        r = subprocess.run([exe, '-i', tin, '-o', tout, '-s', '4',
+                            '-n', 'realesrgan-x4plus', '-j', '1:1:1'],
+                           capture_output=True, timeout=900,
                            cwd=os.path.dirname(exe))
         if not (os.path.exists(tout) and os.path.getsize(tout) > 2048):
             tail = (r.stderr or b'').decode('utf-8', 'replace').strip().splitlines()[-3:]
             ESR_LAST = 'rc=%s %s' % (r.returncode, ' | '.join(tail)[:200] or '无输出')
             return False
+        # 4x 原生结果 -> 目标倍数（默认 2x），用 LANCZOS + 轻微锐化
+        try:
+            from PIL import Image as _Im, ImageFilter as _If
+            _im = _Im.open(tout).convert('RGB')
+            tw = max(1, int(round(_im.width * scale / 4.0)))
+            th = max(1, int(round(_im.height * scale / 4.0)))
+            if (tw, th) != (_im.size[0], _im.size[1]):
+                _im = _im.resize((tw, th), _Im.LANCZOS)
+                _im = _im.filter(_If.UnsharpMask(radius=1.2, percent=60, threshold=2))
+            _im.save(tout, 'PNG')
+        except Exception as e:
+            ESR_LAST = '重采样失败: %s' % str(e)[:100]
         try:
             shutil.move(tout, dst)
         except Exception as e:
@@ -5219,6 +5235,82 @@ def _focus_crop(im, bbox):
     return im.crop((int(x0), int(y0), int(x0 + cw), int(y0 + ch)))
 
 
+def _crop_bars(im, frac=0.012, thr=24, keep=0.02):
+    """裁到画面真正的内容块。
+
+    只做四边等比裁剪会被角落水印挡住（水印列有亮像素，黑边就留着），
+    所以按「列/行亮像素占比」找最长连续内容段，取那段做外接矩形。
+    """
+    import numpy as np
+    a = np.asarray(im.convert('L'), dtype=np.uint8)
+    h, w = a.shape
+    bright = a > thr
+
+    def longest_run(v, minfrac):
+        best = (0, -1)
+        cur = None
+        for i, ok in enumerate(v):
+            if ok >= minfrac:
+                if cur is None:
+                    cur = i
+            else:
+                if cur is not None:
+                    if i - 1 - cur > best[1] - best[0]:
+                        best = (cur, i - 1)
+                    cur = None
+        if cur is not None and (len(v) - 1 - cur > best[1] - best[0]):
+            best = (cur, len(v) - 1)
+        return best
+
+    c0, c1 = longest_run(bright.mean(axis=0), frac)
+    if c1 - c0 < w * 0.15:
+        c0, c1 = 0, w - 1
+    sub = bright[:, c0:c1 + 1]
+    r0, r1 = longest_run(sub.mean(axis=1), frac)
+    if r1 - r0 < h * 0.15:
+        r0, r1 = 0, h - 1
+    if (c1 - c0) >= w * (1 - keep) and (r1 - r0) >= h * (1 - keep):
+        return im
+    return im.crop((int(c0), int(r0), int(c1) + 1, int(r1) + 1))
+
+
+def _poster_save(im, path, lo=100, hi=150, long_side=1440):
+    """存封面 JPEG，体积压到 lo-hi KB（先降质量，再降尺寸），尽量保清晰。"""
+    from PIL import Image
+    im = im.convert('RGB')
+    w, h = im.size
+    if max(w, h) > long_side:
+        r = long_side / float(max(w, h))
+        im = im.resize((max(1, int(w * r)), max(1, int(h * r))), Image.LANCZOS)
+    tmp = path + '.tmp.jpg'
+    best = None
+    for _ in range(3):
+        fits = []
+        for q in (96, 94, 92, 90, 88, 86, 84, 82, 80, 78, 76, 74, 72, 70, 66, 62):
+            im.save(tmp, 'JPEG', quality=q, optimize=True, progressive=True)
+            kb = os.path.getsize(tmp) / 1024.0
+            if kb <= hi:
+                fits.append((q, kb))
+                if kb >= lo:          # 落在区间内，直接用
+                    break
+        if fits:
+            q, kb = fits[-1]          # 取不超过上限里质量最高的一档
+            im.save(tmp, 'JPEG', quality=q, optimize=True, progressive=True)
+            best = kb
+            break
+        w, h = im.size
+        im = im.resize((int(w * 0.85), int(h * 0.85)), Image.LANCZOS)
+    try:
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            shutil.copyfile(tmp, path)
+            os.remove(tmp)
+        except Exception:
+            pass
+    return best or 0.0
+
+
 def _poster_refresh_one(iid, ai=False, enh=False):
     """刷新一条封面。默认：有封面/目录图就沿用，没有才截帧。"""
     dbc = mlib.db()
@@ -5238,7 +5330,7 @@ def _poster_refresh_one(iid, ai=False, enh=False):
         im, bbox = _poster_ai_frame(vp)
         if im is None:
             return '抽帧失败'
-        im = _focus_crop(im, bbox)
+        im = _focus_crop(_crop_bars(im), bbox)
         im.save(newp, 'JPEG', quality=92)
         made = newp
         note = 'AI选图' + ('+裁剪' if bbox else '')
@@ -5247,7 +5339,7 @@ def _poster_refresh_one(iid, ai=False, enh=False):
             if _esrgan_up(newp, up, 2):
                 try:
                     from PIL import Image as _Im
-                    _Im.open(up).convert('RGB').save(newp, 'JPEG', quality=93)
+                    _poster_save(_Im.open(up), newp)
                     note += '+ESRGAN'
                 except Exception:
                     note += '（ESRGAN失败）'
@@ -5271,7 +5363,7 @@ def _poster_refresh_one(iid, ai=False, enh=False):
                 if _esrgan_up(dst, up, 2):
                     try:
                         from PIL import Image as _Im
-                        _Im.open(up).convert('RGB').save(newp, 'JPEG', quality=93)
+                        _poster_save(_Im.open(up), newp)
                         made = newp
                         note = '新建+ESRGAN'
                     except Exception:
@@ -5289,7 +5381,7 @@ def _poster_refresh_one(iid, ai=False, enh=False):
             if _esrgan_up(dst, up, 2):
                 try:
                     from PIL import Image as _Im
-                    _Im.open(up).convert('RGB').save(newp, 'JPEG', quality=93)
+                    _poster_save(_Im.open(up), newp)
                     made = newp
                     note = 'ESRGAN提升'
                 except Exception:
