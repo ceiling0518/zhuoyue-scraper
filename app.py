@@ -694,6 +694,13 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                     tags = one[0] if one else None
                 if tags:
                     tags = mlib.translate_tags(tags)
+                    _old = [x.strip() for x in (r.get('tags') or '').strip('[]').split(',')
+                            if x.strip()]
+                    _seen = set(_old)
+                    for _t in tags:
+                        if _t not in _seen:
+                            _old.append(_t)
+                    tags = _old[:16]
                     dbc.execute("UPDATE items SET tags=?, quality='有', last_update=? WHERE id=?",
                                 (','.join(tags), mlib.now(), r['id']))
                     dbc.commit()
@@ -855,13 +862,18 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
     if not ai:                       # Web 补全：只走网站/看片，不跑模型补标签
         return ok, len(weak)
     # 先把所有条目集中搜索完，再按 AI 组统一跑标签分析
+    # web/看片模式下：只要有简介就跑 AI（web 已补出标签也照样分析，标签合并）
     _todo = []
     for _g in list(weak) + list(rows):
         _c = dbc.execute('SELECT tags, plot FROM items WHERE id=?',
                          (_g['id'],)).fetchone()
-        if _c and (_c['plot'] or '').strip() and \
-                not (_c['tags'] or '').strip('[] ,"'):
-            _todo.append(dict(_g, plot=_c['plot'], tags=_c['tags']))
+        if not _c:
+            continue
+        _pl = (_c['plot'] or '').strip()
+        if not _pl:
+            continue
+        if (web or scan) or not (_c['tags'] or '').strip('[] ,"'):
+            _todo.append(dict(_g, plot=_pl, tags=_c['tags']))
     if _todo:
         _ai_fill(_todo)
     return ok, len(rows) + len(weak)
