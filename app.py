@@ -702,7 +702,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
             _year = d['year']
         _old = [x.strip() for x in (it.get('tags') or '').strip('[]').split(',') if x.strip()]
         _seen = set(_old)
-        _add = mlib.translate_tags([x for x in (d.get('tags') or []) if x])
+        _add = (([x for x in (d.get('tags') or []) if x] if d.get('_tr')
+                 else mlib.translate_tags([x for x in (d.get('tags') or []) if x])))
         for _t in _add:
             if _t and _t not in _seen:
                 _old.append(_t)
@@ -741,11 +742,24 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
                 _log('  组内 AI 判定失败 -> 逐条兜底')
             else:
                 _log('  组内 AI 判定 %d 条（一次调用，一次写入）' % len(chunk))
+        if ai and _res:
+            _raw = [((_res[_k] or {}).get('tags') or []) if _k < len(_res) else []
+                    for _k in range(len(chunk))]
+            _tr = mlib.translate_tags_batch(_raw)
+            for _k, _d in enumerate(_res):
+                if _d:
+                    _d['tags'] = _tr[_k]
+                    _d['_tr'] = True
+            _log('  标签整组翻译 %d 条（一次调用）'
+                 % sum(len(x) for x in _raw))
         for _k, _it in enumerate(chunk):
             _d = _res[_k] if _res and _k < len(_res) else None
             if ai and not _d:
                 _one = mlib.ai_web_batch([_it])
                 _d = _one[0] if _one else None
+                if _d:
+                    _d['tags'] = mlib.translate_tags(_d.get('tags') or [])
+                    _d['_tr'] = True
             _write_one(_it, _d)
 
     def _ai_fill(items):
@@ -763,6 +777,9 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
             res = mlib.ai_tags_batch(chunk)
             if res is None:
                 _log('  批 %d 解析失败 -> 逐条兜底' % (i // batch + 1))
+            else:
+                res = mlib.translate_tags_batch(res)
+                _log('  标签整组翻译（一次调用）')
             for k, r in enumerate(chunk):
                 if _stop_req():
                     break
@@ -770,7 +787,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
                 if not tags:
                     one = mlib.ai_tags_batch([r])
                     tags = one[0] if one else None
-                if tags:
+                if tags and not res:
                     tags = mlib.translate_tags(tags)
                     _old = [x.strip() for x in (r.get('tags') or '').strip('[]').split(',')
                             if x.strip()]

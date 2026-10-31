@@ -626,6 +626,38 @@ def _tag_ok(t):
     return (han + kana) == 0
 
 
+def translate_tags_batch(tag_lists, model=None):
+    """批量翻译：整组只调一次模型。返回与输入同结构的标签列表。"""
+    lists = [[str(x).strip() for x in (l or []) if str(x).strip()]
+             for l in (tag_lists or [])]
+    need = []
+    for l in lists:
+        for t in l:
+            if not _tag_ok(t) and t not in need:
+                need.append(t)
+    if not need:
+        return [list(dict.fromkeys(l))[:12] for l in lists]
+    mapping = {}
+    try:
+        prompt = ('把下面的标签全部改写成%s（每个 2-8 字，专有名词保留），'
+                  '不要解释，只输出 JSON 字符串数组，顺序与输入一致：\n%s'
+                  % (LANG_NAME.get(out_lang(), '日语'),
+                     json.dumps(need, ensure_ascii=False)))
+        arr = extract_json_array(_chat(prompt, model or ai_model(),
+                                       min(4000, 160 * len(need) + 200), 0.2))
+        if isinstance(arr, list) and len(arr) == len(need):
+            for k, v in enumerate(arr):
+                v = str(v).strip()
+                if v:
+                    mapping[need[k]] = v
+    except Exception as e:
+        sys.stderr.write('  tag translate batch err %s\n' % str(e)[:80])
+    out = []
+    for l in lists:
+        out.append(list(dict.fromkeys(mapping.get(t, t) for t in l))[:12])
+    return out
+
+
 def translate_tags(tags, model=None):
     """把标签翻成内容语言；全符合就原样返回（不替换）。"""
     ts = [str(x).strip() for x in (tags or []) if str(x).strip()]
