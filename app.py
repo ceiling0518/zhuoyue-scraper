@@ -6073,7 +6073,7 @@ function batchRun(mode){return async()=>{if(!SEL.size)return alert(T('先选条�
 $('#a-web').onclick=batchRun('website');
 $('#a-ai').onclick=batchRun('ai');
 async function fillRun(web){
-  const ids=[...SEL].join(''), scan=$('#fill-scan').checked?1:0;
+  const ids=[...SEL].join(','), scan=$('#fill-scan').checked?1:0;
   const tip=web?T('未选中条目 —— 将对【全部信息不足】的条目联网补全（勾了看片则叠加看片），继续？')
                :T('未选中条目 —— 将对【全部需要补全】的条目补标签（勾了看片则先看片），继续？');
   if(!SEL.size&&!confirm(tip))return;
