@@ -6257,7 +6257,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
     <span class="muted" id="count"></span>
     <span class="muted" id="page"></span>
-    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">字</b>有 <b style="color:var(--ok)">字🔥</b>烧录</span>
+    <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 字幕 Sub/S🔥 ｜ 去码 <b style="color:#a8b3c4">●</b>有码 <b style="color:#d8dde6">◍</b>一般 <b style="color:#8fd0ff">◉</b>无码 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">字</b>有 <b style="color:var(--ok)">字🔥</b>烧录</span>
     <span class="muted right">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
@@ -6498,11 +6498,11 @@ function subIcon(r){
 function demoIcon(r){
   const d=r.demo||'';
   if(!d)return '';
-  const S={'\u6709':['#0b0f14','#0b0f14','\u6709\u7801\uff08\u672a\u53bb\u7801\uff09',''],
-           '\u4e00\u822c':['rgba(255,255,255,.32)','rgba(255,255,255,.5)','\u53bb\u7801\u4e00\u822c','inset 0 0 3px rgba(255,255,255,.9)'],
-           '\u597d':['linear-gradient(135deg,rgba(150,210,255,.9),rgba(255,255,255,.35))','rgba(255,255,255,.75)','\u53bb\u7801\u597d','inset 0 1px 2px rgba(255,255,255,.95)']};
+  const S={'\u6709':['#05070b','#a8b3c4','\u6709\u7801\uff08\u672a\u53bb\u7801\uff09','inset 0 0 0 2px rgba(255,255,255,.16)'],
+           '\u4e00\u822c':['rgba(255,255,255,.38)','rgba(255,255,255,.8)','\u53bb\u7801\u4e00\u822c','inset 0 0 4px rgba(255,255,255,.95)'],
+           '\u597d':['linear-gradient(135deg,rgba(150,210,255,.95),rgba(255,255,255,.45))','rgba(190,230,255,.95)','\u65e0\u7801\uff08\u53bb\u7801\u4f18\u79c0\uff09','inset 0 1px 3px rgba(255,255,255,.95)']};
   const m=S[d]||S['\u6709'];
-  return ' <span title="'+m[2]+'" style="display:inline-block;width:11px;height:11px;border-radius:50%;background:'+m[0]+';border:1px solid '+m[1]+';box-shadow:'+m[3]+';vertical-align:-1px"></span>';
+  return ' <span title="'+m[2]+'" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:'+m[0]+';border:1px solid '+m[1]+';box-shadow:'+m[3]+';vertical-align:-1px;margin-left:2px"></span>';
 }
 function resLabel(w,h){const m=Math.min(w,h),M=Math.max(w,h);
   return (m>=2000)?'4K':(m>=1400?'1440p':(m>=1000?'1080p':(m>=700?'720p':M+'×'+m)));}
