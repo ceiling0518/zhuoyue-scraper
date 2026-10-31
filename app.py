@@ -3190,7 +3190,7 @@ def _merge_to_first(it, dbc, mfiles, log=None):
             pass
 
 
-def _job_addel(ids=None, nested=False):
+def _job_addel(ids=None, nested=False, merge=False):
     """删除无效段：按 segs_file/ads_file（逐文件）切，校验+深检后原子替换原片。
 
     media.ads 仍作为列表展示/兼容来源；ads_file 是逐文件真值。
@@ -3209,6 +3209,29 @@ def _job_addel(ids=None, nested=False):
             if _stop_req():
                 _log('! 已请求停止'); break
             jobs = []
+            if merge and len(vids) > 1:
+                try:
+                    for _vp in vids:
+                        _v = os.path.basename(_vp)
+                        _d = repair.video_duration(_vp) or 0
+                        if not _d:
+                            continue
+                        _ads = []
+                        _rr = dbc.execute('SELECT ads FROM ads_file WHERE item_id=? AND file=?',
+                                          (it['id'], _v)).fetchone()
+                        if _rr and _rr['ads']:
+                            try:
+                                _ads = json.loads(_rr['ads'] or '[]')
+                            except Exception:
+                                _ads = []
+                        _ks = _invert_ranges(_d, _ads)
+                        dbc.execute('INSERT OR REPLACE INTO keep_file(item_id,file,segs,ts,merge) '
+                                    'VALUES(?,?,?,?,1)',
+                                    (it['id'], _v, json.dumps(_ks), mlib.now()))
+                    dbc.commit()
+                    _log('  合并可用段：%d 个视频' % len(vids))
+                except Exception as _e:
+                    _log('  合并准备失败: %s' % str(_e)[:100])
             try:
                 _keeprows = {}
                 try:
@@ -5852,7 +5875,7 @@ class H(BaseHTTPRequestHandler):
                 return self._json({'ok': True})
             elif p == '/api/addel':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
-                ok = start_job(_job_addel, ids, lane='heavy')
+                ok = start_job(_job_addel, ids, False, _tr('merge'), lane='heavy')
             elif p == '/api/downscale':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 try:
@@ -6330,7 +6353,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-subonly" title="只检测字幕：外挂字幕或烧录抽帧（很快）">字幕检测</button><button id="a-adtect" title="内容检测：字幕 + 去码（勾无效段才查）；勾「广告」才顺带查广告">字幕和内容检测</button><label class="muted" title="顺带检测头尾广告（较慢；不勾只做字幕/去码）"><input type="checkbox" id="chk-ads"> 广告</label><label class="muted" title="同时检测字幕：外挂 .srt/.ass 或已烧录"><input type="checkbox" id="chk-subdet" checked> 字幕</label><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码</label>
     <label class="muted" title="广告和内容检测时一并检无效段（无女性画面），跃慢"><input type="checkbox" id="chk-badseg"> 无效段</label>
     <button id="a-segs" title="自定义编辑：自己填要保留的区间；可改起止、加段、删段">自定义编辑</button>
-     <button id="a-addel" title="按已检出的头/尾广告切掉开头和结尾；原文件留 .orig 回滚点">头尾删除</button>
+     <button id="a-addel" title="剪切合并：按广告/无效段切掉，剩余可用段拼接成一个文件；勾「合并可用段」把多视频也拼进来">剪切合并</button><label class="muted" title="把同一条目多个视频的可用段合并到第一个文件（源文件保留，可回滚）"><input type="checkbox" id="chk-merge"> 合并可用段</label>
      <label class="muted" title="生成字幕后，用本地模型把字幕翻成简体中文（与字幕语言不同时）"><input type="checkbox" id="subtrans"> 字幕翻译</label>
      <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
      <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
@@ -6901,8 +6924,9 @@ $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('删除选中条目的广告区间？会【替换原片】：先校验时长/抽帧，再原子换名，原文件备份为 .orig 回滚点，临时文件自动清理')))return;
-    if($('#qadd-chk').checked){await qAdd('addel',[...SEL],{});return;}
-    await post('/api/addel?ids='+ids);};
+    const _mg=$('#chk-merge').checked?1:0;
+    if($('#qadd-chk').checked){await qAdd('addel',[...SEL],{merge:_mg});return;}
+    await post('/api/addel?ids='+ids+'&merge='+_mg);};
 $('#logjump').onclick=()=>{const L=$('#log');if(L){L.scrollTop=L.scrollHeight;_logFollow=true;}$('#logjump').style.display='none';};
 $('#a-down').onclick=async()=>{
   const ids=[...SEL].join(',');
