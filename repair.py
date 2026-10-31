@@ -33,15 +33,16 @@ import time
 STOP_HOOK = None
 
 # ---- 重编码码率策略（app 启动时注入；默认与历史行为一致：CRF 20）----
-ENC_MODE = 'crf'          # 'crf' | 'kbps' | 'scale'
+ENC_MODE = 'crf'          # 'crf' | 'kbps' | 'scale' | 'bpp'
 ENC_CRF = 20
 ENC_KBPS = 0              # 固定码率（kbps）
-ENC_SCALE = 1.3           # 源码率倍数（scale 模式）
+ENC_SCALE = 1.3           # 源码倍数（scale 模式）
+ENC_BPP = 0.10            # 每像素每帧比特（bpp，720p/30 帧口径）
 
 
-def set_encode(mode=None, crf=None, kbps=None, scale=None):
-    global ENC_MODE, ENC_CRF, ENC_KBPS, ENC_SCALE
-    if mode in ('crf', 'kbps', 'scale'):
+def set_encode(mode=None, crf=None, kbps=None, scale=None, bpp=None):
+    global ENC_MODE, ENC_CRF, ENC_KBPS, ENC_SCALE, ENC_BPP
+    if mode in ('crf', 'kbps', 'scale', 'bpp'):
         ENC_MODE = mode
     if crf is not None:
         try:
@@ -58,7 +59,13 @@ def set_encode(mode=None, crf=None, kbps=None, scale=None):
             ENC_SCALE = max(0.3, min(5.0, float(scale)))
         except Exception:
             pass
-    return {'mode': ENC_MODE, 'crf': ENC_CRF, 'kbps': ENC_KBPS, 'scale': ENC_SCALE}
+    if bpp is not None:
+        try:
+            ENC_BPP = max(0.01, min(1.0, float(bpp)))
+        except Exception:
+            pass
+    return {'mode': ENC_MODE, 'crf': ENC_CRF, 'kbps': ENC_KBPS,
+            'scale': ENC_SCALE, 'bpp': ENC_BPP}
 
 
 def video_kbps(path):

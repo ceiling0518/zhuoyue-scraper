@@ -1791,12 +1791,24 @@ def _run_prog(cmd, dur, log, label='', cuda=None, cwd=None, timeout=86400):
     return p.returncode, err
 
 
+def _video_wh(path):
+    """取视频分辨率；读不到返回 (0, 0)。"""
+    try:
+        _w, _h = _vinfo(path)[:2]
+        return int(_w or 0), int(_h or 0)
+    except Exception:
+        return 0, 0
+
+
 def _gpu_enc(path):
     """按设置里的码率策略生成 nvenc 参数。CRF 模式映射为 cq。"""
     if repair.ENC_MODE == 'kbps' and repair.ENC_KBPS > 0:
         k = int(repair.ENC_KBPS)
     elif repair.ENC_MODE == 'scale':
         k = int((repair.video_kbps(path) or 0) * repair.ENC_SCALE)
+    elif repair.ENC_MODE == 'bpp' and repair.ENC_BPP > 0:
+        _w, _h = _video_wh(path)
+        k = int(repair.ENC_BPP * min(_w * _h, 921600) * 30 / 1000) if (_w and _h) else 0
     else:
         k = 0
     if k > 0:
@@ -5491,6 +5503,7 @@ class H(BaseHTTPRequestHandler):
                 _n['enc_crf'] = repair.ENC_CRF
                 _n['enc_kbps'] = repair.ENC_KBPS
                 _n['enc_scale'] = repair.ENC_SCALE
+                _n['enc_bpp'] = repair.ENC_BPP
                 _n['ad_min_sec'] = mlib.AD_MIN_SEC
                 return self._json(_n)
             if p == '/api/lang':
@@ -5872,7 +5885,7 @@ class H(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 _em = q.get('enc_mode')
-                if _em in ('crf', 'kbps', 'scale'):
+                if _em in ('crf', 'kbps', 'scale', 'bpp'):
                     _ev = (q.get('enc_val') or '').strip()
                     mlib.cfg_set('enc_mode', _em)
                     if _em == 'crf':
@@ -5883,6 +5896,10 @@ class H(BaseHTTPRequestHandler):
                         _ev = _ev or '3000'
                         mlib.cfg_set('enc_kbps', _ev)
                         repair.set_encode(mode=_em, kbps=_ev)
+                    elif _em == 'bpp':
+                        _ev = _ev or '0.10'
+                        mlib.cfg_set('enc_bpp', _ev)
+                        repair.set_encode(mode=_em, bpp=_ev)
                     else:
                         _ev = _ev or '1.3'
                         mlib.cfg_set('enc_scale', _ev)
@@ -5898,6 +5915,7 @@ class H(BaseHTTPRequestHandler):
                                    'enc_crf': repair.ENC_CRF,
                                    'enc_kbps': repair.ENC_KBPS,
                                    'enc_scale': repair.ENC_SCALE,
+                                   'enc_bpp': repair.ENC_BPP,
                                    'ad_min_sec': mlib.AD_MIN_SEC})
             elif p == '/api/lang':
                 if q.get('lang') is not None:
@@ -6071,7 +6089,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
-  <span class="muted">输出码率</span><select id="cfg-encmode" title="重编码/格式转换时的输出码率策略"><option value="crf">CRF</option><option value="kbps">固定 kbps</option><option value="scale">源码率×N</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数">
+  <span class="muted">输出码率</span><select id="cfg-encmode" title="输出码率：动态质量（CRF）/ 固定码率 / 源码倍数 / 按 bpp（720p/30 帧口径）"><option value="crf">动态质量（CRF）</option><option value="kbps">固定码率</option><option value="scale">源码倍数</option><option value="bpp">按 bpp</option></select><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数">
   <span class="muted">最短广告</span><input id="cfg-admin" type="number" min="0" step="1" style="width:56px" title="短于这个秒数的广告段直接忽略（默认 10 秒）"> <span class="muted">秒</span>
   <button id="cfg-models" title="查看在用模型、下载开源模型">其他模型</button>
   <button id="cfg-save">保存设置</button>
@@ -6848,7 +6866,7 @@ $('#cfg-save').onclick=async()=>{await fetch('/api/config?model='+encodeURICompo
   $('#cfg-port').value=n.port||8800; $('#cfg-lan').checked=!!n.lan;
   if(n.bak_days!==undefined)$('#cfg-bakdays').value=n.bak_days;
   if(n.enc_mode!==undefined){$('#cfg-encmode').value=n.enc_mode;
-    $('#cfg-encval').value=(n.enc_mode==='crf')?n.enc_crf:((n.enc_mode==='kbps')?n.enc_kbps:n.enc_scale);}
+    $('#cfg-encval').value=(n.enc_mode==='crf')?n.enc_crf:((n.enc_mode==='kbps')?n.enc_kbps:((n.enc_mode==='bpp')?n.enc_bpp:n.enc_scale));}
   if(n.ad_min_sec!==undefined)$('#cfg-admin').value=n.ad_min_sec;
   if(n.lan)console.log(T('局域网已开启: ')+(n.urls||[]).join('  '));}catch(e){}})();
 $('#b-pipeline').onclick=()=>post('/api/pipeline?limit='+$('#limit').value+'&group='+$('#semg').value+'&ai_group='+$('#aig').value);
@@ -7319,7 +7337,8 @@ def main():
         _es = repair.set_encode(mlib.cfg_get('enc_mode') or 'crf',
                                 mlib.cfg_get('enc_crf') or 20,
                                 mlib.cfg_get('enc_kbps') or 0,
-                                mlib.cfg_get('enc_scale') or 1.3)
+                                mlib.cfg_get('enc_scale') or 1.3,
+                                mlib.cfg_get('enc_bpp') or 0.10)
         print('    encode : %s (crf=%s kbps=%s scale=%s)'
               % (_es['mode'], _es['crf'], _es['kbps'], _es['scale']))
     except Exception as _e:
