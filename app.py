@@ -6368,13 +6368,11 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="stickytop" id="stickytop">
   <div class="cards" id="cards"></div>
   <div class="bar">
-    <button class="primary" id="b-pipeline">① 全流程</button>
+    <button id="b-pipeline">① 全流程</button>
     <button id="b-incr">增量扫描</button>
     <label class="muted" title="扫描后接着跑语义"><input type="checkbox" id="inc-sem"> 语义</label>
     <button id="b-sem">语义识别</button>
     <button id="b-fetch">抓取</button>
-    <button id="b-qrun">跑队列</button>
-    <button id="b-qview">队列详情</button>
 
     <button class="danger" id="b-stop">停止</button>
     <span class="muted" title="最多处理多少条；0 = 全部">上限</span><input id="limit" type="number" value="0" style="width:64px">
@@ -6400,9 +6398,9 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="f-order" title="正序 / 倒序"><option value="asc">正序 ↑</option><option value="desc">倒序 ↓</option></select>
   </div>
   <div class="bar" id="actbar" style="background:#171c25">
-    <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
-    <label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
-    <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理嵌套目录</button>
+    <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理目录</button>
+<label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
+<label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
     <span class="muted">|</span>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
@@ -6410,8 +6408,10 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-selnone">取消选择</button>
     <span class="muted">|</span>
     <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
-    <button id="a-open" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">打开目录</button><button id="b-refresh" style="background:#2e7d32;border-color:#2e7d32;color:#fff">刷新</button>
+    <button id="a-open" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">打开目录</button><button id="b-refresh" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">刷新</button>
     
+     <button id="b-qrun" style="background:#1e5a35;border-color:#2b7a49;color:#cff5dd">跑队列</button>
+    <button id="b-qview" style="background:#1e5a35;border-color:#2b7a49;color:#cff5dd">队列详情</button>
      <label class="muted" title="勾上后：降分辨率/裁剪/字幕/检测/补全 等按钮只把条目加入队列，不立即执行；可边跑边攒批次"><input type="checkbox" id="qadd-chk"> 加入队列</label> <span class="muted" style="margin-left:4px">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="infobar" style="background:#141922">
@@ -6420,7 +6420,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 去码 <b style="color:#a8b3c4">●</b>有码 <b style="color:#d8dde6">◍</b>一般 <b style="color:#8fd0ff">◉</b>无码 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">Sub</b>有 <b style="color:var(--ok)">S🔥</b>烧录 <b style="color:#7b8798;text-decoration:line-through">Sub</b>无</span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
-    <span class="zone" style="border-left:0"><span class="zlab">刮削</span>
+    <span class="zone"><span class="zlab">刮削</span>
       <button id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
       <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
       <label class="muted" title="勾选后：AI 补全 / Web 补全 都会先抽帧看片（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
