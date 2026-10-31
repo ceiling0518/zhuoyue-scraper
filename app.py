@@ -5577,7 +5577,7 @@ def _poster_save(im, path, lo=100, hi=150, long_side=1200, minq=86):
     return 0.0
 
 
-def _poster_refresh_one(iid, ai=False, enh=False, force=False):
+def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
     """刷新一条封面。默认：有封面/目录图就沿用，没有才截帧。"""
     dbc = mlib.db()
     r = dbc.execute('SELECT path FROM items WHERE id=?', (iid,)).fetchone()
@@ -5608,10 +5608,12 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False):
         im, bbox = _poster_ai_frame(vp)
         if im is None:
             return '抽帧失败'
-        im = _focus_crop(_crop_bars(im), bbox)
+        im = _crop_bars(im)
+        if comp:
+            im = _focus_crop(im, bbox)
         im.save(newp, 'JPEG', quality=92)
         made = newp
-        note = 'AI补完' + ('+裁剪' if bbox else '')
+        note = ('AI选图+补完' if comp else 'AI选图') + ('（人脸裁切）' if (comp and bbox) else '')
         if enh:
             up = os.path.join(p, 'poster.up.png')
             if _esrgan_up(newp, up, 2):
@@ -5629,6 +5631,31 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False):
                 note += '（ESRGAN不可用）'
                 if ESR_LAST:
                     _log('      ESRGAN 原因: ' + ESR_LAST)
+    elif comp and os.path.exists(dst):
+        # 只补完：不重新抽帧，拿现有封面重新构图（去黑边/相机位）
+        try:
+            from PIL import Image as _Im
+            im = _Im.open(dst).convert('RGB')
+            im = _focus_crop(_crop_bars(im), None)
+            im.save(newp, 'JPEG', quality=92)
+            made, note = newp, 'AI补完'
+        except Exception as e:
+            return '补完失败: %s' % str(e)[:60]
+        if enh:
+            up = os.path.join(p, 'poster.up.png')
+            if _esrgan_up(newp, up, 2):
+                try:
+                    from PIL import Image as _Im2
+                    _poster_save(_Im2.open(up), newp)
+                    note += '+ESRGAN'
+                except Exception:
+                    note += '（ESRGAN失败）'
+                try:
+                    os.remove(up)
+                except Exception:
+                    pass
+            else:
+                note += '（ESRGAN不可用）'
     else:
         if not os.path.exists(dst):
             out = make_poster(iid, upgrade=False)
@@ -5716,7 +5743,7 @@ def _run_bounded(fn, timeout, *a):
     return box.get('v')
 
 
-def _job_poster_refresh(ids=None, ai=False, enh=False, force=False):
+def _job_poster_refresh(ids=None, ai=False, enh=False, force=False, comp=False):
     _begin('poster', 1)
     try:
         its = _items_by_ids(ids)
@@ -5729,7 +5756,7 @@ def _job_poster_refresh(ids=None, ai=False, enh=False, force=False):
                 break
             try:
                 msg = _run_bounded(_poster_refresh_one, lim, it['id'], bool(ai), bool(enh),
-                                   bool(force))
+                                   bool(force), bool(comp))
             except TimeoutError as e:
                 msg = '超时跳过（%s）' % str(e)[:60]
             except Exception as e:
@@ -6468,8 +6495,9 @@ class H(BaseHTTPRequestHandler):
                 _ai = (q.get('ai') or '') in ('1', 'true', 'yes')
                 _enh = (q.get('enh') or '') in ('1', 'true', 'yes')
                 _fo = (q.get('force') or '') in ('1', 'true', 'yes')
-                if _ai or _enh:
-                    ok = start_job(_job_poster_refresh, tids or None, _ai, _enh, _fo,
+                _cp = (q.get('comp') or '') in ('1', 'true', 'yes')
+                if _ai or _enh or _cp:
+                    ok = start_job(_job_poster_refresh, tids or None, _ai, _enh, _fo, _cp,
                                    lane='light', exclusive=bool(_ai))
                     return self._json({'ok': True, 'queued': bool(ok)})
                 n = refresh_thumbs(tids or None, make=True)
@@ -6834,7 +6862,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     </span>
     <span class="zone"><span class="zlab">维护</span>
       <button id="a-thumbs" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">刷新缩略图</button>
-      <label class="muted" title="AI 补完：由 AI 判定是裁切还是补全，优先整体身体，其次脸部，再局部体态；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI补完</label>
+      <label class="muted" title="AI 选图：抽帧评分，优先整体身体，其次脸部，再局部体态"><input type="checkbox" id="thumb-ai"> AI选图</label>
+<label class="muted" title="AI 补完：对现有/新封面重新构图（去黑边、按人脸位置裁切），不重新抽帧"><input type="checkbox" id="thumb-comp"> AI补完</label>
       <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
       <button id="a-coverdel">删除封面图</button>
       <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
@@ -7935,8 +7964,9 @@ $('#b-stop').title='停止：不再开始新任务；按住 Shift 点击 = 强�
 $('#b-refresh').onclick=()=>list();
 $('#b-reload').onclick=()=>list();   // 只重拉列表，不动整页
 $('#a-thumbs').onclick=async()=>{if(!SEL.size)return;
-  const _ai=$('#thumb-ai').checked?1:0, _enh=$('#thumb-enh').checked?1:0;
-  const r=await post('/api/thumbs/refresh?ids='+[...SEL].join(',')+'&ai='+_ai+'&enh='+_enh);
+  const _ai=$('#thumb-ai').checked?1:0, _enh=$('#thumb-enh').checked?1:0,
+        _cp=$('#thumb-comp').checked?1:0;
+  const r=await post('/api/thumbs/refresh?ids='+[...SEL].join(',')+'&ai='+_ai+'&enh='+_enh+'&comp='+_cp);
   if(r.queued)return;
   THUMBV++;await list();};
 $('#a-coverdel').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
