@@ -799,6 +799,23 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
 
     if not ai:                       # Web 补全：只走网站/看片，不跑模型补标签
         return ok, len(weak)
+    # Web/看片之后：把仍然缺标签、但有简介的条目纳入 AI 标签分析。
+    # 选条目的场景 _force 会把 weak 设成全部，原来 rows 为空 -> AI 一步永远不跑。
+    if web or scan:
+        _seen, _ai_rows = set(), []
+        for _r in list(rows) + list(weak):
+            if _r['id'] in _seen:
+                continue
+            _seen.add(_r['id'])
+            _cur = dbc.execute('SELECT plot, tags FROM items WHERE id=?',
+                               (_r['id'],)).fetchone()
+            if not _cur:
+                continue
+            _pl = (_cur['plot'] or '').strip()
+            _tg = (_cur['tags'] or '').strip()
+            if _pl and (_tg in ('', '[]', 'null') or not _tg.strip('[] ,"')):
+                _ai_rows.append(dict(_r, plot=_pl, tags=_tg))
+        rows = _ai_rows
     _tick(0, len(rows))
     _log('AI 补全 %d 条，%d 条一批（只看简介，不看文件名）' % (len(rows), batch))
     for i in range(0, len(rows), batch):
