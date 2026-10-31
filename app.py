@@ -5361,7 +5361,7 @@ def _poster_stat(dst):
         return 0.0, 0, 0
 
 
-def _needs_enh(dst, bpp_hi=0.03, short_lo=600):
+def _needs_enh(dst, bpp_hi=0.03, short_lo=480):
     """要不要做提升画质：bpp<=0.03（红框）或短边<600 才做。
 
     一般/良好（彩框）的封面不再重复超分——重复超分只会糊。
@@ -7005,8 +7005,8 @@ function tcls(r){
   const w=+r.pw||0,h=+r.ph||0,b=+r.pbpp||0;
   if(w&&h){
     const mn=Math.min(w,h),mx=Math.max(w,h);
-    if(b<=0.03||mn<360)return ' tbad';
-    if(mn>=480&&mx>=854)return ' tgood';   // 480p/150dpi 够用，不再苛求
+    if(b<=0.03||mn<300)return ' tbad';
+    if(mn>=360&&mx>=640)return ' tgood';   // 480p 级 / 75dpi 就够，正规下载的封面都能进彩框
     return '';
   }
   const t=+r.tbpp||0;
