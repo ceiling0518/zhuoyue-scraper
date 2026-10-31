@@ -3657,8 +3657,13 @@ def apply_result(dbc, iid, d, status):
         return re.sub(r'[^0-9A-Za-z\u3040-\u30ff\u4e00-\u9fff]+', '', s or '')
 
     not_cleaned = bool(_nm) and (_sq(title) == _sq(_nm) or _sq(plot) == _sq(_nm))
-    source = {'javbus': 'Web', 'javdb': 'Web', 'missav': 'Web', 'ai': 'AI'}.get(
-        d.get('source'), 'AI')
+    _src = (d.get('source') or '').strip().lower()
+    if _src == 'ai':
+        source = 'AI'
+    elif _src:
+        source = 'Web'          # javbus/javdb/missav/avfan/netflav/jav321/123av...
+    else:
+        source = 'Web' if status == 'website' else 'AI'
     if name_is_useless(_nm):
         quality = '缺'          # 名字没信息 -> 只能等 AI 看视频
     elif not title:
