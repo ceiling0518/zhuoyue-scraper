@@ -1826,8 +1826,12 @@ def _video_wh(path):
 
 def _gpu_enc(path):
     """按设置里的码率策略生成 nvenc 参数。CRF 模式映射为 cq。"""
+    _rc = 'vbr'
     if repair.ENC_MODE == 'kbps' and repair.ENC_KBPS > 0:
         k = int(repair.ENC_KBPS)
+    elif repair.ENC_MODE == 'cbr' and repair.ENC_KBPS > 0:
+        k = int(repair.ENC_KBPS)
+        _rc = 'cbr'
     elif repair.ENC_MODE == 'scale':
         k = int((repair.video_kbps(path) or 0) * repair.ENC_SCALE)
     elif repair.ENC_MODE == 'bpp' and repair.ENC_BPP > 0:
@@ -1836,8 +1840,8 @@ def _gpu_enc(path):
     else:
         k = 0
     if k > 0:
-        return ['-c:v', 'hevc_nvenc', '-gpu', '0', '-preset', 'p5', '-rc', 'vbr',
-                '-b:v', '%dk' % k, '-maxrate', '%dk' % int(k * 1.4),
+        return ['-c:v', 'hevc_nvenc', '-gpu', '0', '-preset', 'p5', '-rc', _rc,
+                '-b:v', '%dk' % k, '-maxrate', '%dk' % (k if _rc == 'cbr' else int(k * 1.4)),
                 '-bufsize', '%dk' % int(k * 2), '-pix_fmt', 'yuv420p']
     return ['-c:v', 'hevc_nvenc', '-gpu', '0', '-preset', 'p5', '-rc', 'vbr',
             '-cq', str(repair.ENC_CRF), '-pix_fmt', 'yuv420p']
@@ -6324,6 +6328,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 .zone{display:inline-flex;align-items:center;gap:5px;border-left:1px solid #2a3342;padding-left:10px;margin-left:6px}
 .zlab{font-size:11px;color:#8b97a8;letter-spacing:1px}
 #cfg-enchelp{font-size:10px;line-height:14px;height:14px;min-width:14px;text-align:center;padding:0 3px;border-radius:7px;margin:0 2px}
+.helpq{display:inline-block;width:14px;height:14px;line-height:12px;border:1px solid #39455a;border-radius:50%;text-align:center;font-size:10px;cursor:help;margin:0 4px;color:#8b97a8;vertical-align:middle}
 </style></head><body>
 <header>
   <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.2.0</span> 
@@ -6436,10 +6441,10 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <label class="muted" title="调整码率：按目标分辨率/帧率重编码"><input type="checkbox" id="e-br"> 调整码率</label>
       <select id="downtgt" style="min-width:86px" title="目标分辨率：Res.-auto=不缩放（配合提质）；1080/720/480 才降"><option value="auto">Res.-auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
       <select id="downfps" style="min-width:86px" title="目标帧率：Fps-auto=保持（>45 自动降 30）；高于原帧率插帧，低于则丢帧"><option value="0">Fps-auto</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
-      <span class="muted" title="画质修复：Topaz 质量最好；ESRGAN 超分；RIFE 插帧" style="cursor:help;margin:0 3px">?</span><label class="muted" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE"><input type="checkbox" id="e-beaut"> 画质修复</label>
+      <label class="muted" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE"><input type="checkbox" id="e-beaut"> 画质修复</label><span class="helpq" title="画质修复：用 AI 模型重绘细节、提升清晰度。Topaz Proteus：去噪/修复压缩痕迹，质量最好（需本机装 Topaz）；ESRGAN：超分放大 2x/3x/4x（适合低分辨率）；RIFE：插帧提升流畅度（适合低帧率）。会替换原片并保留 .orig 回滚点，耗时较长。">?</span>
       <select id="beaut-engine" style="min-width:72px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">ESRGAN</option><option value="rife">RIFE 插帧</option></select>
       <select id="beaut-scale" style="min-width:46px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
-      <label class="muted" title="格式转换：按「输出码率」重编码为 HEVC（分辨率不变）"><input type="checkbox" id="e-conv"> 格式转换</label>   <span class="muted" id="cfg-enchelp" title="" style="cursor:help;padding:0;margin:0 3px;border:0;background:none">?</span><span class="muted">输出码率</span><select id="cfg-encmode" style="min-width:72px" title="输出码率：恒定质量 / 动态码率 / 源码倍数 / 帧单位码率"><option value="crf">恒定质量</option><option value="kbps">动态码率</option><option value="scale">源码倍数</option><option value="bpp">帧单位码率</option></select><input id="cfg-encval" type="text" inputmode="decimal" style="width:48px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数；bpp 填 0.08-0.12"><span class="muted" id="cfg-encunit" style="margin-left:4px">CRF</span>
+      <label class="muted" title="格式转换：按「输出码率」重编码为 HEVC（分辨率不变）"><input type="checkbox" id="e-conv"> 格式转换</label>   <span class="helpq" id="cfg-enchelp" title="">?</span><select id="cfg-encmode" style="min-width:72px" title="输出码率：恒定质量 / 动态码率 / 源码倍数 / 帧单位码率"><option value="bpp">帧单位码率</option><option value="kbps">动态码率</option><option value="cbr">固定码率</option><option value="crf">恒定质量</option></select><input id="cfg-encval" type="text" inputmode="decimal" style="width:48px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数；bpp 填 0.08-0.12"><span class="muted" id="cfg-encunit" style="margin-left:4px">CRF</span>
       <button id="a-edit" style="background:#2e7d32;border-color:#2e7d32;color:#fff" title="按顺序执行勾选的编辑操作">执行</button>
     </span>
     <span style="display:none">
@@ -7160,12 +7165,12 @@ $('#cfg-save').onclick=async()=>{await fetch('/api/config?model='+encodeURICompo
     +'&ad_min='+encodeURIComponent($('#cfg-admin').value||''),{method:'POST'})).json();
   if(n.msg)console.log(n.msg); if(n.urls&&n.urls.length)console.log(T('访问地址: ')+n.urls.join('  '));
   cfg();};
-const ENC_DOC={crf:'恒定质量（CRF 0-51）\n按画质目标编码，码率随画面复杂度浮动，不保证文件大小。\n0=几乎无损（18左右视觉无损，23默认，28明显省体积，35+明显糊，51=最差）。\n适合：画质优先、体积无所谓。',kbps:'动态码率（VBR，kbps）\n给定平均码率，复杂画面多给、简单画面少给，峰值不超过 1.4×。\n体积可预期，适合减肥。例：3000 = 平均 3 Mbps。',scale:'源码倍数（×）\n目标码率 = 源码率 × 倍数。\n例：0.6 = 压到源的 60%；1.0 = 与源码率相同。',bpp:'帧单位码率（bpp）\n每像素每帧分到的比特：目标码率 = bpp × min(宽×高,720p) × 30。\n0.08 良好线，0.10-0.12 推荐，<0.03 信息量不足。\n不同分辨率自动适配（前提：720p/30 帧口径）。'};function encUnit(){const m=$('#cfg-encmode').value;const U={crf:'CRF',kbps:'kbps',scale:'\u00d7 \u6e90',bpp:'bpp'};const el=$('#cfg-encunit');if(el)el.textContent=U[m]||'';const inp=$('#cfg-encval');if(inp)inp.step=(m==='bpp')?'0.01':((m==='scale')?'0.1':'1');const sel=$('#cfg-encmode');if(sel)sel.title=ENC_DOC[m]||'';const hp=$('#cfg-enchelp');if(hp)hp.title=(ENC_DOC[m]||'')+'\n\n\u5176\u4ed6\u6a21\u5f0f\uff1a\n'+['crf','kbps','scale','bpp'].map(k=>'\u00b7 '+ENC_DOC[k].split('\n')[0]).join('\n');}
+const ENC_DOC={crf:'恒定质量（CRF 0-51）\n按画质目标编码，码率随画面复杂度浮动，不保证文件大小。\n0=几乎无损（18左右视觉无损，23默认，28明显省体积，35+明显糊，51=最差）。\n适合：画质优先、体积无所谓。',cbr:'固定码率（CBR，kbps）\n按固定码率编码，流量稳定；画面复杂时画质会下降。\n适合限流量/稳定传输。\u4f8b：3000 = 3 Mbps。',kbps:'动态码率（VBR，kbps）\n给定平均码率，复杂画面多给、简单画面少给，峰值不超过 1.4×。\n体积可预期，适合减肥。例：3000 = 平均 3 Mbps。',scale:'源码倍数（×）\n目标码率 = 源码率 × 倍数。\n例：0.6 = 压到源的 60%；1.0 = 与源码率相同。',bpp:'帧单位码率（bpp）\n每像素每帧分到的比特：目标码率 = bpp × min(宽×高,720p) × 30。\n0.08 良好线，0.10-0.12 推荐，<0.03 信息量不足。\n不同分辨率自动适配（前提：720p/30 帧口径）。'};function encUnit(){const m=$('#cfg-encmode').value;const U={crf:'CRF',kbps:'kbps',cbr:'kbps',scale:'\u00d7 \u6e90',bpp:'bpp'};const el=$('#cfg-encunit');if(el)el.textContent=U[m]||'';const inp=$('#cfg-encval');if(inp)inp.step=(m==='bpp')?'0.01':((m==='scale')?'0.1':'1');const sel=$('#cfg-encmode');if(sel)sel.title=ENC_DOC[m]||'';const hp=$('#cfg-enchelp');if(hp)hp.title=(ENC_DOC[m]||'')+'\n\n\u5176\u4ed6\u6a21\u5f0f\uff1a\n'+['crf','kbps','scale','bpp'].map(k=>'\u00b7 '+ENC_DOC[k].split('\n')[0]).join('\n');}
 (async()=>{try{const n=await(await fetch('/api/net')).json();
   $('#cfg-port').value=n.port||8800; $('#cfg-lan').checked=!!n.lan;
   if(n.bak_days!==undefined)$('#cfg-bakdays').value=n.bak_days;
   if(n.enc_mode!==undefined){$('#cfg-encmode').value=n.enc_mode;
-    $('#cfg-encval').value=(n.enc_mode==='crf')?n.enc_crf:((n.enc_mode==='kbps')?n.enc_kbps:((n.enc_mode==='bpp')?n.enc_bpp:n.enc_scale));}
+    $('#cfg-encval').value=(n.enc_mode==='crf')?n.enc_crf:((n.enc_mode==='kbps'||n.enc_mode==='cbr')?n.enc_kbps:((n.enc_mode==='bpp')?n.enc_bpp:n.enc_scale));}
   encUnit();$('#cfg-encmode').onchange=encUnit;
   if(n.ad_min_sec!==undefined)$('#cfg-admin').value=n.ad_min_sec;
   if(n.lan)console.log(T('局域网已开启: ')+(n.urls||[]).join('  '));}catch(e){}})();

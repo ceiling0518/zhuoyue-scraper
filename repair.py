@@ -42,7 +42,7 @@ ENC_BPP = 0.10            # 每像素每帧比特（bpp，720p/30 帧口径）
 
 def set_encode(mode=None, crf=None, kbps=None, scale=None, bpp=None):
     global ENC_MODE, ENC_CRF, ENC_KBPS, ENC_SCALE, ENC_BPP
-    if mode in ('crf', 'kbps', 'scale', 'bpp'):
+    if mode in ('crf', 'kbps', 'cbr', 'scale', 'bpp'):
         ENC_MODE = mode
     if crf is not None:
         try:
@@ -100,6 +100,11 @@ def video_duration(path):
 
 def enc_args(path=None):
     """返回 ffmpeg 视频编码参数列表（不含 -y/输出）。"""
+    if ENC_MODE == 'cbr' and ENC_KBPS > 0:
+        k = int(ENC_KBPS)
+        return ['-c:v', 'libx264', '-preset', 'veryfast',
+                '-b:v', '%dk' % k, '-minrate', '%dk' % k, '-maxrate', '%dk' % k,
+                '-bufsize', '%dk' % int(k * 2), '-x264-params', 'nal-hrd=cbr']
     if ENC_MODE == 'kbps' and ENC_KBPS > 0:
         k = int(ENC_KBPS)
         return ['-c:v', 'libx264', '-preset', 'veryfast',
