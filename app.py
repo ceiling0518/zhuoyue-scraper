@@ -5846,7 +5846,15 @@ class H(BaseHTTPRequestHandler):
                     mlib.cfg_set('model', q['model'])
                 return self._json({'ok': True, 'root': mlib.scan_root(), 'model': mlib.ai_model()})
             if p == '/api/scan':
-                ok = start_job(_job_scan, q.get('mode') or 'incr',
+                _mode0 = q.get('mode') or 'incr'
+                if _mode0 == 'rebuild':
+                    try:
+                        _n0 = mlib.db().execute('SELECT COUNT(*) FROM items').fetchone()[0]
+                    except Exception:
+                        _n0 = 0
+                    if _n0:
+                        return self._json({'ok': False, 'error': '库已有 %d 条记录，禁止建库（建库仅对空库可用）' % _n0}, 400)
+                ok = start_job(_job_scan, _mode0,
                                (q.get('sem') or '') in ('1', 'true', 'yes'),
                                (q.get('ad') or '') in ('1', 'true', 'yes'),
                                (q.get('media') or '') in ('1', 'true', 'yes'),
@@ -6340,7 +6348,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 <header>
   <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.2.0</span> 
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
-  <button id="b-restart" title="重启服务：加载新代码 / 任务卡死时恢复">重启</button>
+  <button class="danger" id="b-restart" title="重启服务：加载新代码 / 任务卡死时恢复">重启</button>
   <button id="b-sites">站点</button>
   <button id="b-archive">档案</button>
   <button id="a-series" title="编辑语义/系列表：系列、是否有番号、语义、备注、出版商">系列表</button>
@@ -6348,6 +6356,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <select id="b-lang" title="界面语言 / UI language" style="min-width:96px"><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="es">Español</option><option value="zh-Hant">繁體中文</option></select>
   <select id="b-libsel" title="切换媒体库（每个库独立数据库）" style="min-width:132px"></select>
   <button id="b-libs" title="媒体库设置">⚙ 库</button>
+  <button class="warn-btn" id="b-rebuild" disabled title="建库：仅空库可用">建库</button>
   <span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap"><span class="muted">模型</span><select id="cfg-model" style="width:156px"></select></span>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
   <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
@@ -6360,7 +6369,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="cards" id="cards"></div>
   <div class="bar">
     <button class="primary" id="b-pipeline">① 全流程</button>
-    <button class="warn-btn" id="b-rebuild">建库</button>
     <button id="b-incr">增量扫描</button>
     <label class="muted" title="扫描后接着跑语义"><input type="checkbox" id="inc-sem"> 语义</label>
     <button id="b-sem">语义识别</button>
@@ -6604,14 +6612,17 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
      ['语义未跑',sm['(未跑)']||0],['档案',s.archive],
      ['体检问题',s.hbad||0],['广告/无效段',s.adbad||0],['码率差',s.lowbpp||0]]
     .map(([k,v])=>'<div class="card"><b>'+v+'</b><span>'+k+'</span></div>').join('');
-  $('#qcount').textContent=s.queue||0;}
+  $('#qcount').textContent=s.queue||0;
+  DB_FULL=((s.total||0)+(s.archive||0))>0;
+  const _rb=$('#b-rebuild'); if(_rb){_rb.disabled=DB_FULL;_rb.title=DB_FULL?'建库仅对空库可用（当前库已有内容）':'建库：清空并重建全部档案（仅空库可用）';}}
+let DB_FULL=false;
 async function job(){const j=await(await fetch('/api/job')).json();
   if(!j.running&&_jbWas){_jbWas=false;if(/^(health|repair)/.test(j.name||''))_afterOp();}
   if(j.running)_jbWas=true;
   setLog(j.log||[]);
   const p=j.total?Math.round(j.done*100/j.total):0;
   $('#prog').firstElementChild.style.width=(j.running?Math.max(p,3):(j.done?'100':'0'))+'%';
-  const busy=j.running;['b-pipeline','b-rebuild','b-incr','b-sem','b-fetch','b-qrun'].forEach(i=>$('#'+i).disabled=busy);
+  const busy=j.running;['b-pipeline','b-incr','b-sem','b-fetch','b-qrun'].forEach(i=>$('#'+i).disabled=busy);const _rb2=$('#b-rebuild');if(_rb2)_rb2.disabled=busy||DB_FULL;
   $('#b-stop').disabled=!busy;$('#qcount').textContent=j.queue||0;}
 let _logText='', _logFollow=true;
 function setLog(lines){
