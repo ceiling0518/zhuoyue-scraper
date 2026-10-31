@@ -6368,7 +6368,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <div class="stickytop" id="stickytop">
   <div class="cards" id="cards"></div>
   <div class="bar">
-    <button id="b-pipeline">① 全流程</button>
+    <button id="b-pipeline" style="font-size:13px;font-weight:600">① 全流程</button>
     <button id="b-incr">增量扫描</button>
     <label class="muted" title="扫描后接着跑语义"><input type="checkbox" id="inc-sem"> 语义</label>
     <button id="b-sem">语义识别</button>
@@ -6398,20 +6398,20 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <select id="f-order" title="正序 / 倒序"><option value="asc">正序 ↑</option><option value="desc">倒序 ↓</option></select>
   </div>
   <div class="bar" id="actbar" style="background:#171c25">
-    <button id="a-flatten" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理目录</button>
+    <button id="a-flatten" style="background:#4a3f14;border-color:#63551c;color:#f0d98a" title="不勾 AI：平铺嵌套子目录（P_/V_）；勾上 AI：读取目录+文件名+已抓信息，生成改名计划，可在列表里改">整理目录</button>
 <label class="muted" title="勾上 = 平铺 + AI 改名（目录=番号-标题，文件=目录名+扩展名）；不勾 = 只平铺"><input type="checkbox" id="flat-ai"> AI</label>
 <label class="muted" title="同时改条目上一级（系列/根目录）名称；不会碰扫描根目录"><input type="checkbox" id="flat-root"> 根目录</label>
     <span class="muted">|</span>
     <button class="danger" id="a-del">删除</button>
     <span class="muted">|</span>
     <button id="a-selall" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">全选本页</button>
-    <button id="a-selnone">取消选择</button>
+    <button id="a-selnone" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">取消选择</button>
     <span class="muted">|</span>
-    <button id="a-copy" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
+    <button id="a-copy" style="background:#4a3f14;border-color:#63551c;color:#f0d98a" title="复制选中条目的完整路径（多选时每行一个，可直接粘贴到资源管理器地址栏）">复制路径</button>
     <button id="a-open" style="background:#4a3f14;border-color:#63551c;color:#f0d98a">打开目录</button><button id="b-refresh" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">刷新</button>
     
      <button id="b-qrun" style="background:#1e5a35;border-color:#2b7a49;color:#cff5dd">跑队列</button>
-    <button id="b-qview" style="background:#1e5a35;border-color:#2b7a49;color:#cff5dd">队列详情</button>
+    <button id="b-qview" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">队列详情</button>
      <label class="muted" title="勾上后：降分辨率/裁剪/字幕/检测/补全 等按钮只把条目加入队列，不立即执行；可边跑边攒批次"><input type="checkbox" id="qadd-chk"> 加入队列</label> <span class="muted" style="margin-left:4px">队列 <b id="qcount">0</b></span>
   </div>
   <div class="bar" id="infobar" style="background:#141922">
@@ -6421,14 +6421,14 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
     <span class="zone"><span class="zlab">刮削</span>
-      <button id="a-web" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
+      <button id="a-web" style="font-size:13px;font-weight:600" title="只对【选中的条目】跑网站线（不经过队列）">重跑·网站</button>
       <button id="a-ai" title="只对【选中的条目】跑 AI 线（不经过队列）">重跑·AI</button>
       <label class="muted" title="勾选后：AI 补全 / Web 补全 都会先抽帧看片（慢）"><input type="checkbox" id="fill-scan"> 看片</label>
       <button id="a-fill" title="按简介补标签；勾了看片则先看片补信息">AI 补全</button>
       <button id="a-fill-web" title="联网补 简介/标签/作者/年份（不改标题和番号）；勾了看片则叠加看片">Web 补全</button>
     </span>
     <span class="zone"><span class="zlab">维护</span>
-      <button id="a-thumbs">刷新缩略图</button>
+      <button id="a-thumbs" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">刷新缩略图</button>
       <label class="muted" title="AI 自动选帧并裁剪到女性；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI选图</label>
       <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
       <button id="a-coverdel">删除封面图</button>
