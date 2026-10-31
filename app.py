@@ -760,6 +760,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
             _title = (_title or '').strip() or (r.get('title') or '')
             _plot = (_plot or '').strip() or (r.get('plot') or '')
             tags = (tags or '').strip() or (r.get('tags') or '')
+            _tl = mlib.translate_tags([x for x in tags.split(',') if x.strip()])
+            tags = ','.join(_tl)[:300]
             _changed = any(((_title or '').strip() != (r.get('title') or '').strip(),
                             (_plot or '').strip() != (r.get('plot') or '').strip(),
                             (tags or '').strip() != (r.get('tags') or '').strip(),
@@ -811,6 +813,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                 one = mlib.ai_tags_batch([r])
                 tags = one[0] if one else None
             if tags:
+                tags = mlib.translate_tags(tags)
                 dbc.execute("UPDATE items SET tags=?, quality='有', last_update=? WHERE id=?",
                             (','.join(tags), mlib.now(), r['id']))
                 dbc.commit()

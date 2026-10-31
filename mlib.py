@@ -561,6 +561,43 @@ def lang_tags():
     return LANG_TAGS.get(out_lang(), LANG_TAGS['zh'])
 
 
+LANG_NAME = {'zh': '简体中文', 'zh-Hant': '繁體中文', 'ja': '日语',
+             'en': '英语', 'es': '西班牙语'}
+
+
+def _tag_ok(t):
+    """单个标签是否符合内容语言。"""
+    L = out_lang()
+    han = len(re.findall(r'[\u4e00-\u9fff]', t or ''))
+    kana = len(re.findall(r'[\u3040-\u30ff]', t or ''))
+    if L == 'ja':
+        return kana >= 1
+    if L in ('zh', 'zh-Hant'):
+        return han >= 1
+    return (han + kana) == 0
+
+
+def translate_tags(tags, model=None):
+    """把标签翻成内容语言；全符合就原样返回（不替换）。"""
+    ts = [str(x).strip() for x in (tags or []) if str(x).strip()]
+    if not ts:
+        return []
+    if all(_tag_ok(t) for t in ts):
+        return list(dict.fromkeys(ts))[:12]
+    prompt = ('把下面的标签全部改写成%s（每个 2-8 字，专有名词保留），'
+              '不要解释，只输出 JSON 字符串数组：\n%s'
+              % (LANG_NAME.get(out_lang(), '日语'), json.dumps(ts, ensure_ascii=False)))
+    try:
+        arr = extract_json_array(_chat(prompt, model or ai_model(), 400, 0.2))
+        if isinstance(arr, list) and len(arr) == len(ts):
+            out = [str(x).strip() for x in arr]
+            if all(out):
+                return list(dict.fromkeys(out))[:12]
+    except Exception as e:
+        sys.stderr.write('  tag translate err %s\n' % str(e)[:80])
+    return ts
+
+
 def ai_model():
     return cfg_get('model', AI_MODEL)
 
@@ -744,10 +781,8 @@ def lang_ok(t):
     t = t or ''
     han = len(re.findall(r'[\u4e00-\u9fff]', t))
     kana = len(re.findall(r'[\u3040-\u30ff]', t))
-    if L == 'ja':
-        return kana >= 2                  # 日语：必须真有假名，纯中文视为需翻译
-    if L in ('zh', 'zh-Hant'):
-        return (han + kana) >= 2          # 中文允许保留日文原文
+    if L in ('zh', 'zh-Hant', 'ja'):
+        return (han + kana) >= 2          # 中文/日文都允许保留原文
     return (han + kana) < 2               # en/es：出现中日文视为需要翻译
 
 
