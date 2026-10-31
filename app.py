@@ -2900,10 +2900,7 @@ def _job_addel(ids=None, nested=False):
                 if _dur0 and _dur0 - _cur > 0.15:
                     _keep.append((_cur, _dur0))
 
-                _big = os.path.getsize(vp) > 6 * 1024 ** 3
-                if _big:
-                    _log('  文件大于 6GB -> 走重封装')
-                if len(_keep) == 1 and not _big:
+                if len(_keep) == 1:
                     # 头/尾广告：只改索引（elst + 尾部截断），不动视频数据
                     _log('  切 %s（头/尾广告）—— 只改索引，不重封装；操作中请勿中断'
                          % v[:56])
