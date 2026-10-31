@@ -929,6 +929,127 @@ def web_complete(item, model=None, log=None):
         return None
 
 
+def web_probe(item, log=None):
+    """只联网搜索，**不调用模型**：返回候选事实 + 原始搜索摘要。"""
+    def _log(m):
+        if log:
+            try:
+                log(m)
+            except Exception:
+                pass
+
+    code = (item.get('sem_code') or item.get('code') or '').strip()
+    title = strip_noise(item.get('title') or item.get('name') or '')
+    plot = strip_noise(item.get('plot') or '')
+    qs = []
+    if code and hint_ok(code, 0):
+        qs += [code + ' Released Date', code + ' Maker', code + ' Tag',
+               code + ' 出演者', code + ' actor']
+    if hint_ok(title):
+        qs.append(title[:60])
+    if not qs:
+        qs.append(title[:60] or code)
+    hits, seen = [], set()
+    for q in qs[:7]:
+        hs = web_search(q, 4)
+        _log('    搜索「%s」-> %d 条' % (q[:40], len(hs)))
+        for h in hs:
+            key = (h.get('url') or '') + (h.get('title') or '')[:30]
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(h)
+    hits = hits[:12]
+
+    av = {}
+    if code:
+        try:
+            av = avfan_info(code) or {}
+        except Exception as _e:
+            _log('    avfan 失败: %s' % str(_e)[:60])
+            av = {}
+    if av:
+        _log('    avfan: %s | 公司 %s | %s'
+             % (av.get('released') or '-', av.get('maker') or '-', code))
+
+    actors = []
+    if code and not (item.get('actors') or '').strip():
+        try:
+            _jd = fetch_javdb(code) or {}
+            actors = _clean_people(_jd.get('actors') or [])
+            if actors:
+                _log('    javdb 演员: %s' % ','.join(actors)[:40])
+        except Exception as _e:
+            _log('    javdb 取演员失败: %s' % str(_e)[:60])
+
+    return {'title': title, 'plot': plot,
+            'tags': [str(x).strip() for x in (av.get('tags') or []) if str(x).strip()],
+            'actors': actors,
+            'studio': strip_noise(av.get('maker') or '')[:40],
+            'year': (av.get('released') or '')[:4],
+            'code': code, 'hits': hits, 'avfan': av}
+
+
+WEB_BATCH_PROMPT = (
+    '你是影片资料整理助手。下面是 {N} 条影片，每条带【已有信息】和【网络搜索结果】。\n'
+    '只用搜索结果里明确出现的信息，不确定的字段留空，绝不编造。\n'
+    '标题、简介保持内容语言（{LANG}）；标签必须翻译成内容语言、去重，最多 8 个。\n'
+    '{TAGS}\n'
+    '只输出 JSON 数组，长度正好 {N}，每项：\n'
+    '{{"title":"","plot":"","tags":[],"actors":[],"studio":"","year":"","code":""}}\n'
+    '没有信息的字段用空字符串 / 空数组。\n\n'
+    '{ITEMS}'
+)
+
+
+def _web_lines(items):
+    L = []
+    for i, it in enumerate(items, 1):
+        L.append('%d. 番号: %s | 标题: %s | 简介: %s | 演员: %s | 公司: %s | 年份: %s'
+                 % (i, (it.get('code') or '').strip() or '-',
+                    (it.get('title') or '').strip()[:80] or '-',
+                    (it.get('plot') or '').strip()[:200] or '-',
+                    (it.get('actors') or '') or '-',
+                    (it.get('studio') or '') or '-',
+                    (it.get('year') or '') or '-'))
+        for k, h in enumerate((it.get('hits') or [])[:8], 1):
+            L.append('   搜索%d: %s | %s'
+                     % (k, (h.get('title') or '')[:90], (h.get('snippet') or '')[:160]))
+    return '\n'.join(L)
+
+
+def ai_web_batch(items, model=None):
+    """整组一次判定：N 条一起交给模型，返回 [{title,plot,tags,actors,studio,year,code}] 或 None。"""
+    if not items:
+        return []
+    prompt = (WEB_BATCH_PROMPT.replace('{N}', str(len(items)))
+              .replace('{ITEMS}', _web_lines(items))
+              .replace('{LANG}', lang_rule()).replace('{TAGS}', lang_tags()))
+    try:
+        arr = extract_json_array(_chat(prompt, model or ai_model(), 3000, 0.2))
+    except Exception as e:
+        sys.stderr.write('  ai web err %s\n' % str(e)[:80])
+        return None
+    if not isinstance(arr, list) or len(arr) != len(items):
+        return None
+    out = []
+    for j in arr:
+        if not isinstance(j, dict):
+            out.append({})
+            continue
+        tg = j.get('tags') or []
+        if isinstance(tg, str):
+            tg = re.split(r'[,，、;；]', tg)
+        out.append({'title': strip_noise(str(j.get('title') or '')).strip(),
+                    'plot': strip_noise(str(j.get('plot') or '')).strip(),
+                    'tags': [str(x).strip() for x in tg if str(x).strip()][:12],
+                    'actors': _clean_people(j.get('actors')),
+                    'studio': strip_noise(str(j.get('studio') or '')).strip()[:40],
+                    'year': _clean_year(j.get('year')),
+                    'code': str(j.get('code') or '').strip().upper()})
+    return out
+
+
 # ---------------------------------------------------------------- 系列表
 # ---------------------------------------------------------------- 系列表完善
 SERIES_ENRICH_PROMPT = (

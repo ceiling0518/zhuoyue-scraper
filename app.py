@@ -682,12 +682,27 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
     ok = 0
     _staged = []                     # 搜索结果暂存：不写库，等凑够一组再让 AI 判定
 
-    def _write_one(it, add_tags=None):
-        """一次性写入：搜索结果 + AI 标签（合并去重）。"""
+    def _write_one(it, d=None):
+        """一次性写入：搜索到的信息 + 组内 AI 判定（标题/简介/标签/演员/公司/年份）。"""
         nonlocal ok
+        d = d or {}
+        _title, _plot = it['title'], it['plot']
+        _actors, _studio, _year = it['actors'], it['studio'], it['year']
+        if d.get('title') and mlib.hint_ok(d['title'], 3) and mlib.lang_ok(d['title']):
+            _title = d['title']
+        if d.get('plot') and len(d['plot']) >= 10 and mlib.lang_ok(d['plot']):
+            if not (_plot or '').strip() or len(d['plot']) >= len(_plot) * 0.6:
+                _plot = d['plot']
+        if d.get('actors'):
+            _actors = (','.join(d['actors']) if isinstance(d['actors'], list)
+                       else str(d['actors']))
+        if d.get('studio'):
+            _studio = d['studio']
+        if d.get('year'):
+            _year = d['year']
         _old = [x.strip() for x in (it.get('tags') or '').strip('[]').split(',') if x.strip()]
         _seen = set(_old)
-        _add = mlib.translate_tags(list(add_tags or []))
+        _add = mlib.translate_tags([x for x in (d.get('tags') or []) if x])
         for _t in _add:
             if _t and _t not in _seen:
                 _old.append(_t)
@@ -695,41 +710,43 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
         _tags = ','.join(_old[:16])
         dbc.execute("UPDATE items SET title=?, plot=?, tags=?, actors=?, studio=?, "
                     "year=?, quality=?, source=?, last_update=? WHERE id=?",
-                    (it['title'], it['plot'], _tags, it['actors'], it['studio'],
-                     it['year'], '有' if _tags else it['quality'],
-                     it['source'], mlib.now(), it['id']))
+                    (_title, _plot, _tags, _actors, _studio, _year,
+                     '有' if _tags else it['quality'], it['source'],
+                     mlib.now(), it['id']))
         dbc.commit()
         try:
             _row = dict(dbc.execute('SELECT * FROM items WHERE id=?', (it['id'],)).fetchone())
             mlib.write_nfo(_row)
         except Exception:
             pass
-        if it.get('changed') or _add:
+        _chg = (it.get('changed') or _add
+                or (bool(d.get('title')) and _title != it['title'])
+                or (bool(d.get('plot')) and _plot != it['plot']))
+        if _chg:
             ok += 1
         _log('[%d/%d] id=%s %s（%s）: %s | 演员 %s | 公司 %s | %s%s'
-             % (it['seq'], len(weak), it['id'],
-                'OK' if (it.get('changed') or _add) else '无变化', it['src'],
-                (it['title'] or '')[:26], (it['actors'] or '-')[:24],
-                (it['studio'] or '-')[:16], (it['year'] or '-'),
+             % (it['seq'], len(weak), it['id'], 'OK' if _chg else '无变化', it['src'],
+                (_title or '')[:26], (_actors or '-')[:24],
+                (_studio or '-')[:16], (_year or '-'),
                 (' | AI +%d 标签' % len(_add)) if _add else ''))
 
     def _flush(chunk):
-        """一组搜索完 -> 集中 AI 判定 -> 集中写入（每条只写一次）。"""
+        """一组搜索完 -> 整组一次 AI 判定 -> 每条一次写入。"""
         if not chunk:
             return
         _res = None
         if ai:
-            _res = mlib.ai_tags_batch(chunk)
+            _res = mlib.ai_web_batch(chunk)
             if _res is None:
-                _log('  组内 AI 解析失败 -> 逐条兜底')
+                _log('  组内 AI 判定失败 -> 逐条兜底')
             else:
-                _log('AI 判定 %d 条（组内一次判定，一次写入）' % len(chunk))
+                _log('  组内 AI 判定 %d 条（一次调用，一次写入）' % len(chunk))
         for _k, _it in enumerate(chunk):
-            _t = (_res[_k] if _res and _k < len(_res) else None)
-            if ai and not _t:
-                _one = mlib.ai_tags_batch([_it])
-                _t = _one[0] if _one else None
-            _write_one(_it, _t)
+            _d = _res[_k] if _res and _k < len(_res) else None
+            if ai and not _d:
+                _one = mlib.ai_web_batch([_it])
+                _d = _one[0] if _one else None
+            _write_one(_it, _d)
 
     def _ai_fill(items):
         """对一批条目跑 AI 标签分析（与 AI 补全同一段逻辑）。"""
@@ -813,14 +830,17 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
             if _stop_req():
                 break
             cands = []
+            _probe = None
             if web:
                 try:
-                    d1 = mlib.web_complete(r, log=_log)
+                    d1 = mlib.web_probe(r, log=_log)
                 except Exception as _e:
                     d1 = None
                     _log('    web 查询失败: %s: %s' % (type(_e).__name__, str(_e)[:90]))
-                if d1 and mlib.hint_ok(d1.get('title') or '', 3):
+                if d1 and (d1.get('hits') or d1.get('tags') or d1.get('actors')
+                           or mlib.hint_ok(d1.get('title') or '', 3)):
                     cands.append(('web', d1))
+                    _probe = d1
             if scan:
                 try:
                     d2 = mlib.ai_video_scan(r)
@@ -867,7 +887,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
             if _code and ai and not (r.get('sem_code') or r.get('code')):
                 dbc.execute('UPDATE items SET code=? WHERE id=?', (_code, r['id']))
             # avfan：发行日期/制作商/标签（公开页，优先于模型抽取）
-            _av = mlib.avfan_info(_code) if _code else {}
+            _av = ((_probe.get('avfan') or {}) if (web and _probe)
+                   else (mlib.avfan_info(_code) if _code else {}))
             if _av.get('maker'):
                 _studio = mlib.clean_publisher(_av['maker'])
             if _av.get('released'):
@@ -879,7 +900,7 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
                     if _t and _t not in _old_tg:
                         _old_tg.append(_t)
                 tags = ','.join(_old_tg)[:300]
-            if _av:
+            if _av and not (web and _probe):
                 _log('    avfan: %s | 公司 %s | %s' % (_av.get('released') or '-',
                                                       _av.get('maker') or '-', _code))
             # 系列表有发行商时以它为准（FC2 有大量子发行商，统一记 FC2）
@@ -910,7 +931,8 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
                       'title': _title, 'plot': _plot, 'tags': tags,
                       'actors': _actors, 'studio': _studio, 'year': _year,
                       'quality': '有' if tags else (r.get('quality') or '缺'),
-                      'source': _srcs, 'src': _srcs,
+                      'source': ('Web' if not ai else _srcs), 'src': _srcs,
+                      'hits': (_probe.get('hits') if _probe else []),
                       'changed': _changed}
             if web or scan:
                 # 只暂存，不写库：等组内 AI 判定完一次性写入
