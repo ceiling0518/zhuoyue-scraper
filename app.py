@@ -6334,7 +6334,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   <button id="b-libs" title="媒体库设置">⚙ 库</button>
   <span class="muted">模型</span><select id="cfg-model" style="width:156px"></select>
   <span class="muted">端口</span><input id="cfg-port" type="number" style="width:80px"> <label class="muted"><input type="checkbox" id="cfg-lan"> 局域网</label>
-  <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数；bpp 填 0.08-0.12"><span class="muted" id="cfg-encunit" style="margin-left:4px">CRF</span><span class="muted" id="cfg-enchelp" title="" style="cursor:help;border:1px solid #39455a;border-radius:9px;padding:0 6px;margin-left:4px">?</span>
+  <span class="muted">回滚点保留</span><input id="cfg-bakdays" type="number" style="width:54px" title="替换/修复后的 .orig 备份保留天数；备份统一放在 app 目录下的 backup；0 = 不保留"> <span class="muted">天</span>
   
   <button id="cfg-models" title="查看在用模型、下载开源模型">其他模型</button>
   <button id="cfg-save">保存设置</button>
@@ -6438,7 +6438,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <label class="muted" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE"><input type="checkbox" id="e-beaut"> 画质修复</label>
       <select id="beaut-engine" style="min-width:92px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">Real-ESRGAN</option><option value="rife">RIFE 插帧</option></select>
       <select id="beaut-scale" style="min-width:46px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
-      <label class="muted" title="格式转换：按「输出码率」重编码为 HEVC（分辨率不变）"><input type="checkbox" id="e-conv"> 格式转换</label>   <span class="muted">输出码率</span><select id="cfg-encmode" title="输出码率：恒定质量（CRF）/ 动态码率（VBR）/ 源码倍数 / 帧单位码率（bpp，720p/30 帧口径）"><option value="crf">恒定质量（CRF）</option><option value="kbps">动态码率（VBR）</option><option value="scale">源码倍数</option><option value="bpp">帧单位码率</option></select>
+      <label class="muted" title="格式转换：按「输出码率」重编码为 HEVC（分辨率不变）"><input type="checkbox" id="e-conv"> 格式转换</label>   <span class="muted" id="cfg-enchelp" title="" style="cursor:help;border:1px solid #39455a;border-radius:9px;padding:0 6px;margin-left:4px">?</span><span class="muted">输出码率</span><input id="cfg-encval" type="number" step="0.1" style="width:62px" title="CRF 填 0-51；固定码率填 kbps；倍数填 1.3 这样的小数；bpp 填 0.08-0.12"><span class="muted" id="cfg-encunit" style="margin-left:4px">CRF</span><select id="cfg-encmode" title="输出码率：恒定质量（CRF）/ 动态码率（VBR）/ 源码倍数 / 帧单位码率（bpp，720p/30 帧口径）"><option value="crf">恒定质量（CRF）</option><option value="kbps">动态码率（VBR）</option><option value="scale">源码倍数（×）</option><option value="bpp">帧单位码率（bpp）</option></select>
       <button id="a-edit" style="background:#2e7d32;border-color:#2e7d32;color:#fff" title="按顺序执行勾选的编辑操作">执行</button>
     </span>
     <span style="display:none">
