@@ -6354,7 +6354,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <button id="a-adtect" title="内容检测：字幕 + 去码（勾无效段才查）；勾「广告」才顺带查广告">字幕和内容检测</button><label class="muted" title="顺带检测头尾广告（较慢；不勾只做字幕/去码）"><input type="checkbox" id="chk-ads"> 广告</label><select id="admode" style="min-width:92px" title="广告检测范围：头尾=只扫开头/结尾各 4 分钟；全片=30 秒全网扫，能命中中插"><option value="headtail">广告头尾</option><option value="full">全片</option></select><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码</label>
     <label class="muted" title="广告和内容检测时一并检无效段（无女性画面），跃慢"><input type="checkbox" id="chk-badseg"> 无效段</label>
     <button id="a-segs" title="自定义编辑：自己填要保留的区间；可改起止、加段、删段">自定义编辑</button>
-     <button id="a-addel" title="剪切合并：按广告/无效段切掉，剩余可用段拼接成一个文件；勾「合并可用段」把多视频也拼进来">剪切合并</button><label class="muted" title="把同一条目多个视频的可用段合并到第一个文件（源文件保留，可回滚）"><input type="checkbox" id="chk-merge"> 合并可用段</label>
+     <button id="a-addel" title="剪辑：按广告/无效段切掉，剩余可用段拼成一个文件（中间段自动拼接）">剪辑</button><label class="muted" title="合并：把同一条目多个视频的可用段拼到第一个文件（源文件保留，可回滚）"><input type="checkbox" id="chk-merge"> 合并</label>
      <label class="muted" title="生成字幕后，用本地模型把字幕翻成简体中文（与字幕语言不同时）"><input type="checkbox" id="subtrans"> 字幕翻译</label>
      <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
      <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
