@@ -899,12 +899,18 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True, f
                             ((_studio or '').strip() != (r.get('studio') or '').strip()),
                             ((_year or '').strip() != (r.get('year') or '').strip())))
             _srcs = '+'.join({'web': 'Web', '看片': 'AI'}.get(s, s) for s, _ in cands)
+            # 原有标题/简介被保留（日志「来源仅补缺」）= 这条本来就是 AI 内容，
+            # Web 只是补齐演员/公司/年份/标签，来源仍记 AI，不能降级成 Web
+            _kept_old = bool(_old_t and _title == _old_t) or bool(_old_p and _plot == _old_p)
+            if _kept_old and (r.get('source') or '').upper() == 'AI':
+                _srcs = 'AI'
+                _log('    来源保留 AI（原标题/简介未替换，Web 只补缺）')
             _final = {'id': r['id'], 'seq': wi,
                       'code': r.get('code') or r.get('sem_code') or '',
                       'title': _title, 'plot': _plot, 'tags': tags,
                       'actors': _actors, 'studio': _studio, 'year': _year,
                       'quality': '有' if tags else (r.get('quality') or '缺'),
-                      'source': ('Web' if not ai else _srcs), 'src': _srcs,
+                      'source': _srcs, 'src': _srcs,
                       'changed': _changed}
             if web or scan:
                 # 只暂存，不写库：等组内 AI 判定完一次性写入
