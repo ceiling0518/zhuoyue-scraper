@@ -19,6 +19,25 @@ CLI:
 import re
 import struct
 import argparse, base64, io, json, os, re, shutil, sqlite3, subprocess, sys, time
+
+# Windows：ffmpeg / powershell 等子进程一律后台隐藏窗口
+if os.name == 'nt':
+    try:
+        _CREATE_NO_WINDOW = 0x08000000
+        _real_popen = subprocess.Popen
+
+        def _hidden_popen(*a, **kw):
+            kw['creationflags'] = int(kw.get('creationflags') or 0) | _CREATE_NO_WINDOW
+            if kw.get('startupinfo') is None:
+                _si = subprocess.STARTUPINFO()
+                _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                _si.wShowWindow = subprocess.SW_HIDE
+                kw['startupinfo'] = _si
+            return _real_popen(*a, **kw)
+
+        subprocess.Popen = _hidden_popen
+    except Exception:
+        pass
 import requests
 try:
     import zhconv                     # pure-python 繁->简 converter
@@ -4022,6 +4041,8 @@ AD_PROMPT = (
     '请判断每张画面是否属于"广告/片头/片尾/宣传卡片/与正片无关的页面"，'
     '例如：网站宣传页、盗版站/发片站水印页、二维码、纯文字台标页、试看提示、订阅引导、'
     '片尾感谢/招募/合集宣传、黑底白字告示等。\n'
+    '注意：影片自身的片头、厂牌/系列 Logo、标题卡、演职员表、场景里的字幕或画面文字都算"非广告"；\n'
+    '只有与本片无关的推广（二维码、网址、电话、其他网站/群组水印、试看/订阅引导、合集宣传）才算广告。\n'
     '只要画面是正常视频内容（人物/场景/动作），就算"非广告"。\n'
     '只输出 JSON：{"ad":[是广告的编号...]}；没有广告输出 {"ad":[]}。不要输出其它文字。'
 )
@@ -4430,13 +4451,12 @@ def detect_ads(vpath, dur=None, model=None, log=None, mode='headtail', edge_sec=
         out.append([round(t0, 1), round(t1, 1)])
         _log('  区间 粗[%.0f-%.0f] -> 精[%.1f-%.1f]' % (a, b, t0, t1))
     if mode == 'headtail':
-        e = min(float(edge_sec), dur / 2.0)
         keep2 = []
         for x0, x1 in out:
-            if x0 <= e or x1 >= dur - e:
+            if x0 <= 1.5 or x1 >= dur - 1.5:     # 必须从片头开始或一直到片尾
                 keep2.append([x0, x1])
             else:
-                _log('  丢弃中段区间 [%.1f-%.1f]（头尾模式）' % (x0, x1))
+                _log('  丢弃 [%.1f-%.1f]（不从头/尾开始，头尾模式不做中插）' % (x0, x1))
         out = keep2
     if AD_MIN_SEC > 0:
         keep3 = []
