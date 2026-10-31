@@ -5786,15 +5786,12 @@ header{padding:10px 16px;background:var(--card);border-bottom:1px solid #2a3140;
 .stickytop{position:sticky;z-index:10;background:var(--bg);padding-top:8px;box-shadow:0 8px 14px -10px #000}
 h1{font-size:15px;margin:0;font-weight:600}
 .wrap{padding:14px 16px;max-width:1600px;margin:0 auto}
-.cards{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
-.card{background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:8px 12px;min-width:86px}
-.card b{display:block;font-size:19px;line-height:1.2}.card span{color:var(--dim);font-size:11px}
+.cards{display:flex;gap:6px;flex-wrap:nowrap;margin-bottom:12px;overflow-x:auto}
+.card{background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:6px 9px;min-width:70px;flex:0 0 auto}
+.card b{display:block;font-size:17px;line-height:1.2}.card span{color:var(--dim);font-size:10px}
 .bar{display:flex;gap:7px;flex-wrap:wrap;align-items:center;background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:9px 11px;margin-bottom:10px}
-header{padding:8px 14px;gap:7px}
-header select,header input,header button{padding:2px 5px;font-size:11.5px}
-header .muted{font-size:11px}
 #fbar{flex-wrap:nowrap;overflow-x:auto;gap:5px;padding:7px 9px}
-#fbar select,#fbar input,#fbar button{font-size:11.5px;padding:2px 6px}
+#fbar select,#fbar input,#fbar button{padding:2px 6px}
 #fbar #f-q{width:170px}
 button{background:#26303f;color:var(--fg);border:1px solid #39455a;border-radius:7px;padding:6px 11px;cursor:pointer;font-size:12px}
 button:hover{background:#2f3b4d}button:disabled{opacity:.45;cursor:not-allowed}
