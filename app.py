@@ -283,7 +283,12 @@ def _log(msg):
         _flush_log()
 
 
+_NEST = 0
+
+
 def _begin(name, total=0):
+    if _NEST:
+        return
     _s = _cur()
     with _LOCK:
         _s.update(running=True, name=name, done=0, total=total, stop=False,
@@ -292,6 +297,8 @@ def _begin(name, total=0):
 
 
 def _end(msg):
+    if _NEST:
+        return
     with _LOCK:
         _cur().update(running=False)
     _log('===== 结束: %s =====' % msg)
@@ -3192,6 +3199,45 @@ def _merge_to_first(it, dbc, mfiles, log=None):
             pass
 
 
+def _job_edit(ids=None, cut=False, merge=False, fix=False, br=False, beaut=False,
+              conv=False, target='auto', fpsout=0, engine='topaz', scale=2):
+    """按顺序执行勾选的编辑操作：剪辑 -> 修复 -> 调整码率 -> 画质修复 -> 格式转换。"""
+    global _NEST
+    ops = [n for n, f in (('剪辑', cut), ('修复', fix), ('调整码率', br),
+                          ('画质修复', beaut), ('格式转换', conv)) if f]
+    _begin('edit ' + ('+'.join(ops) if ops else '无操作'), len(ops) or 1)
+    try:
+        if not ops:
+            _log('! 没有勾选任何操作')
+        _NEST = 1
+        try:
+            if cut:
+                _log('---- 剪辑 ----')
+                _job_addel(ids, nested=True, merge=merge)
+            if fix:
+                _log('---- 修复 ----')
+                _job_repair(ids, mode='safe', go=True)
+            if br:
+                _log('---- 调整码率 ----')
+                _job_down(ids, target, False, False, fpsout)
+            if beaut:
+                _log('---- 画质修复 ----')
+                if engine in ('esrgan', 'rife'):
+                    _job_openbeautify(ids, engine, int(scale or 2), False)
+                else:
+                    _job_proteus(ids)
+            if conv:
+                _log('---- 格式转换 ----')
+                _job_convert(ids)
+        finally:
+            _NEST = 0
+        _end('edit 完成')
+    except Exception:
+        _NEST = 0
+        _log('ERR ' + traceback.format_exc()[:1200])
+        _end('edit 失败')
+
+
 def _job_addel(ids=None, nested=False, merge=False):
     """删除无效段：按 segs_file/ads_file（逐文件）切，校验+深检后原子替换原片。
 
@@ -5921,6 +5967,20 @@ class H(BaseHTTPRequestHandler):
                 ok = start_job(_job_repair, ids, q.get('mode') or 'index',
                                (q.get('go') or '') in ('1', 'true', 'yes'),
                                lane='heavy')
+            elif p == '/api/edit':
+                ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
+                if not ids:
+                    return self._json({'ok': False, 'error': '先选中条目'}, 400)
+                _tf = lambda k: (q.get(k) or '') in ('1', 'true', 'yes')
+                if not any(_tf(k) for k in ('cut', 'fix', 'br', 'beaut', 'conv')):
+                    return self._json({'ok': False, 'error': '没有勾选任何操作'}, 400)
+                ok = start_job(_job_edit, ids, _tf('cut'), _tf('merge'), _tf('fix'),
+                               _tf('br'), _tf('beaut'), _tf('conv'),
+                               (q.get('target') or 'auto'),
+                               float(q.get('fps') or 0),
+                               (q.get('engine') or 'topaz'),
+                               int(q.get('scale') or 2),
+                               lane='heavy')
             elif p == '/api/runset':
                 ids = [int(x) for x in (q.get('ids') or '').split(',') if x.strip().isdigit()]
                 if not ids:
@@ -6261,6 +6321,8 @@ tr.sel .selbtn{background:var(--acc);border-color:var(--acc);color:#08121f;font-
 .modal .box{background:var(--card);border:1px solid #2a3140;border-radius:11px;max-width:920px;width:100%;max-height:86vh;overflow:auto;padding:15px}
 .modal .box>.bar:first-child{position:sticky;top:-15px;margin:-15px -15px 10px;padding:12px 15px;background:var(--card);border:0;border-bottom:1px solid #2a3140;border-radius:11px 11px 0 0;z-index:6}
 pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;overflow:auto;font-size:11px}
+.zone{display:inline-flex;align-items:center;gap:5px;border-left:1px solid #2a3342;padding-left:10px;margin-left:6px}
+.zlab{font-size:11px;color:#8b97a8;letter-spacing:1px}
 </style></head><body>
 <header>
   <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.2.0</span> 
@@ -6343,33 +6405,53 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 去码 <b style="color:#a8b3c4">●</b>有码 <b style="color:#d8dde6">◍</b>一般 <b style="color:#8fd0ff">◉</b>无码 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">Sub</b>有 <b style="color:var(--ok)">S🔥</b>烧录 <b style="color:#7b8798;text-decoration:line-through">Sub</b>无</span>
   </div>
   <div class="bar" id="actbar2" style="background:#171c25">
-    
-    <button id="a-thumbs">刷新缩略图</button>
-    <label class="muted" title="AI 自动选帧并裁剪到女性；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI选图</label>
-    <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
-    <button id="a-coverdel">删除封面图</button>
-    <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
-    <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
-     <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
-    <button id="a-adtect" title="内容检测：字幕 + 去码（勾无效段才查）；勾「广告」才顺带查广告">字幕和内容检测</button><label class="muted" title="顺带检测头尾广告（较慢；不勾只做字幕/去码）"><input type="checkbox" id="chk-ads"> 广告</label><select id="admode" style="min-width:92px" title="广告检测范围：头尾=只扫开头/结尾各 4 分钟；全片=30 秒全网扫，能命中中插"><option value="headtail">广告头尾</option><option value="full">全片</option></select><label class="muted" title="同时按番号判定去码：X/CX/J/CJ=&一般，UNCON/素人=好"><input type="checkbox" id="chk-demodet" checked> 去码</label>
-    <label class="muted" title="广告和内容检测时一并检无效段（无女性画面），跃慢"><input type="checkbox" id="chk-badseg"> 无效段</label>
-    <button id="a-segs" title="自定义编辑：自己填要保留的区间；可改起止、加段、删段">自定义编辑</button>
-     <button id="a-addel" title="剪辑：按广告/无效段切掉，剩余可用段拼成一个文件（中间段自动拼接）">剪辑</button><label class="muted" title="合并：把同一条目多个视频的可用段拼到第一个文件（源文件保留，可回滚）"><input type="checkbox" id="chk-merge"> 合并</label>
-     <label class="muted" title="生成字幕后，用本地模型把字幕翻成简体中文（与字幕语言不同时）"><input type="checkbox" id="subtrans"> 字幕翻译</label>
-     <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
-     <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
-     <select id="subs-engine" style="min-width:98px" title="字幕引擎：SenseVoice 快且省资源；Whisper v3 Turbo 更准但慢（PotPlayer CUDA）"><option value="sensevoice">SenseVoice</option><option value="whisper">Whisper v3 Turbo</option></select>
-     <button id="a-subs" title="语音转字幕：输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
-    <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
-    <select id="downtgt" style="min-width:96px" title="目标分辨率：保持分辨率=不缩放（配合修复只提质）；1080/720/480 才降"><option value="auto">Res.-auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
-    <select id="downfps" style="min-width:86px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">Fps-auto</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
-    <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 修复</label>
-    <label class="muted" title="降分辨率前先按自定义区间裁剪（勾了合并的视频先拼成一个）"><input type="checkbox" id="downad"> 裁剪合并</label>
-    <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
-    <select id="beaut-engine" style="min-width:92px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">Real-ESRGAN</option><option value="rife">RIFE 插帧</option></select>
-    <select id="beaut-scale" style="min-width:46px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
-    <button id="a-proteus" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE；会替换原片并保留回滚点">画质修复</button>
-    <button id="a-convert" title="格式转换：按「输出码率」重编码为 HEVC（分辨率不变），替换原片并保留回滚点">格式转换</button>
+    <span class="zone"><span class="zlab">维护</span>
+      <button id="a-thumbs">刷新缩略图</button>
+      <label class="muted" title="AI 自动选帧并裁剪到女性；不达标会继续抽帧重试"><input type="checkbox" id="thumb-ai"> AI选图</label>
+      <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
+      <button id="a-coverdel">删除封面图</button>
+      <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
+      <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
+      <button id="a-media" title="媒体信息：读取每个条目主视频的平均码率/分辨率/帧率（只读头部，很快）">媒体信息</button>
+    </span>
+    <span class="zone"><span class="zlab">检测</span>
+      <button id="a-adtect" title="内容检测：字幕 + 去码（勾无效段才查）；勾「广告」才顺带查广告">字幕和内容检测</button>
+      <label class="muted" title="顺带检测头尾广告（较慢；不勾只做字幕/去码）"><input type="checkbox" id="chk-ads"> 广告</label>
+      <select id="admode" style="min-width:92px" title="广告检测范围：头尾=只扫开头/结尾各 4 分钟；全片=30 秒全网扫，能命中中插"><option value="headtail">广告头尾</option><option value="full">全片</option></select>
+      <label class="muted" title="按私密部位像素清晰度判去码"><input type="checkbox" id="chk-demodet" checked> 去码</label>
+      <label class="muted" title="内容检测时一并检无效段（无女性画面），较慢"><input type="checkbox" id="chk-badseg"> 无效段</label>
+    </span>
+    <span class="zone"><span class="zlab">字幕</span>
+      <label class="muted" title="生成字幕后，用本地模型把字幕翻成简体中文（与字幕语言不同时）"><input type="checkbox" id="subtrans"> 字幕翻译</label>
+      <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
+      <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
+      <select id="subs-engine" style="min-width:98px" title="字幕引擎：SenseVoice 快且省资源；Whisper v3 Turbo 更准但慢（PotPlayer CUDA）"><option value="sensevoice">SenseVoice</option><option value="whisper">Whisper v3 Turbo</option></select>
+      <button id="a-subs" title="语音转字幕：输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
+    </span>
+    <span class="zone"><span class="zlab">编辑</span>
+      <button id="a-segs" title="自定义编辑：自己填要保留的区间；可改起止、加段、删段">自定义编辑</button>
+      <label class="muted" title="按广告/无效段切掉，剩余可用段拼成一个文件"><input type="checkbox" id="e-cut"> 剪辑</label>
+      <label class="muted" title="把同一条目多个视频的可用段拼到第一个文件（源文件保留）"><input type="checkbox" id="e-merge"> 合并</label>
+      <label class="muted" title="按体检结果修复：索引重建/容错重编码"><input type="checkbox" id="e-fix"> 修复</label>
+      <label class="muted" title="调整码率：按目标分辨率/帧率重编码"><input type="checkbox" id="e-br"> 调整码率</label>
+      <select id="downtgt" style="min-width:86px" title="目标分辨率：Res.-auto=不缩放（配合提质）；1080/720/480 才降"><option value="auto">Res.-auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
+      <select id="downfps" style="min-width:86px" title="目标帧率：Fps-auto=保持（>45 自动降 30）；高于原帧率插帧，低于则丢帧"><option value="0">Fps-auto</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
+      <label class="muted" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE"><input type="checkbox" id="e-beaut"> 画质修复</label>
+      <select id="beaut-engine" style="min-width:92px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">Real-ESRGAN</option><option value="rife">RIFE 插帧</option></select>
+      <select id="beaut-scale" style="min-width:46px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
+      <label class="muted" title="格式转换：按「输出码率」重编码为 HEVC（分辨率不变）"><input type="checkbox" id="e-conv"> 格式转换</label>
+      <button id="a-edit" style="background:#2e7d32;border-color:#2e7d32;color:#fff" title="按顺序执行勾选的编辑操作">执行</button>
+    </span>
+    <span style="display:none">
+      <button id="a-addel"></button>
+      <label><input type="checkbox" id="chk-merge"></label>
+      <label><input type="checkbox" id="downfix"></label>
+      <label><input type="checkbox" id="downad"></label>
+      <button id="a-down"></button>
+      <button id="a-proteus"></button>
+      <button id="a-convert"></button>
+      <button id="a-repair"></button>
+    </span>
   </div>
   </div>
   <table id="tbl"><thead><tr>
@@ -6914,6 +6996,21 @@ $('#a-adtect').onclick=async()=>{
     await post('/api/adtect?'+(ids?'ids='+ids+'&':'')+'mode='+$('#admode').value
       +'&force='+($('#force').checked?1:0)+'&subs='+_o.subs+'&demo='+_o.demo
       +'&bad='+_o.bad+'&ads='+_o.ads);};
+$('#a-edit').onclick=async()=>{
+  const ids=[...SEL].join(',');
+  if(!SEL.size)return alert(T('先选条目'));
+  const _o={cut:$('#e-cut').checked?1:0,merge:$('#e-merge').checked?1:0,
+    fix:$('#e-fix').checked?1:0,br:$('#e-br').checked?1:0,
+    beaut:$('#e-beaut').checked?1:0,conv:$('#e-conv').checked?1:0,
+    target:$('#downtgt').value,fps:+$('#downfps').value,
+    engine:$('#beaut-engine').value,scale:$('#beaut-scale').value};
+  if(!(_o.cut||_o.fix||_o.br||_o.beaut||_o.conv))return alert(T('先勾选至少一个操作'));
+  const names=[['剪辑',_o.cut],['修复',_o.fix],['调整码率',_o.br],['画质修复',_o.beaut],['格式转换',_o.conv]]
+    .filter(x=>x[1]).map(x=>x[0]);
+  if(!confirm(T('将按顺序执行：'+names.join(' -> ')+'（会替换原片并留 .orig）。继续？')))return;
+  await post('/api/edit?'+(ids?'ids='+ids+'&':'')+'cut='+_o.cut+'&merge='+_o.merge
+    +'&fix='+_o.fix+'&br='+_o.br+'&beaut='+_o.beaut+'&conv='+_o.conv
+    +'&target='+_o.target+'&fps='+_o.fps+'&engine='+_o.engine+'&scale='+_o.scale);};
 $('#a-addel').onclick=async()=>{
   const ids=[...SEL].join(',');
   if(!SEL.size)return alert(T('先选条目'));
