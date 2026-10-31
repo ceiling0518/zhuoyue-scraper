@@ -6130,16 +6130,16 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
      <label class="muted" title="生成字幕后，用本地模型把字幕翻成简体中文（与字幕语言不同时）"><input type="checkbox" id="subtrans"> 字幕翻译</label>
      <label class="muted" title="转写前先做高通/降噪/响度归一，人声更清楚（默认开）"><input type="checkbox" id="subenh" checked> 人声强化</label>
      <label class="muted" title="把字幕压进画面（重编码，耗时且略掉画质；输出 <名>.hardsub.mp4）"><input type="checkbox" id="subburn"> 烧进画面</label>
-     <select id="subs-engine" style="min-width:112px" title="字幕引擎：SenseVoice 快且省资源；Whisper v3 Turbo 更准但慢（PotPlayer CUDA）"><option value="sensevoice">SenseVoice</option><option value="whisper">Whisper v3 Turbo</option></select>
+     <select id="subs-engine" style="min-width:98px" title="字幕引擎：SenseVoice 快且省资源；Whisper v3 Turbo 更准但慢（PotPlayer CUDA）"><option value="sensevoice">SenseVoice</option><option value="whisper">Whisper v3 Turbo</option></select>
      <button id="a-subs" title="语音转字幕：输出同名 .srt 到原目录，已有则跳过">生成字幕</button>
     <button id="a-repair" title="按体检结果修复：索引重建（快·原地·可回滚）、容错重编码（慢·独立目录后自动替换）">修复</button>
-    <select id="downtgt" style="min-width:74px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
-    <select id="downfps" style="min-width:96px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">保持帧率</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
-    <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 同时修复</label>
+    <select id="downtgt" style="min-width:66px" title="降分辨率目标：auto 按当前 bpp/分辨率自动选 720p 或 480p"><option value="auto">auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select>
+    <select id="downfps" style="min-width:86px" title="目标帧率：保持=不改（>45 自动降 30）；高于原帧率用 Topaz Apollo 插帧（GPU），低于则丢帧"><option value="0">保持帧率</option><option value="24">24fps</option><option value="25">25fps</option><option value="30">30fps</option><option value="50">50fps</option><option value="60">60fps</option></select>
+    <label class="muted" title="勾上后：降分辨率 + Proteus 修复一次跑完，中间文件只在本地，最后只回拷一次"><input type="checkbox" id="downfix"> 修复</label>
     <label class="muted" title="勾上后先按有效段裁剪（勾了「合并」的视频会先拼成一个），再降分辨率/修复"><input type="checkbox" id="downad"> 有效段裁剪（合并）</label>
     <button id="a-down" title="降分辨率：在 backup 本地工作区重编码到目标分辨率（60fps 自动降 30），校验后回拷替换 NAS；源文件保留在 backup">降分辨率</button>
-    <select id="beaut-engine" style="min-width:104px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">Real-ESRGAN</option><option value="rife">RIFE 插帧</option></select>
-    <select id="beaut-scale" style="min-width:56px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
+    <select id="beaut-engine" style="min-width:92px" title="画质修复引擎：Topaz 质量最好但需本机安装；Real-ESRGAN 超分；RIFE 插帧"><option value="topaz">Topaz</option><option value="esrgan">Real-ESRGAN</option><option value="rife">RIFE 插帧</option></select>
+    <select id="beaut-scale" style="min-width:46px" title="Real-ESRGAN 放大倍数"><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option></select>
     <button id="a-proteus" title="画质修复：Topaz Proteus / Real-ESRGAN / RIFE；会替换原片并保留回滚点">画质修复</button>
     <button id="a-convert" title="格式转换：按「输出码率」重编码为 HEVC（分辨率不变），替换原片并保留回滚点">格式转换</button>
   </div>
