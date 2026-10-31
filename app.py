@@ -2827,10 +2827,11 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
                             dbc.execute('UPDATE items SET demo=? WHERE id=?', (_dm, it['id']))
                             # 语义拿不准(none/空)但 AI 判无码 -> 直接归无码
                             if _dm == '好' and _sem0 in ('', 'none'):
-                                dbc.execute("UPDATE items SET sem_kind='uncensored' "
+                                # AI 说没马赛克 = 去码片（格子被抹平），记「去码」不是真无码
+                                dbc.execute("UPDATE items SET sem_kind='uncensored', demo='一般' "
                                             "WHERE id=? AND COALESCE(sem_kind,'') IN ('','none')",
                                             (it['id'],))
-                                _log('    语义补判：none + AI无码 -> uncensored')
+                                _log('    语义补判：none + AI无码 -> 去码(一般)')
                     if subs and _need_subs:
                         _sd = _subs_status(it, _vp0)
                         if _sd == 'none' and _vp0:
