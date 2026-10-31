@@ -6487,7 +6487,7 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
     const q=r.quality||'';
     return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
-    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)++subIcon(r)+demoIcon(r)+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔'+r.nw+'</span>':'')+'<div class="meta" title="大小 '+fsize(r.tsize||r.fsize)+' ｜ 时长 '+fdur(r.mdur)+'">'+fsz(r.tsize||r.fsize)+' '+fdur(r.mdur)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
+    +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+subIcon(r)+demoIcon(r)+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔'+r.nw+'</span>':'')+'<div class="meta" title="大小 '+fsize(r.tsize||r.fsize)+' ｜ 时长 '+fdur(r.mdur)+'">'+fsz(r.tsize||r.fsize)+' '+fdur(r.mdur)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
     +'<div><span class="ed" data-f="series" data-id="'+r.id+'" data-v="'+esc(((r.series||'').trim())||r.skey||'')+'" title="双击修改系列">'+esc(((r.series||'').trim())||r.skey||'—')+'</span></div>'
     +'<div><span class="ed" data-f="sem_code" data-id="'+r.id+'" data-v="'+esc(((r.sem_code||'').trim())||r.code||'')+'" title="双击修改番号">'+esc(((r.sem_code||'').trim())||r.code||'—')+'</span></div>'
