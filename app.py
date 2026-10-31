@@ -10,6 +10,7 @@ No OpenClaw / Control UI dependency.  Start with run.cmd, then open the printed 
 """
 import sqlite3
 import threading
+import base64
 import io, json, os, re, shutil, subprocess, sys, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -2823,6 +2824,9 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
                                  % ({'有': '有码', '一般': '去码一般',
                                      '好': '无码/去码优秀'}.get(_dm, '未判定'),
                                     _code0 or '-'))
+                        if _sem0 in ('uncen', 'uncensored'):
+                            dbc.execute("UPDATE items SET demo='好' WHERE id=? "
+                                        "AND COALESCE(demo,'')<>'好'", (it['id'],))
                         if _dm:
                             dbc.execute('UPDATE items SET demo=? WHERE id=?', (_dm, it['id']))
                             # 语义拿不准(none/空)但 AI 判无码 -> 直接归无码
@@ -5191,12 +5195,10 @@ def _esrgan_up(src, dst, scale=2):
 
 
 def _poster_ai_frame(vp, n=48, width=320):
-    """两段式选帧：先用小图批量扫脸定位时间点，再取该点大图精确定位。
+    """两段式选帧：小图批量扫脸定位 -> 大图候选 -> qwen 比对清晰度/完整度。
 
-    小图扫得快、覆盖全片；大图只取一帧，用来拿到准确的脸框和最终像素。
-    排序：整体身体 > 脸/特写 > 无脸；同档宽图优先，再比清晰度。
+    返回 (PIL.Image, bbox)。宽屏裁切由调用方 _wide_crop 负责。
     """
-    import tempfile
     import numpy as np
     from PIL import Image
     import cover as _cv
@@ -5219,79 +5221,139 @@ def _poster_ai_frame(vp, n=48, width=320):
 
     def bodyrank(ratio):
         if 0.0002 <= ratio <= 0.012:
-            return 0          # 整体身体
+            return 0
         if ratio > 0.012:
-            return 1          # 脸/局部特写
-        return 2              # 没脸
+            return 1
+        return 2
 
-    def scan(times, w, use_det=True):
+    def sharp_of(bgr):
         try:
-            imgs = _cv.grab_batch(vp, times, w)
+            g = _cv.cv2.cvtColor(bgr, _cv.cv2.COLOR_BGR2GRAY)
+            return float(_cv.cv2.Laplacian(g, _cv.cv2.CV_64F).var())
         except Exception:
-            imgs = []
-        rows = []
-        for i, img in enumerate(imgs):
-            t = times[min(i, len(times) - 1)]
-            h, ww = img.shape[:2]
-            bbox, fa = None, 0
-            _d = det if use_det else None
-            if _d is not None:
-                try:
-                    for _f in (_d(img) or []):
-                        _f = list(_f)
-                        if len(_f) < 4:
-                            continue
-                        x, y, fw, fh = _f[0], _f[1], _f[2], _f[3]
-                        a2 = int(fw) * int(fh)
-                        if a2 > fa:
-                            fa, bbox = a2, (int(x), int(y), int(fw), int(fh))
-                except Exception:
-                    pass
-            sc = _cv.score(img, det)
-            rows.append((t, fa / float(ww * h) if bbox else 0.0,
-                         sc.get('sharp') or 0, ww, h))
-        return rows
+            return 0.0
 
-    times = [_a + (_b - _a) * i / float(n - 1) for i in range(n)]
-    rows = scan(times, width)
-    if not rows:
-        return (None, None)
-
-    rows.sort(key=lambda r: (bodyrank(r[1]), orank(r[3], r[4]), -r[2], -r[1]))
-    # 前 5 个候选逐个试大图，直到拿到脸框
-    picked = None
-    for t, ratio, _sh, _w, _h in rows[:5]:
-        img = None
-        try:
-            img = _cv.grab(vp, t, 0)
-        except Exception:
-            img = None
-        if img is None:
-            continue
-        hh, ww = img.shape[:2]
-        bbox, fa = None, 0
+    def face_box(bgr):
+        fa, bbox = 0, None
         if det is not None:
+            h0, w0 = bgr.shape[:2]
+            _sc = 1.0
+            _src = bgr
+            if w0 > 640:                      # 大图先缩再检，小脸才检得到
+                _sc = 640.0 / w0
+                _src = _cv.cv2.resize(bgr, (640, max(1, int(h0 * _sc))),
+                                      interpolation=_cv.cv2.INTER_AREA)
             try:
-                for _f in (det(img) or []):
+                for _f in (det(_src) or []):
                     _f = list(_f)
                     if len(_f) < 4:
                         continue
                     x, y, fw, fh = _f[0], _f[1], _f[2], _f[3]
                     a2 = int(fw) * int(fh)
                     if a2 > fa:
-                        fa, bbox = a2, (int(x), int(y), int(fw), int(fh))
+                        fa = a2
+                        bbox = (int(x / _sc), int(y / _sc),
+                                int(fw / _sc), int(fh / _sc))
             except Exception:
                 pass
-        if picked is None:
-            picked = (img, bbox, fa / float(ww * hh) if bbox else 0.0)
-        if bbox and fa > 0:
-            picked = (img, bbox, fa / float(ww * hh))
-            break
+        h, w = bgr.shape[:2]
+        return bbox, (fa / float(_sc * _sc) / float(w * h) if bbox else 0.0)
 
-    if picked is None:
+    # 1) 小图粗扫
+    times = [_a + (_b - _a) * i / float(n - 1) for i in range(n)]
+    try:
+        imgs = _cv.grab_batch(vp, times, width)
+    except Exception:
+        imgs = []
+    rows = []
+    _m = len(imgs)
+    if _m and _m != len(times):        # 实际帧数不同 -> 按真实间隔重算时间
+        times = [_a + (_b - _a) * i / float(max(1, _m - 1)) for i in range(_m)]
+    for i, img in enumerate(imgs):
+        bbox, ratio = face_box(img)
+        rows.append((times[min(i, len(times) - 1)], ratio, sharp_of(img),
+                     img.shape[1], img.shape[0]))
+    if not rows:
         return (None, None)
-    img, bbox, _r = picked
-    return (Image.fromarray(img[:, :, ::-1]), bbox)
+    # 有脸候选太少就加密扫一遍（120 帧），给 qwen 比对留出可比的对象
+    if sum(1 for r in rows if r[1] > 0) < 3:
+        _n2 = 120
+        _t2 = [_a + (_b - _a) * i / float(_n2 - 1) for i in range(_n2)]
+        try:
+            _im2 = _cv.grab_batch(vp, _t2, width)
+        except Exception:
+            _im2 = []
+        for i, img in enumerate(_im2):
+            bbox, ratio = face_box(img)
+            rows.append((_t2[min(i, len(_t2) - 1)], ratio, sharp_of(img),
+                         img.shape[1], img.shape[0]))
+        _log('    加密扫：%d 帧，有脸 %d'
+             % (len(_im2), sum(1 for r in rows if r[1] > 0)))
+    rows.sort(key=lambda r: (bodyrank(r[1]), orank(r[3], r[4]), -r[2], -r[1]))
+
+    # 2) 取前 6 个时间点出大图，算清晰度
+    cands = []
+    for t, ratio, _sh, _w, _h in rows[:6]:
+        try:
+            big = _cv.grab(vp, t, 0)
+        except Exception:
+            big = None
+        if big is None:
+            continue
+        bbox, r2 = face_box(big)
+        cands.append((sharp_of(big), bool(bbox), r2, t, big, bbox))
+    if not cands:
+        return (None, None)
+
+    # 优先有脸的；都没脸再按清晰度
+    faced = [c for c in cands if c[1]]
+    _log('    候选 %d 张，有脸 %d' % (len(cands), len(faced)))
+    pool = faced if faced else cands
+    pool.sort(key=lambda c: -c[0])
+
+    # 3) 多张交给 qwen 比对（只比有脸的前 3 张）
+    pick = pool[0]
+    if len(pool) >= 2:
+        try:
+            imgs_b64 = []
+            for c in pool[:3]:
+                big = c[4]
+                hh, ww = big.shape[:2]
+                im2 = Image.fromarray(big[:, :, ::-1])
+                if ww > 480:
+                    im2 = im2.resize((480, max(1, int(hh * 480.0 / ww))))
+                buf = io.BytesIO()
+                im2.save(buf, 'JPEG', quality=88)
+                imgs_b64.append(base64.b64encode(buf.getvalue()).decode('ascii'))
+            pr = ('这是同一部片子的 %d 帧截图（编号 1..%d）。'
+                  '请选出一张：人物身体最完整、画面最清晰、没有被前景遮挡的。'
+                  '只回答一个序号数字。' % (len(imgs_b64), len(imgs_b64)))
+            k = mlib.vis_pick(imgs_b64, pr, log=lambda m: _log(m))
+            if k:
+                pick = pool[k - 1]
+                _log('    qwen 比对：选第 %d 张（共 %d）' % (k, len(imgs_b64)))
+        except Exception as e:
+            _log('    qwen 比对失败: %s' % str(e)[:60])
+
+    return (Image.fromarray(pick[4][:, :, ::-1]), pick[5])
+
+
+def _wide_crop(im, bbox, ar=16.0 / 9.0):
+    """按 16:9 宽屏裁切，围绕人脸（无脸则居中）。"""
+    w, h = im.size
+    if bbox:
+        x, y, fw, fh = bbox
+        cx, cy = x + fw / 2.0, y + fh / 2.0
+        th = min(h, max(fh * 6.0, h * 0.55))
+    else:
+        cx, cy, th = w / 2.0, h / 2.0, min(h, w / ar)
+    tw = th * ar
+    if tw > w:
+        tw = float(w)
+        th = tw / ar
+    x0 = max(0, min(w - tw, cx - tw / 2.0))
+    y0 = max(0, min(h - th, cy - th / 2.0))
+    return im.crop((int(x0), int(y0), int(x0 + tw), int(y0 + th)))
 
 
 def _focus_crop(im, bbox):
@@ -5653,10 +5715,10 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
             return '抽帧失败'
         im = _crop_bars(im)
         if comp:
-            im = _focus_crop(im, bbox)
+            im = _wide_crop(im, bbox)
         _poster_save(im, newp)
         made = newp
-        note = ('AI选图+补完' if comp else 'AI选图') + ('（人脸裁切）' if (comp and bbox) else '')
+        note = ('AI选图+补完' if comp else 'AI选图') + ('（宽屏）' if (comp and bbox) else '')
         # 顺手判一次烧录字幕：命中就直接点亮字幕徽标
         try:
             _dd = mlib.video_duration(vp) or 0
@@ -5688,7 +5750,7 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
         try:
             from PIL import Image as _Im
             im = _Im.open(dst).convert('RGB')
-            im = _focus_crop(_crop_bars(im), None)
+            im = _wide_crop(_crop_bars(im), None)
             _poster_save(im, newp)
             made, note = newp, 'AI补完'
         except Exception as e:

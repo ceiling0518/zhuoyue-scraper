@@ -4495,6 +4495,32 @@ def vis_batch_vals(vpath, times, prompt_tpl, model=None, log=None, width=320):
     return out
 
 
+def vis_pick(imgs, prompt, model=None, log=None, timeout=600):
+    """把多张图一起发给视觉模型，让它选一张。返回 1-based 序号，失败返回 0。"""
+    if not imgs:
+        return 0
+    model = model or ai_model()
+    try:
+        r = requests.post(OLLAMA + '/api/chat', timeout=timeout,
+                          json={'model': model, 'stream': False,
+                                'keep_alive': AI_KEEP_ALIVE, 'think': False,
+                                'options': {'temperature': 0.0, 'num_predict': 80},
+                                'messages': [{'role': 'user', 'content': prompt,
+                                              'images': imgs}]})
+        txt = ((r.json() or {}).get('message') or {}).get('content') or ''
+    except Exception as e:
+        if log:
+            log('    视觉比对失败: %s' % str(e)[:80])
+        return 0
+    nums = [int(x) for x in re.findall(r'\d+', txt)]
+    for n in nums:
+        if 1 <= n <= len(imgs):
+            return n
+    if log:
+        log('    视觉比对没给出序号: %s' % txt[:80])
+    return 0
+
+
 def detect_mosaic(vpath, dur=None, model=None, log=None, n=16):
     """抽帧判断去码程度：'好'（无码）/ '一般' / '有'（马赛克）。"""
     dur = dur or video_duration(vpath)
