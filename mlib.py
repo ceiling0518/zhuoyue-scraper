@@ -5011,6 +5011,12 @@ def cut_ads_index(vpath, segs, log=None):
         for t in (0.5, max(0.5, nd - 1.5)):
             if not frame_at(tmp, t, width=320):
                 raise RuntimeError('抽帧失败 t=%.1f' % t)
+        _bak = vpath + '.orig'
+        try:
+            if not os.path.exists(_bak):
+                shutil.copy2(vpath, _bak)     # 与重封装路径一致的回滚点
+        except Exception as _e:
+            raise RuntimeError('回滚点备份失败: %s' % str(_e)[:60])
         os.replace(tmp, vpath)
         return {'ok': True, 'new_dur': nd, 'old_dur': dur,
                 'old_size': os.path.getsize(tmp) if False else t_total,
