@@ -5710,6 +5710,12 @@ class H(BaseHTTPRequestHandler):
         try:
             if p in ('/', '/index.html'):
                 return self._send(200, PAGE, 'text/html; charset=utf-8')
+            if p in ('/logo.png', '/logo'):
+                try:
+                    _b = io.open(os.path.join(HERE, 'logo.png'), 'rb').read()
+                except Exception:
+                    return self._send(404, b'', 'text/plain')
+                return self._send(200, _b, 'image/png')
             if p.startswith('/doc/'):
                 return self._send(200, doc_page(p.rsplit('/', 1)[1]), 'text/html; charset=utf-8')
             if p == '/api/douban':
@@ -6294,6 +6300,7 @@ PAGE = r"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 header{padding:10px 16px;background:var(--card);border-bottom:1px solid #2a3140;display:flex;gap:12px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:11}
 .stickytop{position:sticky;z-index:10;background:var(--bg);padding-top:8px;box-shadow:0 8px 14px -10px #000}
 h1{font-size:15px;margin:0;font-weight:600}
+.applogo{height:34px;width:auto;display:block;border-radius:6px;flex:0 0 auto}
 .wrap{padding:14px 16px;max-width:1600px;margin:0 auto}
 .cards{display:flex;gap:6px;flex-wrap:nowrap;margin-bottom:12px;overflow-x:auto}
 .card{background:var(--card);border:1px solid #2a3140;border-radius:9px;padding:6px 9px;min-width:70px;flex:0 0 auto}
@@ -6346,7 +6353,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
 #fbar select{height:28px;padding:0 6px}
 </style></head><body>
 <header>
-  <h1>卓"悦"刮削器</h1> <span class="muted">给你和你的小姐姐</span> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.2.0</span> 
+  <img class="applogo" src="/logo.png" alt="卓悦刮削器" title="卓悦刮削器 · 给你和你的小姐姐"> <span class="muted" id="app-ver" style="font-size:12px;border:1px solid #2a3140;border-radius:10px;padding:0 8px;margin-left:6px">v2.2.0</span> 
   <a href="/doc/readme" target="_blank"><button>说明</button></a>
   <button class="danger" id="b-restart" title="重启服务：加载新代码 / 任务卡死时恢复">重启</button>
   <button id="b-sites">站点</button>
