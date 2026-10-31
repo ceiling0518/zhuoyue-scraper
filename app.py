@@ -667,6 +667,48 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
         _log('  单批上限 60（自动切），请求组=%d' % batch)
         batch = 60
     ok = 0
+
+    def _ai_fill(items):
+        """对一批条目跑 AI 标签分析（与 AI 补全同一段逻辑）。"""
+        nonlocal ok
+        _tick(0, len(items))
+        _log('AI 分析 %d 条，%d 条一批（只看简介，不看文件名）' % (len(items), batch))
+        for i in range(0, len(items), batch):
+            if _stop_req():
+                _log('! 已请求停止'); break
+            chunk = items[i:i + batch]
+            chunk = [r for r in chunk if not _nested_mark(dbc, r)]
+            if not chunk:
+                continue
+            res = mlib.ai_tags_batch(chunk)
+            if res is None:
+                _log('  批 %d 解析失败 -> 逐条兜底' % (i // batch + 1))
+            for k, r in enumerate(chunk):
+                if _stop_req():
+                    break
+                tags = res[k] if res else None
+                if not tags:
+                    one = mlib.ai_tags_batch([r])
+                    tags = one[0] if one else None
+                if tags:
+                    tags = mlib.translate_tags(tags)
+                    dbc.execute("UPDATE items SET tags=?, quality='有', last_update=? WHERE id=?",
+                                (','.join(tags), mlib.now(), r['id']))
+                    dbc.commit()
+                    try:
+                        it = dict(dbc.execute('SELECT * FROM items WHERE id=?',
+                                              (r['id'],)).fetchone())
+                        mlib.write_nfo(it)
+                    except Exception:
+                        pass
+                    ok += 1
+                    _log('[%d/%d] id=%d 补 %d 个标签: %s'
+                         % (i + k + 1, len(items), r['id'], len(tags), ','.join(tags)[:70]))
+                else:
+                    _log('[%d/%d] id=%d 补全失败（保持 缺）'
+                         % (i + k + 1, len(items), r['id']))
+                _tick(i + k + 1)
+
     # 信息无效/不足的条目：先用勾选的来源补（web / 看片）
     _force = bool(ids) and (web or scan)
     if not ai:
@@ -796,69 +838,41 @@ def _fill_pass(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
                     (_title or '')[:26], (_actors or '-')[:24],
                     (_studio or '-')[:16], (_year or '-')))
             _tick(wi)
+            if ai and batch > 0 and wi % batch == 0:
+                _grp = weak[wi - batch:wi]
+                _todo = []
+                for _g in _grp:
+                    _c = dbc.execute('SELECT tags, plot FROM items WHERE id=?',
+                                     (_g['id'],)).fetchone()
+                    if _c and (_c['plot'] or '').strip() and \
+                            not (_c['tags'] or '').strip('[] ,"'):
+                        _todo.append(dict(_g, plot=_c['plot'], tags=_c['tags']))
+                if _todo:
+                    _ai_fill(_todo)
 
     if not ai:                       # Web 补全：只走网站/看片，不跑模型补标签
         return ok, len(weak)
-    # Web/看片之后：把仍然缺标签、但有简介的条目纳入 AI 标签分析。
-    # 选条目的场景 _force 会把 weak 设成全部，原来 rows 为空 -> AI 一步永远不跑。
-    if web or scan:
-        _seen, _ai_rows = set(), []
-        for _r in list(rows) + list(weak):
-            if _r['id'] in _seen:
-                continue
-            _seen.add(_r['id'])
-            _cur = dbc.execute('SELECT plot, tags FROM items WHERE id=?',
-                               (_r['id'],)).fetchone()
-            if not _cur:
-                continue
-            _pl = (_cur['plot'] or '').strip()
-            _tg = (_cur['tags'] or '').strip()
-            if _pl and (_tg in ('', '[]', 'null') or not _tg.strip('[] ,"')):
-                _ai_rows.append(dict(_r, plot=_pl, tags=_tg))
-        rows = _ai_rows
-    _tick(0, len(rows))
-    _log('AI 补全 %d 条，%d 条一批（只看简介，不看文件名）' % (len(rows), batch))
-    for i in range(0, len(rows), batch):
-        if _stop_req():
-            _log('! 已请求停止'); break
-        chunk = rows[i:i + batch]
-        chunk = [r for r in chunk if not _nested_mark(dbc, r)]   # 内嵌目录先剔掉
-        if not chunk:
-            continue
-        res = mlib.ai_tags_batch(chunk)
-        if res is None:
-            _log('  批 %d 解析失败 -> 逐条兜底' % (i // batch + 1))
-        for k, r in enumerate(chunk):
-            if _stop_req():
-                break
-            tags = res[k] if res else None
-            if not tags:
-                one = mlib.ai_tags_batch([r])
-                tags = one[0] if one else None
-            if tags:
-                tags = mlib.translate_tags(tags)
-                dbc.execute("UPDATE items SET tags=?, quality='有', last_update=? WHERE id=?",
-                            (','.join(tags), mlib.now(), r['id']))
-                dbc.commit()
-                try:
-                    it = dict(dbc.execute('SELECT * FROM items WHERE id=?',
-                                          (r['id'],)).fetchone())
-                    mlib.write_nfo(it)          # 标签落盘到 nfo
-                except Exception:
-                    pass
-                ok += 1
-                _log('[%d/%d] id=%d 补 %d 个标签: %s'
-                     % (i + k + 1, len(rows), r['id'], len(tags), ','.join(tags)[:70]))
-            else:
-                _log('[%d/%d] id=%d 补全失败（保持 缺）' % (i + k + 1, len(rows), r['id']))
-            _tick(i + k + 1)
+    if ai and (web or scan):
+        _left = weak[(len(weak) // batch) * batch:] if batch > 0 else []
+        _todo = []
+        for _g in _left:
+            _c = dbc.execute('SELECT tags, plot FROM items WHERE id=?',
+                             (_g['id'],)).fetchone()
+            if _c and (_c['plot'] or '').strip() and \
+                    not (_c['tags'] or '').strip('[] ,"'):
+                _todo.append(dict(_g, plot=_c['plot'], tags=_c['tags']))
+        if _todo:
+            _ai_fill(_todo)
+    if ai and rows:
+        _ai_fill(rows)
     return ok, len(rows) + len(weak)
 
 
 def _job_fill(limit, ai_group=None, ids=None, web=False, scan=False, ai=True):
     _begin('fill' if ai else 'web 补全')
+    _mode = ('Web+AI 补全' if (web and ai) else ('Web 补全' if web else 'AI 补全'))
     _log('  模式：%s | 来源：%s | 选中：%d 条'
-         % ('Web 补全' if not ai else 'AI 补全',
+         % (_mode,
             '+'.join(x for x, on in (('web', web), ('看片', scan)) if on) or '无',
             len(ids or [])))
     try:
