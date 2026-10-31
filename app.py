@@ -8,6 +8,7 @@ No OpenClaw / Control UI dependency.  Start with run.cmd, then open the printed 
 质量 quality : 有(完整,跳过) / 无(=没有,正常刮) / 有误(留人工复核)
 来源 source  : code(javbus/javdb) / Uncen(missav) / AI(模型)
 """
+import sqlite3
 import threading
 import io, json, os, re, shutil, subprocess, sys, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -5306,6 +5307,7 @@ def _crop_bars(im, frac=0.02, thr=26, keep=0.02, inset=0.012):
 
 
 _SCAN_ONLY = False
+PSTAT_LAST = ''
 
 
 def _ensure_tstat():
@@ -5376,45 +5378,90 @@ def _needs_enh(dst, bpp_hi=0.03, short_lo=480):
     return (bpp <= bpp_hi or min(w, h) < short_lo), bpp
 
 
+_PSTAT = {'path': None, 'conn': None}
+
+
+def _pdb():
+    """当前活动库的连接（poster_stat 必须跟 items 在同一个库里）。"""
+    p = mlib.active_db_path()
+    c = _PSTAT.get('conn')
+    if c is None or _PSTAT.get('path') != p:
+        try:
+            c.close()
+        except Exception:
+            pass
+        c = sqlite3.connect(p, timeout=30, check_same_thread=False)
+        c.row_factory = sqlite3.Row
+        _PSTAT['conn'], _PSTAT['path'] = c, p
+    try:
+        c.execute('CREATE TABLE IF NOT EXISTS poster_stat('
+                  'id INTEGER PRIMARY KEY, size INTEGER, mtime REAL, '
+                  'w INTEGER, h INTEGER, bpp REAL)')
+        c.commit()
+    except Exception:
+        pass
+    return c
+
+
 def _ensure_pstat():
     try:
-        _LOGDB.execute('CREATE TABLE IF NOT EXISTS poster_stat('
-                       'id INTEGER PRIMARY KEY, size INTEGER, mtime REAL, '
-                       'w INTEGER, h INTEGER, bpp REAL)')
-        _LOGDB.commit()
+        _pdb()
     except Exception:
         pass
 
 
 def poster_stat_of(iid, refresh=False):
-    """封面原图的 (w,h,bpp)；带 size+mtime 缓存，没算过就返回 (0,0,0)。"""
+    """封面原图的 (w,h,bpp)。每次独立连接：扫描线程和请求线程共用一个 sqlite
+    连接会互相踩（Swift 版踩出来的教训）。"""
     try:
-        r = _LOGDB.execute('SELECT cover, path FROM items WHERE id=?', (iid,)).fetchone()
-        if not r or not r[1]:
-            return 0, 0, 0.0
-        # cover 字段可能是空的（老条目/AI 建档），此时按磁盘上的 poster.jpg 算
-        dst = os.path.join(r[1], (r[0] or '').strip() or 'poster.jpg')
-        if not os.path.exists(dst):
-            return 0, 0, 0.0
-        st = os.stat(dst)
-        row = None
+        c = sqlite3.connect(mlib.active_db_path(), timeout=30)
+        c.row_factory = sqlite3.Row
         try:
-            row = _LOGDB.execute('SELECT size,mtime,w,h,bpp FROM poster_stat WHERE id=?',
-                                 (iid,)).fetchone()
+            c.execute('CREATE TABLE IF NOT EXISTS poster_stat('
+                      'id INTEGER PRIMARY KEY, size INTEGER, mtime REAL, '
+                      'w INTEGER, h INTEGER, bpp REAL)')
+            c.commit()
         except Exception:
-            _ensure_pstat()
-        if row and row[0] == st.st_size and abs(row[1] - st.st_mtime) < 1.0 and not refresh:
-            return row[2], row[3], row[4] or 0.0
-        if not refresh and row is None and not _SCAN_ONLY:
-            return 0, 0, 0.0
-        from PIL import Image
-        with Image.open(dst) as im:
-            w, h = im.size
-        bpp = (st.st_size * 8.0) / (min(w * h, 1280 * 720) * 30.0) if (w and h) else 0.0
-        _LOGDB.execute('INSERT OR REPLACE INTO poster_stat(id,size,mtime,w,h,bpp) '
-                       'VALUES(?,?,?,?,?,?)', (iid, st.st_size, st.st_mtime, w, h, bpp))
-        return w, h, bpp
+            pass
+        try:
+            r = c.execute('SELECT cover, path FROM items WHERE id=?', (iid,)).fetchone()
+            if not r or not r['path']:
+                return 0, 0, 0.0
+            dst = os.path.join(r['path'], (r['cover'] or '').strip() or 'poster.jpg')
+            if not os.path.exists(dst):
+                return 0, 0, 0.0
+            st = os.stat(dst)
+            row = None
+            try:
+                row = c.execute('SELECT size,mtime,w,h,bpp FROM poster_stat WHERE id=?',
+                                (iid,)).fetchone()
+            except Exception:
+                row = None
+            if row and row['size'] == st.st_size and abs(row['mtime'] - st.st_mtime) < 1.0 \
+                    and not refresh:
+                return row['w'], row['h'], row['bpp'] or 0.0
+            if not refresh and row is None and not _SCAN_ONLY:
+                return 0, 0, 0.0
+            from PIL import Image
+            with Image.open(dst) as im:
+                w, h = im.size
+            bpp = (st.st_size * 8.0) / (min(w * h, 1280 * 720) * 30.0) if (w and h) else 0.0
+            c.execute('INSERT OR REPLACE INTO poster_stat(id,size,mtime,w,h,bpp) '
+                      'VALUES(?,?,?,?,?,?)', (iid, st.st_size, st.st_mtime, w, h, bpp))
+            c.commit()
+            return w, h, bpp
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
     except Exception:
+        global PSTAT_LAST
+        try:
+            import traceback as _tb
+            PSTAT_LAST = _tb.format_exc()[:400]
+        except Exception:
+            pass
         return 0, 0, 0.0
 
 
@@ -5433,6 +5480,8 @@ def _job_poster_stats(ids=None):
                 ok += 1
             else:
                 skip += 1
+                if PSTAT_LAST:
+                    _log('    ! id=%s %s' % (it['id'], PSTAT_LAST.replace('\n', ' | ')[:200]))
             if i % 20 == 0:
                 _tick(i + 1)
                 _log('  已扫 %d/%d（成功 %d）' % (i + 1, len(its), ok))
@@ -7025,7 +7074,7 @@ function tcls(r){
   if(w&&h){
     const mn=Math.min(w,h),mx=Math.max(w,h);
     if(b<=0.03||mn<300)return ' tbad';
-    if(mn>=360&&mx>=640)return ' tgood';   // 480p 级 / 75dpi 就够，正规下载的封面都能进彩框
+    if(mn>=360&&mx>=600)return ' tgood';   // 600 宽的方图/竖图也算彩框，别卡 640
     return '';
   }
   const t=+r.tbpp||0;
