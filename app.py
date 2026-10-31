@@ -4848,6 +4848,10 @@ def items(params):
             o['bpp'] = round(v / (_px * 30.0), 4) if (v and _px) else 0
         except Exception:
             o['bpp'] = 0
+        try:
+            o['tbpp'] = round(thumb_bpp(o['id']), 4)
+        except Exception:
+            o['tbpp'] = 0
     # 类型计数：MP4(2), AVI(1)
     _ids = [o['id'] for o in out]
     _tm = {}
@@ -5170,7 +5174,11 @@ def _esrgan_up(src, dst, scale=2):
 
 
 def _poster_ai_frame(vp):
-    """抽帧 + 打分，选一张有女性且清晰的；返回 (PIL图, 人脸框)。"""
+    """抽帧 + 打分，选一张有女性且清晰的。
+
+    优先横板（Jellyfin 缩略图是横向槽位），其次正方，最后竖版；
+    同等朝向下再比人脸占比和清晰度。
+    """
     import tempfile
     import numpy as np
     from PIL import Image
@@ -5181,7 +5189,7 @@ def _poster_ai_frame(vp):
     except Exception:
         _dur = 0.0
     _ms = _cv.MIN_START if (_dur and _dur / 3.0 > _cv.MIN_START) else 0.0
-    best = None
+    cands = []
     for n in (12, 24, 36):
         tmpf = os.path.join(tempfile.gettempdir(), 'pai_%d.jpg' % n)
         try:
@@ -5208,12 +5216,21 @@ def _poster_ai_frame(vp):
                 pass
         sc = _cv.score(arr, det)
         ratio = fa / float(w * h) if bbox else 0.0
-        cand = (ratio, sc.get('sharp') or 0, im, bbox)
-        if best is None or (cand[0], cand[1]) > (best[0], best[1]):
-            best = cand
-        if bbox and ratio >= 0.004 and (sc.get('sharp') or 0) >= 60:
+        cands.append((ratio, sc.get('sharp') or 0, im, bbox, w, h))
+        if bbox and ratio >= 0.004 and (sc.get('sharp') or 0) >= 60 and w >= h:
             break
-    return (best[2], best[3]) if best else (None, None)
+
+    if not cands:
+        return (None, None)
+
+    def orank(w, h):
+        a = w / float(h) if h else 1.0
+        return 0 if a >= 1.2 else (1 if a >= 0.9 else 2)
+
+    cands.sort(key=lambda c: (0 if c[0] >= 0.004 else 1, orank(c[4], c[5]),
+                              -c[0], -c[1]))
+    best = cands[0]
+    return best[2], best[3]
 
 
 def _focus_crop(im, bbox):
@@ -5235,7 +5252,7 @@ def _focus_crop(im, bbox):
     return im.crop((int(x0), int(y0), int(x0 + cw), int(y0 + ch)))
 
 
-def _crop_bars(im, frac=0.012, thr=24, keep=0.02):
+def _crop_bars(im, frac=0.02, thr=26, keep=0.02, inset=0.012):
     """裁到画面真正的内容块。
 
     只做四边等比裁剪会被角落水印挡住（水印列有亮像素，黑边就留着），
@@ -5271,44 +5288,119 @@ def _crop_bars(im, frac=0.012, thr=24, keep=0.02):
         r0, r1 = 0, h - 1
     if (c1 - c0) >= w * (1 - keep) and (r1 - r0) >= h * (1 - keep):
         return im
+    # 再往里收一点：黑边边缘常压着半透明色块/糊边，一并切掉
+    m = max(2, int(min(c1 - c0, r1 - r0) * inset))
+    c0, r0, c1, r1 = c0 + m, r0 + m, c1 - m, r1 - m
+    if c1 - c0 < 16 or r1 - r0 < 16:
+        return im
     return im.crop((int(c0), int(r0), int(c1) + 1, int(r1) + 1))
 
 
-def _poster_save(im, path, lo=100, hi=150, long_side=1440):
-    """存封面 JPEG，体积压到 lo-hi KB（先降质量，再降尺寸），尽量保清晰。"""
+def _ensure_tstat():
+    try:
+        _LOGDB.execute('CREATE TABLE IF NOT EXISTS thumb_stat('
+                       'id INTEGER PRIMARY KEY, mtime REAL, size INTEGER, '
+                       'w INTEGER, h INTEGER, bpp REAL)')
+        _LOGDB.commit()
+    except Exception:
+        pass
+
+
+def thumb_bpp(iid):
+    """缩略图 bpp，和视频同口径：比特 /(MIN(w*h,720p) * 30)。"""
+    for nm in ('%d@320.jpg' % iid, '%d.jpg' % iid):
+        p = os.path.join(THUMB_DIR, nm)
+        if not os.path.exists(p):
+            continue
+        try:
+            st = os.stat(p)
+            try:
+                row = _LOGDB.execute('SELECT mtime,size,bpp FROM thumb_stat WHERE id=?',
+                                     (iid,)).fetchone()
+            except Exception:
+                _ensure_tstat()
+                row = _LOGDB.execute('SELECT mtime,size,bpp FROM thumb_stat WHERE id=?',
+                                     (iid,)).fetchone()
+            if row and abs(row[0] - st.st_mtime) < 1.0 and row[1] == st.st_size:
+                return row[2] or 0.0
+            from PIL import Image
+            with Image.open(p) as im:
+                w, h = im.size
+            if not (w and h):
+                return 0.0
+            bpp = (st.st_size * 8.0) / (min(w * h, 1280 * 720) * 30.0)
+            _LOGDB.execute('INSERT OR REPLACE INTO thumb_stat(id,mtime,size,w,h,bpp) '
+                           'VALUES(?,?,?,?,?,?)',
+                           (iid, st.st_mtime, st.st_size, w, h, bpp))
+            return bpp
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _poster_save(im, path, lo=100, hi=150, long_side=1200, minq=86):
+    """存封面 JPEG：先卡分辨率，再用尽量高的质量（=更高码率）把体积顶进 lo-hi。
+
+    体积不够就让分辨率升一档，体积超了就降分辨率——不靠一味降质量换体积，
+    这样画面更锐利。
+    """
     from PIL import Image
     im = im.convert('RGB')
-    w, h = im.size
-    if max(w, h) > long_side:
-        r = long_side / float(max(w, h))
-        im = im.resize((max(1, int(w * r)), max(1, int(h * r))), Image.LANCZOS)
     tmp = path + '.tmp.jpg'
-    best = None
-    for _ in range(3):
-        fits = []
-        for q in (96, 94, 92, 90, 88, 86, 84, 82, 80, 78, 76, 74, 72, 70, 66, 62):
-            im.save(tmp, 'JPEG', quality=q, optimize=True, progressive=True)
-            kb = os.path.getsize(tmp) / 1024.0
+
+    def enc(img, q):
+        img.save(tmp, 'JPEG', quality=q, optimize=True, progressive=True)
+        return os.path.getsize(tmp) / 1024.0
+
+    def fit(img, side):
+        w, h = img.size
+        r = side / float(max(w, h))
+        if r < 1:
+            img = img.resize((max(1, int(w * r)), max(1, int(h * r))), Image.LANCZOS)
+        best = None
+        for q in (96, 95, 94, 93, 92, 91, 90, 89, 88, 87, 86):
+            kb = enc(img, q)
             if kb <= hi:
-                fits.append((q, kb))
-                if kb >= lo:          # 落在区间内，直接用
-                    break
-        if fits:
-            q, kb = fits[-1]          # 取不超过上限里质量最高的一档
-            im.save(tmp, 'JPEG', quality=q, optimize=True, progressive=True)
-            best = kb
+                best = (q, kb, img)
+                break
+        return best
+
+    cur = im
+    best = fit(cur, long_side)
+    tries = 0
+    # 体积偏小 -> 放大一档再试，让画面吃到 100KB 以上
+    while best and best[1] < lo and tries < 2:
+        w, h = cur.size
+        cur = cur.resize((int(w * 1.2), int(h * 1.2)), Image.LANCZOS)
+        nb = fit(cur, 10 ** 6)
+        if not nb:
             break
-        w, h = im.size
-        im = im.resize((int(w * 0.85), int(h * 0.85)), Image.LANCZOS)
-    try:
-        os.replace(tmp, path)
-    except Exception:
+        best, tries = nb, tries + 1
+    if not best:
+        cur = im
+        for _ in range(5):
+            w, h = cur.size
+            cur = cur.resize((int(w * 0.8), int(h * 0.8)), Image.LANCZOS)
+            kb = enc(cur, 90)
+            if kb <= hi:
+                best = (90, kb, cur)
+                break
+    if best:
+        enc(best[2], best[0])
         try:
-            shutil.copyfile(tmp, path)
-            os.remove(tmp)
+            os.replace(tmp, path)
         except Exception:
-            pass
-    return best or 0.0
+            try:
+                shutil.copyfile(tmp, path)
+                os.remove(tmp)
+            except Exception:
+                pass
+        return best[1]
+    try:
+        os.remove(tmp)
+    except Exception:
+        pass
+    return 0.0
 
 
 def _poster_refresh_one(iid, ai=False, enh=False):
@@ -5323,7 +5415,8 @@ def _poster_refresh_one(iid, ai=False, enh=False):
     made = None
     note = ''
 
-    if ai:
+    # 有封面又只要「提升画质」时，绝不重新抽帧：直接拿现有 poster 超分
+    if ai and not (enh and os.path.exists(dst)):
         vp = mlib.pick_cover_video(p)
         if not vp:
             return '没有视频'
@@ -6420,7 +6513,10 @@ th{color:var(--dim);background:#171c25;font-weight:600}
 tr:hover td{background:#1f2531}
 .q-有{color:var(--ok);font-weight:600}.q-有误{color:var(--bad);font-weight:600}.q-无{color:var(--dim)}
 .s-Web{color:var(--ok)}.s-AI{color:var(--warn)}
-.thumb{width:120px;height:68px;object-fit:cover;border-radius:5px;background:#0b0e13}
+.thumb{width:120px;height:68px;object-fit:cover;border-radius:4px;background:#0b0e13}
+.tframe{display:inline-block;line-height:0;border-radius:6px;padding:2px}
+.tframe.tbad{box-shadow:0 0 0 2px #e5484d}
+.tframe.tgood{padding:3px;background:linear-gradient(135deg,#ff5f6d,#ffc371,#5ee6a8,#4ac1ff)}
 #rows td{height:84px;vertical-align:middle}
 @media (max-width:1100px){#tbl th:nth-child(4),#tbl td:nth-child(4),#tbl th:nth-child(5),#tbl td:nth-child(5){display:none}}
 .cellclip{max-height:78px;overflow:hidden}
@@ -6807,7 +6903,11 @@ async function list(){const qs=new URLSearchParams({limit:lim,offset:off,
   const d=await(await fetch('/api/items?'+qs)).json();
   $('#rows').innerHTML=d.rows.map(r=>{
     const q=r.quality||'';
-    return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图"><img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" onerror="this.style.opacity=.15"></a></td>'
+    return '<tr id="r'+r.id+'"><td><a href="#" class="imgopen" data-id="'+r.id+'" title="本地打开大图'
+    +(r.tbpp?'｜缩略图 bpp '+r.tbpp.toFixed(3):'')+'">'
+    +'<span class="tframe'+(r.tbpp?(r.tbpp<=0.03?' tbad':(r.tbpp<=0.08?'':' tgood')):'')+'">'
+    +'<img class="thumb" loading="lazy" src="/api/thumb/'+r.id+'?v='+THUMBV+'" '
+    +'onerror="this.style.opacity=.15"></span></a></td>'
     +'<td title="入库 '+esc(r.first_seen||'')+'\uff0f最后编辑 '+esc(r.last_update||'')+'">'+r.id+hbadge(r)+'</td>'
     +'<td style="white-space:nowrap">'+qIcon(q)+' '+srcIcon(r.source)+adIcon(r,1)+subIcon(r)+demoIcon(r)+(r.nw?' <span title="有无效段（无女性/广告）" style="color:var(--bad)">⛔'+r.nw+'</span>':'')+'<div class="meta" title="大小 '+fsize(r.tsize||r.fsize)+' ｜ 时长 '+fdur(r.mdur)+'">'+fsz(r.tsize||r.fsize)+' '+fdur(r.mdur)+'</div><div class="meta">'+(r.types||fext(r.mfile))+'</div></td>'
     +'<td style="white-space:nowrap">'
