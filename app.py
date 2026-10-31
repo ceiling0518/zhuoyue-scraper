@@ -4304,6 +4304,9 @@ def _ollama():
         return {'up': False, 'model': mlib.ai_model(), 'model_ok': False, 'error': str(e)[:90]}
 
 
+# 码率分级参考帧率：统一按 30 帧折算，避免 60fps 被当成「码率差」
+BPP_FPS_REF = 30.0
+
 BUILD_ID = time.strftime('%m%d-%H%M%S')
 
 
@@ -4330,7 +4333,7 @@ def stats():
         out['lowbpp'] = dbc.execute(
             "SELECT COUNT(*) c FROM items i JOIN media m ON m.item_id=i.id "
             "WHERE i.present=1 AND m.vbr>0 AND m.w>0 AND m.h>0 AND m.fps>0 "
-            "AND (m.vbr*1.0/(MIN(m.w*m.h,2073600)*m.fps))<0.08").fetchone()['c']
+            "AND (m.vbr*1.0/(MIN(m.w*m.h,2073600)*30.0))<0.08").fetchone()['c']
     except Exception:
         out.setdefault('hbad', 0); out.setdefault('adbad', 0); out.setdefault('lowbpp', 0)
     for r in dbc.execute("SELECT COALESCE(NULLIF(quality,''),'无') q, COUNT(*) c "
@@ -4416,7 +4419,7 @@ def items(params):
         args.append(_mk)
     pq = params.get('pq')
     if pq in ('良好', '一般', '差'):
-        _b = ("(COALESCE(m.vbr,0)*1.0/(MIN(m.w*m.h,2073600)*COALESCE(m.fps,0)))")
+        _b = ("(COALESCE(m.vbr,0)*1.0/(MIN(m.w*m.h,2073600)*30.0))")
         where.append('m.vbr>0 AND m.w>0 AND m.h>0 AND m.fps>0')
         if pq == '良好':
             where.append(_b + '>=0.08')
@@ -4463,7 +4466,7 @@ def items(params):
             h = int(o.get('mh') or 0)
             fps = float(o.get('mfps') or 0)
             _px = min(w * h, 1920 * 1080) if (w and h) else 0
-            o['bpp'] = round(v / (_px * fps), 4) if (v and _px and fps) else 0
+            o['bpp'] = round(v / (_px * 30.0), 4) if (v and _px) else 0
         except Exception:
             o['bpp'] = 0
     # 类型计数：MP4(2), AVI(1)
@@ -6038,7 +6041,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     <th style="width:136px">缩略图</th><th style="width:62px" title="id + 体检标识（不可编辑）">id</th>
     <th style="width:108px" title="质量 ●有 ◐缺 ○无 ✕有误 –删除 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 无效 ⛔段数">属性</th>
     <th style="width:134px" title="系列-番号，下一行语义；均可双击修改">番号 / 语义</th>
-    <th style="width:116px" title="分辨率 · 平均码率 · bpp（<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
+    <th style="width:116px" title="分辨率 · 平均码率 · bpp（统一按 30 帧折算，<0.04 红=信息量不足）">画质</th><th>标题 / 元信息</th><th style="width:70px">选择</th>
   </tr></thead><tbody id="rows"></tbody></table>
   <div class="bar"><button id="b-prev">‹ 上一页</button><select id="pjump" style="min-width:132px"></select><button id="b-next">下一页 ›</button><button id="b-reload" class="right">⟳ 刷新列表</button></div>
 </div>
