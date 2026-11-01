@@ -2819,8 +2819,11 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
                                     break
                                 try:
                                     _dv = _dur0 if _vi == 0 else mlib.video_duration(vids[_vi])
-                                    _x = mlib.detect_mosaic(vids[_vi], _dv,
-                                                            log=lambda m: _log('      ' + m))
+                                    _x = mlib.detect_mosaic_ref(vids[_vi], _dv,
+                                                                log=lambda m: _log('      ' + m))
+                                    if _x is None:      # 参照图缺失/解析失败 -> 旧打分法兜底
+                                        _x = mlib.detect_mosaic(vids[_vi], _dv,
+                                                                log=lambda m: _log('      ' + m))
                                 except Exception:
                                     _x = ''
                                 _dms.append(_x)

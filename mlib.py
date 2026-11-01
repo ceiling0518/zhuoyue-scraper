@@ -4552,7 +4552,103 @@ def detect_mosaic(vpath, dur=None, model=None, log=None, n=16):
         return '一般'
     if c2 >= 0.60 and c0 < 0.10:
         return '好'
+    if c1 >= 0.60 and c0 < 0.10:
+        # 全片「看得到但偏软」、没有任何马赛克证据：按去码后遗症算，别再全落空
+        return '一般'
     return ''
+
+
+MOSAIC_REF_PROMPT = (
+    '只看画面里【性器官那块】的清晰度，必须和【同一张画面的其它部位】对比着判，不要用绝对清晰度：\n'
+    '"清晰"   = 那块和画面其它部位一样清楚，细节纹理能分辨\n'
+    '"模糊"   = 那块明显比画面其它部位更糊/被抹平（去码后的涂抹感）\n'
+    '"马赛克" = 那块有方块格子、厚码或被贴纸盖住\n'
+    '"看不清" = 那块在画面里，但太暗/太远/被挡，认不出细节\n'
+    '"没"     = 这张画面里根本没有那块（衣物/纯环境/角度）\n'
+    '整片分辨率低不算"模糊"：只要该区域和全画面锐度一致，就判"清晰"。\n'
+    '前 3 张是示例：第1张=马赛克，第2张=清晰，第3张=模糊。\n'
+    '后面 {N} 张按同样标准逐张判断。\n'
+    '只输出 JSON：{{"v":[[1,"马赛克"],[2,"清晰"]]}}，不要解释。'
+)
+
+
+def _mosaic_refs():
+    """读 3 张参照图（有/无/去），缺失返回空。"""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'mosaic_ref')
+    out = []
+    for fn in ('you.jpg', 'wu.jpg', 'qu.jpg'):
+        p = os.path.join(base, fn)
+        try:
+            with open(p, 'rb') as f:
+                out.append(base64.b64encode(f.read()).decode('ascii'))
+        except Exception:
+            return []
+    return out
+
+
+def detect_mosaic_ref(vpath, dur=None, model=None, log=None, n=12):
+    """参照样本直接判：'有' / '好' / '一般' / ''（看不到）。失败返回 None 由调用方回退。"""
+    refs = _mosaic_refs()
+    if not refs:
+        return None
+    dur = dur or video_duration(vpath)
+    if not dur or dur < 20:
+        return ''
+    times = [round(dur * (i + 0.5) / n, 2) for i in range(n)]
+    imgs, idx = [], []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            bs = list(ex.map(lambda t: frame_at(vpath, t, width=960), times))
+    except Exception:
+        bs = [frame_at(vpath, t, width=960) for t in times]
+    for i, b in enumerate(bs):
+        if b:
+            imgs.append(base64.b64encode(b).decode('ascii'))
+            idx.append(i)
+    if not imgs:
+        return ''
+    prompt = MOSAIC_REF_PROMPT.replace('{N}', str(len(imgs)))
+    model = model or ai_model()
+    try:
+        r = requests.post(OLLAMA + '/api/chat', timeout=900,
+                          json={'model': model, 'stream': False,
+                                'keep_alive': AI_KEEP_ALIVE, 'think': False,
+                                'options': {'temperature': 0.1, 'num_predict': 300},
+                                'messages': [{'role': 'user', 'content': prompt,
+                                              'images': refs + imgs}]})
+        txt = ((r.json() or {}).get('message') or {}).get('content') or ''
+    except Exception as e:
+        if log:
+            log('    参照判定失败: %s' % str(e)[:80])
+        return None
+    arr = extract_json_array(txt) or []
+    vals = {}
+    for it in arr:
+        if isinstance(it, (list, tuple)) and len(it) >= 2:
+            try:
+                vals[int(it[0])] = str(it[1])
+            except Exception:
+                pass
+    labs = [vals.get(j + 1, '') for j in range(len(imgs))]
+    labs = [x for x in labs if x and x != '没']   # 「看不到」不算证据
+    if not labs:
+        if log:
+            log('    参照判定没解析出结果: %s' % txt[:80])
+        return None   # 解析失败 -> 调用方回退旧打分法
+    c = {k: labs.count(k) for k in ('清晰', '模糊', '马赛克', '看不清')}
+    tot = len(labs)
+    if log:
+        log('    去码四档：清晰 %d / 模糊 %d / 马赛克 %d / 看不清 %d（共 %d 帧，看不到的不算）'
+            % (c['清晰'], c['模糊'], c['马赛克'], c['看不清'], tot))
+    # 口径（房工定）：清晰=无码；模糊=去码；马赛克/看不清=有码
+    if c['清晰'] * 2 > tot:
+        return '好'
+    if c['模糊'] * 2 > tot:
+        return '一般'
+    if c['马赛克'] + c['看不清'] == 0:
+        return None
+    return '有'
 
 
 def detect_subs_burn(vpath, dur=None, model=None, log=None, n=12):
