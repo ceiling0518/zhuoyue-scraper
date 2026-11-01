@@ -497,6 +497,101 @@ def untrunc_auto(corrupt, donors, log=None, keep=3):
     return False, '试了 %d 个候选都不匹配（编码参数差太多）' % tried, ''
 
 
+def pick_donors(corrupt, limit=5, log=None):
+    """按「同番号 → 同格式 → 文件名相似 → 同无码/有码」挑字典候选。
+    先纯元数据打分（不碰磁盘），只对前若干个候选解析真实视频文件。
+    码率接近度由调用方在拿到前几名后用 video_kbps 复核。"""
+    import difflib
+    import re as _re
+    try:
+        import mlib
+        conn = mlib.db()
+    except Exception as e:
+        if log:
+            log('    挑候选失败: %s' % e)
+        return []
+    base = os.path.basename(corrupt)
+    stem = os.path.splitext(base)[0]
+    ext = os.path.splitext(base)[1].lower()
+    m = _re.match(r'^([A-Za-z]{2,6}[-_ ]?\d{2,6})', stem)
+    code = m.group(1).upper().replace('_', '-').replace(' ', '') if m else ''
+    cur_dir = os.path.dirname(os.path.abspath(corrupt))
+    _cur_sem = ''
+    try:
+        _r0 = conn.execute('SELECT sem_kind FROM items WHERE path=?',
+                           (cur_dir,)).fetchone()
+        if _r0:
+            _cur_sem = _r0['sem_kind'] or ''
+    except Exception:
+        pass
+    try:
+        _cur_k = video_kbps(corrupt) or 0
+    except Exception:
+        _cur_k = 0
+
+    scored = []
+    try:
+        rows = conn.execute('SELECT path, name, code, sem_kind FROM items '
+                            'WHERE present=1 AND path IS NOT NULL')
+        for r in rows:
+            p = r['path']
+            if not p or os.path.abspath(p) == cur_dir:
+                continue
+            # 目录名通常就是番号（ABF-362），比条目标题稳定
+            nm = os.path.basename(os.path.normpath(p)) or (r['name'] or '')
+            fstem = os.path.splitext(nm)[0]
+            sc = difflib.SequenceMatcher(None, stem.lower(),
+                                         fstem.lower()).ratio() * 35.0
+            rcode = (r['code'] or '').upper().replace('_', '-')
+            if code and rcode == code:
+                sc += 40
+            elif code and fstem.upper().startswith(code):
+                sc += 30
+            if os.path.splitext(nm)[1].lower() == ext:
+                sc += 8
+            if _cur_sem and (r['sem_kind'] or '') == _cur_sem:
+                sc += 15
+            elif r['sem_kind']:
+                sc += 2
+            scored.append((sc, p, nm))
+    except Exception as e:
+        if log:
+            log('    查询失败: %s' % e)
+        return []
+
+    scored.sort(key=lambda x: -x[0])
+    short = []
+    for sc, p, nm in scored[:max(limit * 4, 12)]:
+        v = mlib.biggest_video(p)
+        if not v:
+            continue
+        fp = os.path.join(p, v)
+        if os.path.abspath(fp) == os.path.abspath(corrupt):
+            continue
+        short.append((sc, fp))
+    if _cur_k > 0 and short:
+        rescored = []
+        for sc, fp in short:
+            k = 0
+            try:
+                k = video_kbps(fp) or 0
+            except Exception:
+                pass
+            if k > 0:
+                diff = abs(k - _cur_k) / float(_cur_k)
+                sc2 = sc + max(0.0, 10.0 - diff * 10.0)
+            else:
+                sc2 = sc
+            rescored.append((sc2, fp))
+        short = rescored
+        short.sort(key=lambda x: -x[0])
+    out = [fp for _sc, fp in short[:limit]]
+    if log:
+        log('    donor 候选 %d 个：%s' % (len(out), ', '.join(
+            os.path.basename(o)[:30] for o in out)))
+    return out
+
+
 def plan_index(path):
     """只读：走 box 链定位被截的 stco，算缺失字节与预期新尺寸；不改文件。"""
     out = {'ok': False, 'kind': 'index', 'path': path}
@@ -2144,7 +2239,7 @@ def interp_gap(path, gaps=None, log=None, tick=None, mi_mode='mci', verify=True,
 def _main():
     args = sys.argv[1:]
     if not args:
-        print('用法: repair.py probe <file|dir> | index <file> | apply-index <file> | undo-index <file> <orig_size>')
+        print('用法: repair.py probe <file|dir> | index <file> | apply-index <file> | undo-index <file> <orig_size> | untrunc <corrupt> [donor...]')
         return
     cmd, target = args[0], (args[1] if len(args) > 1 else '')
     if cmd == 'probe':
@@ -2168,6 +2263,13 @@ def _main():
         print(json.dumps(plan_index(target), ensure_ascii=False, indent=1)[:1600])
     elif cmd == 'apply-index':
         print(json.dumps(apply_index(target, log=print), ensure_ascii=False, indent=1)[:600])
+    elif cmd == 'untrunc':
+        if not target:
+            print('用法: repair.py untrunc <corrupt.mp4> [donor1 donor2 ...]')
+            return
+        donors = args[2:] or pick_donors(target, limit=5, log=print)
+        ok, out, used = untrunc_auto(target, donors, log=print)
+        print('OK' if ok else 'FAIL', out, '| donor:', used)
     elif cmd == 'undo-index':
         print(json.dumps(undo_index(target, args[2]), ensure_ascii=False))
     else:

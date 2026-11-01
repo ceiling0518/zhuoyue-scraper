@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """MediaScraper -- standalone local scraping service.
 
@@ -2578,7 +2578,7 @@ def _job_convert(ids=None):
                         _hint = '（moov 被截断约 %.1f MB：先跑「修复索引」，修完再转换）' % (
                             _pl['moov_short'] / 1048576.0)
                     elif '没有 moov' in _err:
-                        _hint = '（moov 完全缺失：用 tools\\untrunc\\untrunc_x64\\untrunc.exe 以同源健康文件重建，或调 repair.untrunc_fix）'
+                        _hint = '（moov 完全缺失：跑 `repair.py untrunc <file>`，按同番号/码率/格式自动挑 donor）'
                     elif _err:
                         _hint = '（%s）' % _err[:40]
                 except Exception:
@@ -5210,6 +5210,36 @@ def _esrgan_up(src, dst, scale=2):
         shutil.rmtree(td, ignore_errors=True)
 
 
+def _face_box_pil(im):
+    """在 PIL 图上找最大人脸，返回 (x, y, w, h) 或 None。"""
+    try:
+        import numpy as np
+        import cover as _cv
+        det = _cv.face_detector()
+        if det is None:
+            return None
+        bgr = np.asarray(im.convert('RGB'))[:, :, ::-1].copy()
+        h, w = bgr.shape[:2]
+        sc, src = 1.0, bgr
+        if w > 640:
+            sc = 640.0 / w
+            src = _cv.cv2.resize(bgr, (640, max(1, int(h * sc))),
+                                 interpolation=_cv.cv2.INTER_AREA)
+        best, ba = None, 0
+        for f in (det(src) or []):
+            f = list(f)
+            if len(f) < 4:
+                continue
+            a = int(f[2]) * int(f[3])
+            if a > ba:
+                ba = a
+                best = (int(f[0] / sc), int(f[1] / sc),
+                        int(f[2] / sc), int(f[3] / sc))
+        return best
+    except Exception:
+        return None
+
+
 def _sharp_file(fp):
     """文件清晰度（Laplacian 方差），失败返 0。"""
     try:
@@ -5799,9 +5829,21 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
         try:
             from PIL import Image as _Im
             im = _Im.open(dst).convert('RGB')
-            im = _wide_crop(_crop_bars(im), None)
+            _bb = _face_box_pil(im)
+            if _bb:
+                im = _wide_crop(_focus_crop(_crop_bars(im), _bb), _bb)
+                note_w = 'AI补完（按脸取景）'
+            else:
+                # 没脸可定位：中心收紧 12%，让主体更满，避免补完等于没补
+                im = _crop_bars(im)
+                _w2, _h2 = im.size
+                _tw, _th = int(_w2 * 0.88), int(_h2 * 0.88)
+                _x0, _y0 = (_w2 - _tw) // 2, (_h2 - _th) // 2
+                im = im.crop((_x0, _y0, _x0 + _tw, _y0 + _th))
+                im = _wide_crop(im, None)
+                note_w = 'AI补完（无脸，中心收紧12%）'
             _poster_save(im, newp)
-            made, note = newp, 'AI补完'
+            made, note = newp, note_w
         except Exception as e:
             return '补完失败: %s' % str(e)[:60]
         if enh:
