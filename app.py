@@ -7681,13 +7681,21 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
   // 服务重启后 build 会变：旧页面立刻可见地提示刷新，避免「点了没反应」
   if(!window.LOADBUILD){window.LOADBUILD=s.build||'';}
   else if(s.build&&s.build!==window.LOADBUILD){
+    // 服务重启过：没跑任务就直接自动刷新一次，别留一条红条吓人
+    const _k='ms_autoreload';
+    if(!window._jbWas&&!sessionStorage.getItem(_k)){
+      sessionStorage.setItem(_k,'1');
+      setTimeout(()=>sessionStorage.removeItem(_k),20000);
+      location.reload();
+      return;
+    }
     let _sb=document.getElementById('stalebanner');
     if(!_sb){_sb=document.createElement('div');_sb.id='stalebanner';
-      _sb.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99999;background:#b3261e;'
-        +'color:#fff;padding:8px 12px;text-align:center;font:14px system-ui;'
-        +'box-shadow:0 2px 8px rgba(0,0,0,.45)';
-      _sb.innerHTML='<b>页面已过期</b>（服务重启过，'+esc(window.LOADBUILD||'')+' → '+esc(s.build||'')+'）：'
-        +'<a href="#" id="sbreload" style="color:#fff;text-decoration:underline">点此刷新</a>';
+      _sb.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99999;background:#8a5a00;'
+        +'color:#fff;padding:6px 12px;text-align:center;font:13px system-ui;'
+        +'box-shadow:0 2px 8px rgba(0,0,0,.35)';
+      _sb.innerHTML='服务已更新，任务跑完请刷新：'
+        +'<a href="#" id="sbreload" style="color:#fff;text-decoration:underline">刷新</a>';
       document.body.appendChild(_sb);
       document.getElementById('sbreload').onclick=e=>{e.preventDefault();location.reload();};
     }
@@ -8630,7 +8638,8 @@ $('#a-thumbs').onclick=async()=>{if(!SEL.size)return;
   const r=await post('/api/thumbs/refresh?ids='+[...SEL].join(',')+'&ai='+_ai+'&enh='+_enh+'&comp='+_cp);
   if(r.queued){setLog(['已排队：跑完自动刷新（图 + 框色）']);return;}
   THUMBV++;await list();};
-$('#a-models').onclick=async()=>{
+const _amEl=$('#a-models');
+if(_amEl)_amEl.onclick=async()=>{
   const r=await post('/api/models/download?id=comfy_bundle');
   if(!r.ok) return setLog(['模型下载未启动（已登记？）']);
   setLog(['已开始下载补全模型（约 34GB，断点续传，页面关掉继续跑）']);
@@ -8643,7 +8652,9 @@ async function mdlTick(){
     const d=(j.dl||{}).comfy_bundle||{};
     const el=$('#mdl-line');
     if(el){
-      if(d.error) el.textContent='下载失败: '+d.error;
+      if(d.error) el.textContent=(/SSL|urlopen|EOF|timed out|reset|aborted/i.test(d.error)
+          ?'下载中断（网络），点「补全模型」可续传'
+          :('下载失败: '+d.error));
       else if(d.done) el.textContent='补全模型已就绪';
       else if(d.pct||d.got_mb) el.textContent=(d.file||'下载中')+' '+d.pct+'% '+Math.round((d.got_mb||0))+'/'+(d.total_mb||0)+'MB';
       else el.textContent='';
