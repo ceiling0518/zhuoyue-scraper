@@ -6216,7 +6216,9 @@ def doc_page(name):
         body = '(缺文件: %s)' % fn
     b = body.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     return ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
-            '<link rel="icon" href="/static/favicon.ico?v=1"><title>%s</title>'
+            '<link rel="icon" href="/static/favicon.ico?v=2">'
+            '<link rel="icon" href="/static/favicon-white.ico?v=2" media="(prefers-color-scheme: dark)">'
+            '<title>%s</title>'
             '<style>body{background:#12151b;color:#e6e9ef;font:14px/1.7 system-ui,"Segoe UI",'
             'sans-serif;padding:26px;max-width:1000px;margin:auto}pre{white-space:pre-wrap;'
             'word-break:break-word}a{color:#4c9aff}</style></head><body>'
@@ -6868,8 +6870,10 @@ class H(BaseHTTPRequestHandler):
 
 
 PAGE = r"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<link rel="icon" href="/static/favicon.ico?v=1">
-<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=1">
+<link rel="icon" href="/static/favicon.ico?v=2">
+<link rel="icon" href="/static/favicon.ico?v=2" media="(prefers-color-scheme: light)">
+<link rel="icon" href="/static/favicon-white.ico?v=2" media="(prefers-color-scheme: dark)">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2">
 <meta name="theme-color" content="#0b0f14">
 <title>卓"悦"刮削器 — 给你和你的小姐姐</title>
 <style>
