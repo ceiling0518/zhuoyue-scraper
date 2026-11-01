@@ -6215,7 +6215,8 @@ def doc_page(name):
     except Exception:
         body = '(缺文件: %s)' % fn
     b = body.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    return ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>%s</title>'
+    return ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+            '<link rel="icon" href="/static/favicon.ico?v=1"><title>%s</title>'
             '<style>body{background:#12151b;color:#e6e9ef;font:14px/1.7 system-ui,"Segoe UI",'
             'sans-serif;padding:26px;max-width:1000px;margin:auto}pre{white-space:pre-wrap;'
             'word-break:break-word}a{color:#4c9aff}</style></head><body>'
@@ -6268,6 +6269,16 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     return self._send(404, b'', 'text/plain')
                 return self._send(200, _b, 'image/png')
+            if p.startswith('/static/'):
+                _fp = os.path.join(HERE, 'static', os.path.basename(p))
+                if not os.path.isfile(_fp):
+                    return self._send(404, b'', 'text/plain')
+                _ext = os.path.splitext(_fp)[1].lower()
+                _mime = {'.ico': 'image/x-icon', '.png': 'image/png',
+                         '.svg': 'image/svg+xml', '.css': 'text/css',
+                         '.js': 'application/javascript'}.get(
+                             _ext, 'application/octet-stream')
+                return self._send(200, io.open(_fp, 'rb').read(), _mime)
             if p.startswith('/doc/'):
                 return self._send(200, doc_page(p.rsplit('/', 1)[1]), 'text/html; charset=utf-8')
             if p == '/api/douban':
@@ -6857,6 +6868,9 @@ class H(BaseHTTPRequestHandler):
 
 
 PAGE = r"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<link rel="icon" href="/static/favicon.ico?v=1">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=1">
+<meta name="theme-color" content="#0b0f14">
 <title>卓"悦"刮削器 — 给你和你的小姐姐</title>
 <style>
 :root{--bg:#12151b;--card:#1b202a;--fg:#e6e9ef;--dim:#8b93a7;--acc:#4c9aff;--ok:#3fbf6f;--warn:#e8b23a;--bad:#e05c5c;--pur:#c08cff}
