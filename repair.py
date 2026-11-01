@@ -110,6 +110,13 @@ def enc_args(path=None):
         return ['-c:v', 'libx264', '-preset', 'veryfast',
                 '-b:v', '%dk' % k, '-maxrate', '%dk' % int(k * 1.4),
                 '-bufsize', '%dk' % int(k * 2)]
+    if ENC_MODE == 'bpp' and ENC_BPP > 0:
+        # bpp 口径固定按 720p/30 帧：kbps = bpp * 1280*720*30 / 1000
+        k = int(ENC_BPP * 921600 * 30 / 1000)
+        if k > 50:
+            return ['-c:v', 'libx264', '-preset', 'veryfast',
+                    '-b:v', '%dk' % k, '-maxrate', '%dk' % int(k * 1.4),
+                    '-bufsize', '%dk' % int(k * 2)]
     if ENC_MODE == 'scale' and path:
         src = video_kbps(path)
         if src > 1:

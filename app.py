@@ -1826,7 +1826,7 @@ def _video_wh(path):
         return 0, 0
 
 
-def _gpu_enc(path):
+def _gpu_enc(path, wh=None):
     """按设置里的码率策略生成 nvenc 参数。CRF 模式映射为 cq。"""
     _rc = 'vbr'
     if repair.ENC_MODE == 'kbps' and repair.ENC_KBPS > 0:
@@ -1837,8 +1837,9 @@ def _gpu_enc(path):
     elif repair.ENC_MODE == 'scale':
         k = int((repair.video_kbps(path) or 0) * repair.ENC_SCALE)
     elif repair.ENC_MODE == 'bpp' and repair.ENC_BPP > 0:
-        _w, _h = _video_wh(path)
-        k = int(repair.ENC_BPP * min(_w * _h, 921600) * 30 / 1000) if (_w and _h) else 0
+        _w, _h = wh or _video_wh(path)
+        # bpp 口径固定 720p/30：拿不到分辨率也按常量算，绝不静默退回 cq
+        k = int(repair.ENC_BPP * (min(_w * _h, 921600) if (_w and _h) else 921600) * 30 / 1000)
     else:
         k = 0
     if k > 0:
@@ -2576,7 +2577,7 @@ def _job_convert(ids=None):
             loc = mlib.stage_local(vp, _log)
             tmp = os.path.splitext(loc)[0] + '.conv.mp4'
             base = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', loc,
-                    '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn'] + _gpu_enc(loc)
+                    '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn'] + _gpu_enc(loc, (w, h))
             t0 = time.time()
             rc, err = _run_prog(base + ['-c:a', 'copy', '-movflags', '+faststart', tmp],
                                 dur, _log, '转换', timeout=86400)
@@ -6728,8 +6729,15 @@ class H(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 _em = q.get('enc_mode')
+                _ev0 = (q.get('enc_val') or '').strip()
+                if _em == 'crf' and _ev0:
+                    try:
+                        if 0 < float(_ev0) < 1:
+                            _em = 'bpp'      # CRF 不可能是小数，按 bpp 理解
+                    except Exception:
+                        pass
                 if _em in ('crf', 'kbps', 'scale', 'bpp'):
-                    _ev = (q.get('enc_val') or '').strip()
+                    _ev = _ev0
                     mlib.cfg_set('enc_mode', _em)
                     if _em == 'crf':
                         _ev = _ev or '20'
