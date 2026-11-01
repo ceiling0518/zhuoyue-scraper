@@ -5669,6 +5669,175 @@ def _job_poster_stats(ids=None):
         _log('ERR ' + traceback.format_exc()[:800]); _end('pstat 失败')
 
 
+FACE_PY = r'F:\StableDiffusion\AI\python\python.exe'
+FACE_HELPER = os.path.join(HERE, 'facefix.py')
+FACE_LAST = ''
+
+
+def _face_restore(src, dst, weight=0.6):
+    """GFPGAN 修脸。任何失败都只返回 False，绝不打断主流程。"""
+    global FACE_LAST
+    FACE_LAST = ''
+    if not (os.path.exists(FACE_PY) and os.path.exists(FACE_HELPER)):
+        FACE_LAST = 'GFPGAN 环境缺失'
+        return False
+    td = tempfile.mkdtemp(prefix='ff_')
+    try:
+        tin = os.path.join(td, 'in.png')
+        tout = os.path.join(td, 'out.png')
+        shutil.copyfile(src, tin)
+        r = subprocess.run([FACE_PY, FACE_HELPER, tin, tout, str(weight)],
+                           capture_output=True, timeout=600)
+        if os.path.exists(tout) and os.path.getsize(tout) > 2048:
+            shutil.copyfile(tout, dst)
+            return True
+        FACE_LAST = (r.stderr or b'').decode('utf-8', 'replace').strip()[-160:]
+        return False
+    except Exception as e:
+        FACE_LAST = str(e)[:120]
+        return False
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def _pick_framed(vp, n=24, width=480, lo=0.09, hi=0.32):
+    """按「主体占画幅高度 lo~hi」挑一帧（识图 -> 选图）。
+
+    grab_batch 返回的是 numpy BGR 帧，不是 PIL；检出脸后只在合规帧里挑最清晰的。
+    没有合规帧就 (None, None)，调用方保留原图。
+    """
+    import numpy as np
+    from PIL import Image
+    import cover as _cv
+    det = _cv.face_detector()
+    if det is None:
+        return (None, None)
+    try:
+        dur = mlib.video_duration(vp) or 0
+    except Exception:
+        dur = 0
+    if dur < 20:
+        return (None, None)
+    a = max(_cv.MIN_START, dur * 0.05)
+    b = min(dur * 0.90, max(a, dur - _cv.TAIL))
+    if b <= a:
+        return (None, None)
+    times = [a + (b - a) * i / float(n - 1) for i in range(n)]
+    try:
+        frs = _cv.grab_batch(vp, times, width) or []
+    except Exception:
+        return (None, None)
+
+    best = None
+    for bgr in frs:
+        if bgr is None or not hasattr(bgr, 'shape'):
+            continue
+        h = bgr.shape[0]
+        bb = None
+        try:
+            fs = det(bgr) or []
+        except Exception:
+            fs = []
+        for f in fs:
+            f = list(f)
+            if len(f) < 4:
+                continue
+            if bb is None or int(f[2]) * int(f[3]) > bb[2] * bb[3]:
+                bb = (int(f[0]), int(f[1]), int(f[2]), int(f[3]))
+        if not bb or not h:
+            continue
+        r = bb[3] / float(h)
+        if not (lo <= r <= hi):
+            continue
+        try:
+            g = _cv.cv2.cvtColor(bgr, _cv.cv2.COLOR_BGR2GRAY)
+            sc = float(_cv.cv2.Laplacian(g, _cv.cv2.CV_64F).var())
+        except Exception:
+            sc = 0.0
+        if best is None or sc > best[0]:
+            best = (sc, bgr.copy(), bb)
+    if best:
+        return (Image.fromarray(best[1][:, :, ::-1].copy()), best[2])
+    return (None, None)
+
+
+def _fit_wide(im, bbox, ar=16.0 / 9.0, r_t=0.16, r_hi=0.32,
+              min_h=0.35, fill_max=1.25):
+    """横板裁图 + 主体大小归一 + 补完背景。
+
+    横版源：按「主体占画幅高度 16%」裁，宽度不够才补一点点（<=1.25 倍）。
+    竖版源：整条高度全保留（不切人），宽度补到 16:9——竖版视频只能这么出横板。
+    接缝用羽化，背景用压暗的强模糊，避免出现一块生硬的糊。
+    """
+    from PIL import Image as _I
+    from PIL import ImageFilter as _F
+    w, h = im.size
+
+    if bbox:
+        _x, _y, _fw, _fh = bbox
+        # 误检过滤：框跑到画面外 / 比例离谱 / 几乎占满整张
+        if (_fh > h * 0.90 or _fh > _fw * 2.2 or _fh < _fw * 0.45
+                or _x < -0.05 * w or _y < -0.05 * h):
+            bbox = None
+
+    if not bbox:
+        th = min(h, w / ar)
+        tw = th * ar
+        x0 = (w - tw) / 2.0
+        y0 = (h - th) / 2.0
+        return im.crop((int(x0), int(y0), int(x0 + tw), int(y0 + th))), \
+            {'r': 0.0, 'small': False, 'big': False, 'filled': False}
+
+    x, y, fw, fh = bbox
+    portrait = h > w * 1.15
+    if portrait:
+        # 竖版：主体占到画幅高度 ~35%，再按 16:9 反推宽度，其余补背景
+        hc = max(h * 0.50, min(float(h), fh / 0.35))
+        tw = hc * ar
+        filled = True
+    else:
+        hc = max(h * min_h, min(float(h), fh / r_t))
+        hc = max(hc, min(float(h), fh * 1.20))      # 至少给脸留 20%% 余量
+        tw = hc * ar
+        filled = False
+        if tw > w:
+            if tw <= w * fill_max:       # 只差一点：补一小条
+                filled = True
+            else:                        # 差太多：改回纯裁，不铺糊
+                hc, tw = w / ar, float(w)
+    r = fh / hc
+    cx = x + fw / 2.0
+    cy = y + fh * 0.95
+    info = {'r': r, 'small': False, 'big': r > r_hi, 'filled': filled}
+
+    y0 = max(0.0, min(h - hc, cy - hc / 2.0))
+    if not filled:
+        x0 = max(0.0, min(w - tw, cx - tw / 2.0))
+        out = im.crop((int(x0), int(y0), int(x0 + tw), int(y0 + hc)))
+    else:
+        import numpy as _np
+        src = im.crop((0, int(y0), w, int(y0 + hc)))
+        bg = im.resize((int(tw), int(hc)), _I.LANCZOS).filter(
+            _F.GaussianBlur(max(10, int(hc * 0.11))))
+        try:
+            from PIL import ImageEnhance as _E
+            bg = _E.Brightness(bg).enhance(0.42)
+            bg = _E.Color(bg).enhance(0.55)
+        except Exception:
+            pass
+        out = bg.copy()
+        ox = int(max(0.0, min(tw - w, (tw - w) / 2.0)))   # 内容居中
+        aw = max(2, int(w * 0.04))
+        a = _np.ones(w, dtype=_np.float32)
+        ramp = _np.linspace(0.0, 1.0, aw, dtype=_np.float32)
+        a[:aw] = ramp
+        a[-aw:] = ramp[::-1]
+        mask = _I.fromarray((_np.tile(a, (int(hc), 1)) * 255).astype('uint8'), 'L')
+        out.paste(src, (ox, 0), mask)
+    info['small'] = (info['r'] < 0.12) or (w < 1000)
+    return out, info
+
+
 def _poster_cls(iid):
     """返回 ('bad'|'green'|'color'|'', bpp)。宽图判彩色框，竖图/方图判绿框。"""
     w, h, b = poster_stat_of(iid)
@@ -5783,7 +5952,7 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
             return '抽帧失败'
         im = _crop_bars(im)
         if comp:
-            im = _wide_crop(im, _face_box_pil(im))
+            im, _fi_a = _fit_wide(im, _face_box_pil(im))   # 横板 + 主体大小归一
         _poster_save(im, newp)
         made = newp
         note = ('AI选图+补完' if comp else 'AI选图') + ('（宽屏）' if (comp and bbox) else '')
@@ -5830,23 +5999,81 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
                 if ESR_LAST:
                     _log('      ESRGAN 原因: ' + ESR_LAST)
     elif comp and os.path.exists(dst):
-        # 只补完：不重新抽帧，拿现有封面重新构图（去黑边/相机位）
+        # 完整补完：识图 -> (霸屏则回视频重选) -> 横板裁图 -> 主体大小归一 -> 补背景
         try:
             from PIL import Image as _Im
             im = _crop_bars(_Im.open(dst).convert('RGB'))
-            _bb = _face_box_pil(im)          # 去黑边之后重算人脸坐标
-            if _bb:
-                im = _wide_crop(im, _bb)     # 一次裁到 16:9，取最大画面
-                note_w = 'AI补完（按脸取景）'
-            else:
-                # 没脸可定位：中心收紧 12%，让主体更满，避免补完等于没补
-                _w2, _h2 = im.size
-                _tw, _th = int(_w2 * 0.88), int(_h2 * 0.88)
-                _x0, _y0 = (_w2 - _tw) // 2, (_h2 - _th) // 2
-                im = _wide_crop(im.crop((_x0, _y0, _x0 + _tw, _y0 + _th)), None)
-                note_w = 'AI补完（无脸，中心收紧12%）'
+            _bb = _face_box_pil(im)
+            _tag = ''
+            _r0 = (_bb[3] / float(im.size[1])) if _bb else 0.0
+            _land = im.size[0] > im.size[1] * 1.15
+            if _land and _r0 > 0.30:
+                _vp = mlib.pick_cover_video(p)
+                if _vp:
+                    _im2, _bb2 = _pick_framed(_vp)
+                    if _im2 is not None:
+                        im = _crop_bars(_im2)
+                        _bb = _face_box_pil(im)      # 裁边后重算，坐标才对得上
+                        _tag = '重选；'
+                    else:
+                        _tag = '无合适取景；'
+            if im.size[0] < 900:                 # 源太窄先放大，再裁/补
+                _pt = os.path.join(p, 'poster.pre.png')
+                _pu = os.path.join(p, 'poster.pre.up.png')
+                try:
+                    im.save(_pt, 'PNG')
+                    if _esrgan_up(_pt, _pu, 2):
+                        im = _Im.open(_pu).convert('RGB')
+                        if _bb:                      # 2x 放大，坐标同步翻倍
+                            _bb = tuple(int(v * 2) for v in _bb)
+                        _tag += '先放大；'
+                except Exception:
+                    pass
+                for _f0 in (_pt, _pu):
+                    try:
+                        os.remove(_f0)
+                    except Exception:
+                        pass
+            im, _fi = _fit_wide(im, _bb)
+            note_w = 'AI补完（%s主体%.0f%%%s）' % (
+                _tag, _fi['r'] * 100, '·补背景' if _fi['filled'] else '')
             _poster_save(im, newp)
             made, note = newp, note_w
+            # 主体太小 / 图不够锐 -> 自动提升画质
+            if _fi['small'] or _sharp_file(newp) < 60:
+                _up1 = os.path.join(p, 'poster.up.png')
+                if _esrgan_up(newp, _up1, 2):
+                    try:
+                        from PIL import Image as _I3
+                        _poster_save(_I3.open(_up1), newp)
+                        note += '+提升画质'
+                    except Exception:
+                        note += '（提升失败）'
+                    try:
+                        os.remove(_up1)
+                    except Exception:
+                        pass
+                elif ESR_LAST:
+                    _log('      ESRGAN 原因: ' + ESR_LAST)
+            # 成品里脸太小 -> 面部修复（GFPGAN）
+            try:
+                _fb = _face_box_pil(_Im.open(newp).convert('RGB'))
+            except Exception:
+                _fb = None
+            if _fb and _fb[3] < 160:
+                _fp = os.path.join(p, 'poster.face.png')
+                if _face_restore(newp, _fp):
+                    try:
+                        _poster_save(_Im.open(_fp).convert('RGB'), newp)
+                        note += '+面部修复'
+                    except Exception:
+                        pass
+                    try:
+                        os.remove(_fp)
+                    except Exception:
+                        pass
+                elif FACE_LAST:
+                    _log('      GFPGAN 原因: ' + FACE_LAST)
         except Exception as e:
             return '补完失败: %s' % str(e)[:60]
         if enh:
