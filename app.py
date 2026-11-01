@@ -3640,6 +3640,9 @@ RIFE_EXE = os.path.join(RIFE_DIR, 'rife-ncnn-vulkan.exe')
 
 # ---------------------------------------------------------------- 模型登记表
 # 只登记「能自动下载的开源模型」；商业模型（Topaz 等）只做状态展示，不下载。
+COMFY_MODELS_BASE = r'F:\ComfyUI\模型插件工作流等（持续更新中）\models'
+_HFM = 'https://hf-mirror.com'
+
 MODELS = [
     {'id': 'asr_model', 'name': 'SenseVoice 语音识别', 'use': '字幕转写（主模型）',
      'path': os.path.join('models', 'asr', 'model.int8.onnx'),
@@ -3671,6 +3674,30 @@ MODELS = [
      'path': os.path.join('models', 'face_detection_yunet_2023mar.onnx'),
      'url': 'https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx',
      'license': 'Apache-2.0'},
+    # ---- ComfyUI 智能补全（Qwen-Image outpainting 链，约 34GB）----
+    {'id': 'qwen_unet', 'name': 'Qwen-Image fp8 UNET', 'use': '智能补全（生成式）19.5G',
+     'path': os.path.join(COMFY_MODELS_BASE, 'diffusion_models', 'qwen_image_fp8_e4m3fn.safetensors'),
+     'url': _HFM + '/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_fp8_e4m3fn.safetensors',
+     'license': 'Apache-2.0', 'size': 19484, 'comfy': True},
+    {'id': 'qwen_te', 'name': 'Qwen2.5-VL 7B fp8 (文本编码器)', 'use': '智能补全（生成式）8.9G',
+     'path': os.path.join(COMFY_MODELS_BASE, 'text_encoders', 'qwen_2.5_vl_7b_fp8_scaled.safetensors'),
+     'url': _HFM + '/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors',
+     'license': 'Apache-2.0', 'size': 8949, 'comfy': True},
+    {'id': 'qwen_cn_inpaint', 'name': 'Qwen-Image ControlNet 补全', 'use': '智能补全（outpaint）4.0G',
+     'path': os.path.join(COMFY_MODELS_BASE, 'controlnet', 'Qwen-Image-InstantX-ControlNet-Inpainting.safetensors'),
+     'url': _HFM + '/InstantX/Qwen-Image-ControlNet-Inpainting/resolve/main/diffusion_pytorch_model.safetensors',
+     'license': 'Apache-2.0', 'size': 4038, 'comfy': True},
+    {'id': 'qwen_lora_4step', 'name': 'Qwen-Image Lightning 4step', 'use': '智能补全（4 步加速）1.6G',
+     'path': os.path.join(COMFY_MODELS_BASE, 'loras', 'Qwen-Image-Lightning-4steps-V1.0.safetensors'),
+     'url': _HFM + '/lightx2v/Qwen-Image-Lightning/resolve/main/Qwen-Image-Lightning-4steps-V1.0.safetensors',
+     'license': 'Apache-2.0', 'size': 1620, 'comfy': True},
+    {'id': 'qwen_vae', 'name': 'Qwen-Image VAE', 'use': '智能补全（VAE）0.24G',
+     'path': os.path.join(COMFY_MODELS_BASE, 'vae', 'qwen_image_vae.safetensors'),
+     'url': _HFM + '/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors',
+     'license': 'Apache-2.0', 'size': 242, 'comfy': True},
+    {'id': 'comfy_bundle', 'name': '一键下整套补全模型', 'use': '智能补全（全部 34G，可断点续传）',
+     'path': '', 'url': '', 'license': '见各分项', 'size': 34833, 'bundle': True},
+
 ]
 
 MODEL_DL = {}      # id -> {'pct': int, 'done': bool, 'error': str}
@@ -3705,6 +3732,65 @@ def _models_list():
 
 
 def _model_download(mid):
+    """后台线程下载（只允许 MODELS 里登记的开源模型）。支持 .part 断点续传。"""
+    ent = next((e for e in MODELS if e['id'] == mid), None)
+    if not ent:
+        return False
+    if ent.get('bundle'):
+        kids = [e for e in MODELS if e.get('comfy')]
+    else:
+        if not ent.get('url'):
+            return False
+        kids = [ent]
+    st = {'pct': 0, 'done': False, 'error': '', 'file': ''}
+    MODEL_DL[mid] = st
+    base = os.path.dirname(os.path.abspath(__file__))
+
+    def one(e):
+        import urllib.request
+        dst = e['path'] if os.path.isabs(e['path']) else os.path.join(base, e['path'])
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        tmp = dst + '.part'
+        if os.path.exists(dst):
+            return
+        got = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+        hdrs = {'User-Agent': 'MediaScraper/1.0'}
+        if got:
+            hdrs['Range'] = 'bytes=%d-' % got
+        with urllib.request.urlopen(urllib.request.Request(e['url'], headers=hdrs),
+                                    timeout=60) as r:
+            if got and getattr(r, 'status', 200) == 200:
+                got = 0                     # 服务器不认 Range
+            total = got + int(r.headers.get('Content-Length') or 0)
+            with open(tmp, 'ab' if got else 'wb') as f:
+                while True:
+                    buf = r.read(1024 * 1024)
+                    if not buf:
+                        break
+                    f.write(buf)
+                    got += len(buf)
+                    if total:
+                        st['pct'] = int(got * 100 / total)
+                    st['got_mb'] = got // 1048576
+                    st['total_mb'] = total // 1048576
+        os.replace(tmp, dst)
+
+    def run():
+        try:
+            for i, e in enumerate(kids, 1):
+                st['file'] = '%d/%d %s' % (i, len(kids), e['name'])
+                st['pct'] = 0
+                one(e)
+                st['pct'] = 100 if len(kids) == 1 else int(i * 100 / len(kids))
+            st['done'] = True
+            st['pct'] = 100
+        except Exception as e:
+            st['error'] = str(e)[:160]
+
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
     """后台线程下载（只允许 MODELS 里登记的开源模型）。"""
     ent = next((e for e in MODELS if e['id'] == mid), None)
     if not ent or not ent.get('url'):
@@ -7350,6 +7436,8 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <label class="muted" title="AI 选图：抽帧评分，优先整体身体，其次脸部，再局部体态"><input type="checkbox" id="thumb-ai"> AI选图</label>
 <label class="muted" title="AI 补完：对现有/新封面重新构图（去黑边、按人脸位置裁切），不重新抽帧"><input type="checkbox" id="thumb-comp"> AI补完</label>
       <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
+      <button id="a-models" title="下载智能补全所需模型（Qwen-Image 补全链，约 34GB，可断点续传）">补全模型</button>
+      <span id="mdl-line" class="muted"></span>
       <button class="danger" id="a-coverdel">删除缩略图/封面</button>
       <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
       <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
@@ -8456,6 +8544,29 @@ $('#a-thumbs').onclick=async()=>{if(!SEL.size)return;
   const r=await post('/api/thumbs/refresh?ids='+[...SEL].join(',')+'&ai='+_ai+'&enh='+_enh+'&comp='+_cp);
   if(r.queued){setLog(['已排队：跑完自动刷新（图 + 框色）']);return;}
   THUMBV++;await list();};
+$('#a-models').onclick=async()=>{
+  const r=await post('/api/models/download?id=comfy_bundle');
+  if(!r.ok) return setLog(['模型下载未启动（已登记？）']);
+  setLog(['已开始下载补全模型（约 34GB，断点续传，页面关掉继续跑）']);
+  mdlTick();
+};
+let _mdlT=null;
+async function mdlTick(){
+  try{
+    const j=await (await fetch('/api/models')).json();
+    const d=(j.dl||{}).comfy_bundle||{};
+    const el=$('#mdl-line');
+    if(el){
+      if(d.error) el.textContent='下载失败: '+d.error;
+      else if(d.done) el.textContent='补全模型已就绪';
+      else if(d.pct||d.got_mb) el.textContent=(d.file||'下载中')+' '+d.pct+'% '+Math.round((d.got_mb||0))+'/'+(d.total_mb||0)+'MB';
+      else el.textContent='';
+    }
+  }catch(e){}
+  if(_mdlT) clearTimeout(_mdlT);
+  _mdlT=setTimeout(mdlTick,3000);
+}
+mdlTick();
 $('#a-coverdel').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('将删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？')))return;
   const r=await post('/api/covers/drop?ids='+[...SEL].join(','));
