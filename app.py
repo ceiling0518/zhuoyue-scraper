@@ -3751,8 +3751,15 @@ def _model_download(mid):
         dst = e['path'] if os.path.isabs(e['path']) else os.path.join(base, e['path'])
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         tmp = dst + '.part'
+        _want_mb = int(e.get('size') or 0)
         if os.path.exists(dst):
-            return
+            # 只有尺寸够才算「已下好」；SSL 断在半路会留下一个偏小的完整文件名
+            if not _want_mb or os.path.getsize(dst) >= _want_mb * 1048576 * 0.97:
+                return
+            try:
+                os.replace(dst, tmp)
+            except Exception:
+                return
         got = os.path.getsize(tmp) if os.path.exists(tmp) else 0
         hdrs = {'User-Agent': 'MediaScraper/1.0'}
         if got:
@@ -3886,10 +3893,68 @@ def _job_subs_whisper(ids=None, lang='zh', force=False, burn=False, trans=False)
                     subprocess.run([mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
                                     '-i', vp, '-vn', '-ac', '1', '-ar', '16000', wav],
                                    capture_output=True, timeout=3600)
-                    subprocess.run([WHISPER_EXE, '-m', WHISPER_MODEL, '-f', wav,
-                                    '-osrt', '-of', pref, '-l', _wl, '-t', '8'],
-                                   cwd=os.path.dirname(WHISPER_EXE),
-                                   capture_output=True, timeout=14400)
+                    # 边转写边读进度：whisper 跑几分钟不出声，看门狗会当卡死把车道收了。
+                    # 每 30 秒主动 _tick 喂心跳，抓到 progress 行就记一条日志。
+                    import re as _re
+                    import queue as _qu
+                    import threading as _th
+                    _pr = subprocess.Popen(
+                        [WHISPER_EXE, '-m', WHISPER_MODEL, '-f', wav,
+                         '-osrt', '-of', pref, '-l', _wl, '-t', '8'],
+                        cwd=os.path.dirname(WHISPER_EXE),
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, encoding='utf-8', errors='replace', bufsize=1)
+                    _qq = _qu.Queue()
+
+                    def _pump(_p):
+                        try:
+                            for _ln in _p.stdout:
+                                _qq.put(_ln)
+                        except Exception:
+                            pass
+                        finally:
+                            _qq.put(None)
+
+                    _th.Thread(target=_pump, args=(_pr,), daemon=True).start()
+                    _lastpc, _nextbeat = 0, time.time() + 30
+                    _killed = False
+                    while True:
+                        try:
+                            _ln = _qq.get(timeout=5)
+                        except _qu.Empty:
+                            _ln = ''
+                        if _ln is None:
+                            break
+                        _m = _re.search(r'progress\s*=\s*(\d+)%', _ln or '')
+                        if _m:
+                            _pc = int(_m.group(1))
+                            if _pc >= _lastpc + 10:
+                                _lastpc = _pc
+                                _log('      转写进度 %d%%' % _pc)
+                                _tick(i)
+                        if time.time() > _nextbeat:
+                            _tick(i)
+                            _nextbeat = time.time() + 30
+                        if _stop_req():
+                            _killed = True
+                            try:
+                                _pr.terminate()
+                            except Exception:
+                                pass
+                            break
+                    try:
+                        _pr.wait(timeout=90)
+                    except Exception:
+                        try:
+                            _pr.kill()
+                        except Exception:
+                            pass
+                    if _killed:
+                        try:
+                            os.remove(wav)
+                        except Exception:
+                            pass
+                        break
                     srt = pref + '.srt'
                     if os.path.exists(srt):
                         txt = io.open(srt, encoding='utf-8', errors='replace').read()
@@ -3995,6 +4060,7 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False, trans=
                 t0 = time.time()
                 nline = 0
                 total = 0.0
+                _tail = []                       # 留最后几行 stderr，失败时能直接看到原因
                 try:
                     p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                          stderr=subprocess.PIPE)
@@ -4006,12 +4072,16 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False, trans=
                                 pass
                             break
                         ln = raw.decode('utf-8', 'replace').strip()
+                        if ln:
+                            _tail.append(ln)
+                            del _tail[:-12]
                         if ln.startswith('AUDIO '):
                             try:
                                 total = float(ln[6:])
                             except Exception:
                                 pass
                         elif ln.startswith('PROG '):
+                            _tick(i)                      # 喂心跳，别让看门狗误判
                             try:
                                 a, b = ln[5:].split('/')
                                 PROG = {'label': '字幕', 'frames': 0, 'fps': 0,
@@ -4021,6 +4091,7 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False, trans=
                             except Exception:
                                 pass
                         elif ln.startswith('TRPROG '):
+                            _tick(i)
                             try:
                                 a, b = ln[7:].split('/')
                                 PROG = {'label': '翻译', 'frames': 0, 'fps': 0,
@@ -4039,7 +4110,10 @@ def _job_subs(ids=None, lang='zh', force=False, enhance=True, burn=False, trans=
                     _log('    ! 转写失败: %s' % str(e)[:120])
                     continue
                 if not os.path.exists(tmp) or os.path.getsize(tmp) < 20:
-                    _log('    ! 没有生成字幕（可能整段无人声）')
+                    _log('    ! 没有生成字幕（引擎检出 %d 条；退出码 %s）'
+                         % (nline, getattr(p, 'returncode', '?')))
+                    if _tail:
+                        _log('      引擎输出：' + ' | '.join(_tail[-3:])[:200])
                     try:
                         os.remove(tmp)
                     except Exception:
