@@ -5399,15 +5399,20 @@ def _poster_ai_frame(vp, n=48, width=320):
     return (Image.fromarray(pick[4][:, :, ::-1]), pick[5])
 
 
-def _wide_crop(im, bbox, ar=16.0 / 9.0):
-    """按 16:9 宽屏裁切，围绕人脸（无脸则居中）。"""
+def _wide_crop(im, bbox, ar=16.0 / 9.0, tight=0.70):
+    """按 16:9 宽屏裁切，取尽可能大的画面（围绕人脸，无脸则居中）。
+
+    tight = 至少保留的画面高度比例。只裁一次、且在最大可用范围内裁；
+    以前的写法先按脸缩到 45%% 再切 16:9，会把图越补越小、越补越糊。
+    """
     w, h = im.size
     if bbox:
         x, y, fw, fh = bbox
         cx, cy = x + fw / 2.0, y + fh / 2.0
-        th = min(h, max(fh * 6.0, h * 0.55))
+        th = min(h, max(fh * 6.0, h * tight))
     else:
-        cx, cy, th = w / 2.0, h / 2.0, min(h, w / ar)
+        cx, cy = w / 2.0, h / 2.0
+        th = min(h, w / ar)
     tw = th * ar
     if tw > w:
         tw = float(w)
@@ -5709,7 +5714,7 @@ def _poster_save(im, path, lo=100, hi=150, long_side=1200, minq=86):
     best = fit(cur, long_side)
     tries = 0
     # 体积偏小 -> 放大一档再试，让画面吃到 100KB 以上
-    while best and best[1] < lo and tries < 2:
+    while best and best[1] < lo and tries < 4:
         w, h = cur.size
         cur = cur.resize((int(w * 1.2), int(h * 1.2)), Image.LANCZOS)
         nb = fit(cur, 10 ** 6)
@@ -5778,7 +5783,7 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
             return '抽帧失败'
         im = _crop_bars(im)
         if comp:
-            im = _wide_crop(im, bbox)
+            im = _wide_crop(im, _face_box_pil(im))
         _poster_save(im, newp)
         made = newp
         note = ('AI选图+补完' if comp else 'AI选图') + ('（宽屏）' if (comp and bbox) else '')
@@ -5828,19 +5833,17 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
         # 只补完：不重新抽帧，拿现有封面重新构图（去黑边/相机位）
         try:
             from PIL import Image as _Im
-            im = _Im.open(dst).convert('RGB')
-            _bb = _face_box_pil(im)
+            im = _crop_bars(_Im.open(dst).convert('RGB'))
+            _bb = _face_box_pil(im)          # 去黑边之后重算人脸坐标
             if _bb:
-                im = _wide_crop(_focus_crop(_crop_bars(im), _bb), _bb)
+                im = _wide_crop(im, _bb)     # 一次裁到 16:9，取最大画面
                 note_w = 'AI补完（按脸取景）'
             else:
                 # 没脸可定位：中心收紧 12%，让主体更满，避免补完等于没补
-                im = _crop_bars(im)
                 _w2, _h2 = im.size
                 _tw, _th = int(_w2 * 0.88), int(_h2 * 0.88)
                 _x0, _y0 = (_w2 - _tw) // 2, (_h2 - _th) // 2
-                im = im.crop((_x0, _y0, _x0 + _tw, _y0 + _th))
-                im = _wide_crop(im, None)
+                im = _wide_crop(im.crop((_x0, _y0, _x0 + _tw, _y0 + _th)), None)
                 note_w = 'AI补完（无脸，中心收紧12%）'
             _poster_save(im, newp)
             made, note = newp, note_w
@@ -6973,11 +6976,11 @@ tr:hover td{background:#1f2531}
 .q-有{color:var(--ok);font-weight:600}.q-有误{color:var(--bad);font-weight:600}.q-无{color:var(--dim)}
 .s-Web{color:var(--ok)}.s-AI{color:var(--warn)}
 .thumb{width:120px;height:68px;object-fit:cover;border-radius:4px;background:#0b0e13}
-.tframe{display:inline-block;line-height:0;border-radius:6px;padding:2px}
-.tframe.tbad{box-shadow:0 0 0 2px #e5484d}
+.tframe{display:inline-block;line-height:0;border-radius:6px;padding:3px}.tlegend{display:inline-flex;gap:8px;align-items:center;margin-left:8px;font-size:11px;opacity:.85}.tlegend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:3px;vertical-align:-1px}
+.tframe.tbad{box-shadow:0 0 0 3px #f2555a,0 0 6px rgba(242,85,90,.55)}
 .tframe.tgood{padding:3px;background:linear-gradient(135deg,#ff5f6d,#ffc371,#5ee6a8,#4ac1ff)}
-.tframe.tgreen{box-shadow:0 0 0 2px #3fb950}
-.tframe.tgray{box-shadow:0 0 0 2px #6b7280}
+.tframe.tgreen{box-shadow:0 0 0 3px #3fb950}
+.tframe.tgray{box-shadow:0 0 0 3px #9aa4b2}
 #rows td{height:84px;vertical-align:middle}
 @media (max-width:1100px){#tbl th:nth-child(4),#tbl td:nth-child(4),#tbl th:nth-child(5),#tbl td:nth-child(5){display:none}}
 .cellclip{max-height:78px;overflow:hidden}
@@ -7095,6 +7098,13 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <label class="muted" title="AI 选图：抽帧评分，优先整体身体，其次脸部，再局部体态"><input type="checkbox" id="thumb-ai"> AI选图</label>
 <label class="muted" title="AI 补完：对现有/新封面重新构图（去黑边、按人脸位置裁切），不重新抽帧"><input type="checkbox" id="thumb-comp"> AI补完</label>
       <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
+      <span class="tlegend" title="缩略图外圈颜色＝封面质量（bpp + 分辨率）">
+        <span><i style="background:#f2555a"></i>差</span>
+        <span><i style="background:#3a4150"></i>一般</span>
+        <span><i style="background:#3fb950"></i>非宽幅高清</span>
+        <span><i style="background:linear-gradient(135deg,#ff5f6d,#ffc371,#5ee6a8,#4ac1ff)"></i>宽幅高清</span>
+        <span><i style="background:#9aa4b2"></i>非宽幅中等</span>
+      </span>
       <button class="danger" id="a-coverdel">删除缩略图/封面</button>
       <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
       <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
@@ -7283,7 +7293,9 @@ async function cfg(){const s=await(await fetch('/api/stats')).json();
   const _rb=$('#b-rebuild'); if(_rb){_rb.disabled=DB_FULL;_rb.title=DB_FULL?'建库仅对空库可用（当前库已有内容）':'建库：清空并重建全部档案（仅空库可用）';}}
 let DB_FULL=false;
 async function job(){const j=await(await fetch('/api/job')).json();
-  if(!j.running&&_jbWas){_jbWas=false;if(/^(health|repair)/.test(j.name||''))_afterOp();}
+  if(!j.running&&_jbWas){_jbWas=false;
+    if(/^(health|repair)/.test(j.name||''))_afterOp();
+    else if(/^(poster|thumb|cover)/.test(j.name||'')){THUMBV++;list();}}
   if(j.running)_jbWas=true;
   setLog(j.log||[]);
   const p=j.total?Math.round(j.done*100/j.total):0;
@@ -8197,7 +8209,7 @@ $('#a-thumbs').onclick=async()=>{if(!SEL.size)return;
   const _ai=$('#thumb-ai').checked?1:0, _enh=$('#thumb-enh').checked?1:0,
         _cp=$('#thumb-comp').checked?1:0;
   const r=await post('/api/thumbs/refresh?ids='+[...SEL].join(',')+'&ai='+_ai+'&enh='+_enh+'&comp='+_cp);
-  if(r.queued)return;
+  if(r.queued){setLog(['已排队：跑完自动刷新（图 + 框色）']);return;}
   THUMBV++;await list();};
 $('#a-coverdel').onclick=async()=>{if(!SEL.size)return alert(T('先选条目'));
   if(!confirm(T('将删除选中条目的封面图（poster.jpg 等）+ 缩略图缓存，继续？')))return;
