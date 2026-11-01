@@ -2572,11 +2572,13 @@ def _job_convert(ids=None):
             if not (w and h and dur):
                 _log('  %s 读不到媒体信息，跳过' % v[:50]); _tick(i + 1); continue
             _old_sz = os.path.getsize(vp)
-            _log('[%d/%d] id=%s %s  %dx%d@%.0f  %.0fkbps  %.0f MB'
+            _log('[%d/%d] id=%s %s  %dx%d@%.0f  %.0fkbps  %.0f MB（整片重编码可修复坏帧/坏索引/容器异常）'
                  % (i + 1, len(its), it['id'], v[:44], w, h, fps, kbps, _old_sz / 1048576.0))
             loc = mlib.stage_local(vp, _log)
             tmp = os.path.splitext(loc)[0] + '.conv.mp4'
-            base = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y', '-i', loc,
+            base = [mlib.FFMPEG, '-hide_banner', '-v', 'error', '-y',
+                    '-fflags', '+discardcorrupt', '-err_detect', 'ignore_err',
+                    '-i', loc,
                     '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn'] + _gpu_enc(loc, (w, h))
             t0 = time.time()
             rc, err = _run_prog(base + ['-c:a', 'copy', '-movflags', '+faststart', tmp],
