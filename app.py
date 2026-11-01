@@ -6976,7 +6976,7 @@ tr:hover td{background:#1f2531}
 .q-有{color:var(--ok);font-weight:600}.q-有误{color:var(--bad);font-weight:600}.q-无{color:var(--dim)}
 .s-Web{color:var(--ok)}.s-AI{color:var(--warn)}
 .thumb{width:120px;height:68px;object-fit:cover;border-radius:4px;background:#0b0e13}
-.tframe{display:inline-block;line-height:0;border-radius:6px;padding:3px}.tlegend{display:inline-flex;gap:8px;align-items:center;margin-left:8px;font-size:11px;opacity:.85}.tlegend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:3px;vertical-align:-1px}
+.tframe{display:inline-block;line-height:0;border-radius:6px;padding:2px}.tlegend{display:inline-flex;gap:9px;align-items:center;margin-left:10px;font-size:11px;color:#8b95a3;white-space:nowrap}.tlegend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:3px;vertical-align:-1px}
 .tframe.tbad{box-shadow:0 0 0 3px #f2555a,0 0 6px rgba(242,85,90,.55)}
 .tframe.tgood{padding:3px;background:linear-gradient(135deg,#ff5f6d,#ffc371,#5ee6a8,#4ac1ff)}
 .tframe.tgreen{box-shadow:0 0 0 3px #3fb950}
@@ -7082,6 +7082,13 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
   </div>
   <div class="bar" id="infobar" style="background:#141922">
     <span class="muted">已选</span><b id="seln">0</b><span class="muted">条</span>
+    <span class="tlegend" title="缩略图外框颜色＝封面质量（bpp + 分辨率）">缩略图框：
+      <span><i style="background:#f2555a"></i>红=差</span>
+      <span><i style="background:#3a4150;box-shadow:0 0 0 1px #566">&nbsp;</i>无框=一般</span>
+      <span><i style="background:#3fb950"></i>绿=非宽幅高清</span>
+      <span><i style="background:linear-gradient(135deg,#ff5f6d,#ffc371,#5ee6a8,#4ac1ff)"></i>彩=宽幅高清</span>
+      <span><i style="background:#9aa4b2"></i>灰=非宽幅中等</span>
+    </span>
     <span class="muted" id="page"></span>
     <span id="hb-legend" style="font-size:12px;color:var(--muted)">徽标：质量 <b style="color:var(--ok)">●</b>有 <b style="color:var(--warn)">◐</b>缺 <b style="color:var(--dim)">○</b>无 <b style="color:var(--bad)">✕</b>有误 ｜ 来源 🌐网站 🤖AI ｜ 广告 📢段数 ｜ 去码 <b style="color:#a8b3c4">●</b>有码 <b style="color:#d8dde6">◍</b>一般 <b style="color:#8fd0ff">◉</b>无码 ｜ 无效 <b style="color:var(--bad)">⛔</b>段数 ｜ 体检 <b style="color:#2e7d32">✓✓</b>深检 <b style="color:#1565c0">✓</b>浅检 <b style="color:var(--bad)">⚠</b>有问题 <b style="color:var(--muted)">↻</b>待重测 ｜ 字幕 <b style="color:var(--ok)">Sub</b>有 <b style="color:var(--ok)">S🔥</b>烧录 <b style="color:#7b8798;text-decoration:line-through">Sub</b>无</span>
   </div>
@@ -7098,13 +7105,6 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
       <label class="muted" title="AI 选图：抽帧评分，优先整体身体，其次脸部，再局部体态"><input type="checkbox" id="thumb-ai"> AI选图</label>
 <label class="muted" title="AI 补完：对现有/新封面重新构图（去黑边、按人脸位置裁切），不重新抽帧"><input type="checkbox" id="thumb-comp"> AI补完</label>
       <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
-      <span class="tlegend" title="缩略图外圈颜色＝封面质量（bpp + 分辨率）">
-        <span><i style="background:#f2555a"></i>差</span>
-        <span><i style="background:#3a4150"></i>一般</span>
-        <span><i style="background:#3fb950"></i>非宽幅高清</span>
-        <span><i style="background:linear-gradient(135deg,#ff5f6d,#ffc371,#5ee6a8,#4ac1ff)"></i>宽幅高清</span>
-        <span><i style="background:#9aa4b2"></i>非宽幅中等</span>
-      </span>
       <button class="danger" id="a-coverdel">删除缩略图/封面</button>
       <button id="a-health" title="只读体检：逐个视频探测能否打开/容器是否被截；不写任何媒体文件">体检</button>
       <label class="muted" title="勾上 = 数据级深检（逐文件扫 mdat 找洞 + 抽窗解码，很慢）；不勾 = 只读体检（只看头部）"><input type="checkbox" id="deep-chk"> 深检</label>
