@@ -5816,17 +5816,34 @@ def _fit_wide(im, bbox, ar=16.0 / 9.0, r_t=0.16, r_hi=0.32,
         out = im.crop((int(x0), int(y0), int(x0 + tw), int(y0 + hc)))
     else:
         import numpy as _np
-        src = im.crop((0, int(y0), w, int(y0 + hc)))
-        bg = im.resize((int(tw), int(hc)), _I.LANCZOS).filter(
-            _F.GaussianBlur(max(10, int(hc * 0.11))))
+        _hc = int(hc)
+        _y0i = int(round(y0))
+        src = im.crop((0, _y0i, w, min(h, _y0i + _hc)))
+        _hc = src.size[1]                    # 以实际裁到的高度为准，避免差 1 像素
+        # 左右用镜像块反复延展，再整体模糊：比拉伸整图自然得多
+        _twi = int(round(tw))
+        canvas = _I.new('RGB', (_twi, _hc))
+        ox = int((_twi - w) / 2.0)
+        canvas.paste(src, (ox, 0))
+        _x = ox
+        while _x > 0:                       # 左侧镜像（全是整数步进，不会死循环）
+            _wp = max(1, min(w, _x))
+            _piece = src.crop((w - _wp, 0, w, _hc)).transpose(_I.FLIP_LEFT_RIGHT)
+            _x = max(0, _x - _wp)
+            canvas.paste(_piece, (_x, 0))
+        _x = ox + w
+        while _x < _twi:                    # 右侧镜像
+            _wp = max(1, min(w, _twi - _x))
+            _piece = src.crop((0, 0, _wp, _hc)).transpose(_I.FLIP_LEFT_RIGHT)
+            canvas.paste(_piece, (_x, 0))
+            _x += _wp
+        bg = canvas.filter(_F.GaussianBlur(max(8, int(hc * 0.055))))
         try:
             from PIL import ImageEnhance as _E
-            bg = _E.Brightness(bg).enhance(0.42)
-            bg = _E.Color(bg).enhance(0.55)
+            bg = _E.Brightness(bg).enhance(0.88)
         except Exception:
             pass
         out = bg.copy()
-        ox = int(max(0.0, min(tw - w, (tw - w) / 2.0)))   # 内容居中
         aw = max(2, int(w * 0.04))
         a = _np.ones(w, dtype=_np.float32)
         ramp = _np.linspace(0.0, 1.0, aw, dtype=_np.float32)
@@ -6007,7 +6024,8 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
             _tag = ''
             _r0 = (_bb[3] / float(im.size[1])) if _bb else 0.0
             _land = im.size[0] > im.size[1] * 1.15
-            if _land and _r0 > 0.30:
+            # 竖版海报 / 压根没检出脸 / 横版但人占满画面 -> 都先回视频选景
+            if (not _bb) or (not _land) or _r0 > 0.30:
                 _vp = mlib.pick_cover_video(p)
                 if _vp:
                     _im2, _bb2 = _pick_framed(_vp)
