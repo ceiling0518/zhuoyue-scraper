@@ -442,6 +442,39 @@ def _track_tables(buf, trak, moov_off):
 
 
 # ----------------------------------------------------------------- ① 索引重建
+UNTRUNC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'tools', 'untrunc', 'untrunc_x64', 'untrunc.exe')
+
+
+def untrunc_fix(corrupt, donor, out=None, log=None):
+    """moov 缺失/截断的兜底：用同编码参数的健康文件当字典重建索引。
+    返回 (ok, out_path/err)。donor 必须是同一来源、同编码参数的文件。"""
+    def _l(m):
+        if log:
+            log(m)
+    if not os.path.exists(UNTRUNC):
+        return False, '未安装 untrunc：%s' % UNTRUNC
+    if not (os.path.isfile(corrupt) and os.path.isfile(donor)):
+        return False, '缺少文件：corrupt=%s donor=%s' % (corrupt, donor)
+    out = out or (os.path.splitext(corrupt)[0] + '.fixed.mp4')
+    _l('    untrunc: 用 %s 作字典修 %s' % (os.path.basename(donor),
+                                        os.path.basename(corrupt)))
+    try:
+        r = subprocess.run([UNTRUNC, '-n', donor, corrupt, out],
+                           capture_output=True, text=True, timeout=1800,
+                           encoding='utf-8', errors='ignore')
+    except Exception as e:
+        return False, 'untrunc 启动失败: %s' % e
+    if r.returncode not in (0, 1) or not os.path.exists(out):
+        return False, 'untrunc 失败 rc=%s %s' % (r.returncode,
+                                                 (r.stdout or r.stderr or '')[-200:])
+    d = video_duration(out) or 0
+    if d <= 1:
+        return False, 'untrunc 产出无时长'
+    _l('    untrunc 完成：%.1f 秒 / %.1f MB' % (d, os.path.getsize(out) / 1048576.0))
+    return True, out
+
+
 def plan_index(path):
     """只读：走 box 链定位被截的 stco，算缺失字节与预期新尺寸；不改文件。"""
     out = {'ok': False, 'kind': 'index', 'path': path}

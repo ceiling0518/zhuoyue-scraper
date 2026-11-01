@@ -2578,7 +2578,7 @@ def _job_convert(ids=None):
                         _hint = '（moov 被截断约 %.1f MB：先跑「修复索引」，修完再转换）' % (
                             _pl['moov_short'] / 1048576.0)
                     elif '没有 moov' in _err:
-                        _hint = '（moov 完全缺失：转换修不了，要用 untrunc 找同源字典重建）'
+                        _hint = '（moov 完全缺失：用 tools\\untrunc\\untrunc_x64\\untrunc.exe 以同源健康文件重建，或调 repair.untrunc_fix）'
                     elif _err:
                         _hint = '（%s）' % _err[:40]
                 except Exception:
