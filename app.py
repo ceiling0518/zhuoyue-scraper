@@ -5847,6 +5847,80 @@ def _pick_framed(vp, n=24, width=480, lo=0.09, hi=0.32):
     return (None, None)
 
 
+try:
+    from PIL.Image import LANCZOS as _PIL_LANCZOS
+except Exception:
+    from PIL.Image import ANTIALIAS as _PIL_LANCZOS
+
+
+def _fit_portrait(im, bbox, ar=2.0 / 3.0, r_t=0.34):
+    """裁 2:3 海报：主体占画幅高度约 34%，脸留在上三分之一，不补背景。"""
+    w, h = im.size
+    if bbox:
+        x, y, fw, fh = bbox
+        if (fh > h * 0.92 or fh > fw * 2.2 or fh < fw * 0.45
+                or x < -0.05 * w or y < -0.05 * h):
+            bbox = None
+    if not bbox:
+        tw = min(float(w), h * ar)
+        th = tw / ar
+        x0 = (w - tw) / 2.0
+        y0 = max(0.0, (h - th) * 0.30)
+        return im.crop((int(x0), int(y0), int(x0 + tw), int(y0 + th)))
+    x, y, fw, fh = bbox
+    hc = min(float(h), max(fh / r_t, fh * 1.10))
+    tw = hc * ar
+    if tw > w:
+        tw = float(w)
+        hc = tw / ar
+    cx = x + fw / 2.0
+    cy = y + fh * 0.65
+    x0 = max(0.0, min(w - tw, cx - tw / 2.0))
+    y0 = max(0.0, min(h - hc, cy - hc * 0.30))
+    y0 = min(y0, max(0.0, y - fh * 0.45))       # 脸上面要留余量，避免切头
+    y0 = max(0.0, min(h - hc, y0))
+    return im.crop((int(x0), int(y0), int(x0 + tw), int(y0 + hc)))
+
+
+def _make_banner(im, frac=0.185, width=1000):
+    """横条：取画面上部 40% 位置的一条，缩放到 1000x185。"""
+    w, h = im.size
+    bh = max(1, min(h, int(w * frac)))
+    y0 = int(max(0, min(h - bh, h * 0.18)))
+    band = im.crop((0, y0, w, y0 + bh))
+    return band.resize((width, int(round(width * frac))), _PIL_LANCZOS)
+
+
+def _save_plain(im, dst, quality=92):
+    """按原尺寸直接存（banner 这类小图不能走 _poster_save 的体积补档）。"""
+    try:
+        if os.path.exists(dst):
+            os.replace(dst, dst[:-4] + '.old.jpg')
+    except Exception:
+        pass
+    im.convert('RGB').save(dst, 'JPEG', quality=quality, optimize=True)
+
+
+def _save_bak(im, dst):
+    """覆盖前把旧图留成 <name>.old.jpg。"""
+    try:
+        if os.path.exists(dst):
+            os.replace(dst, dst[:-4] + '.old.jpg')
+    except Exception:
+        pass
+    _poster_save(im, dst)
+
+
+def _write_extra(p, src, bb):
+    """同一帧再出 fanart / landscape / banner（poster 由主流程写）。"""
+    fi, _i1 = _fit_wide(src, bb, r_t=0.18)
+    _save_bak(fi, os.path.join(p, 'fanart.jpg'))
+    li, _i2 = _fit_wide(src, bb, r_t=0.26)
+    _save_bak(li, os.path.join(p, 'landscape.jpg'))
+    _save_plain(_make_banner(fi), os.path.join(p, 'banner.jpg'))
+    return True
+
+
 def _fit_wide(im, bbox, ar=16.0 / 9.0, r_t=0.16, r_hi=0.32,
               min_h=0.35, fill_max=1.25):
     """横板裁图 + 主体大小归一 + 补完背景。
@@ -5923,7 +5997,7 @@ def _fit_wide(im, bbox, ar=16.0 / 9.0, r_t=0.16, r_hi=0.32,
             _piece = src.crop((0, 0, _wp, _hc)).transpose(_I.FLIP_LEFT_RIGHT)
             canvas.paste(_piece, (_x, 0))
             _x += _wp
-        bg = canvas.filter(_F.GaussianBlur(max(8, int(hc * 0.055))))
+        bg = canvas.filter(_F.GaussianBlur(max(14, int(tw * 0.075))))
         try:
             from PIL import ImageEnhance as _E
             bg = _E.Brightness(bg).enhance(0.88)
@@ -6054,8 +6128,8 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
         if im is None:
             return '抽帧失败'
         im = _crop_bars(im)
-        if comp:
-            im, _fi_a = _fit_wide(im, _face_box_pil(im))   # 横板 + 主体大小归一
+        _im0, _bb0 = im.copy(), _face_box_pil(im)
+        im = _fit_portrait(_im0, _bb0)                     # 海报固定 2:3
         _poster_save(im, newp)
         made = newp
         note = ('AI选图+补完' if comp else 'AI选图') + ('（宽屏）' if (comp and bbox) else '')
@@ -6101,6 +6175,11 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
                 note += '（ESRGAN不可用）'
                 if ESR_LAST:
                     _log('      ESRGAN 原因: ' + ESR_LAST)
+        try:
+            _write_extra(p, _im0, _bb0)
+            note += '+套图'
+        except Exception as e:
+            _log('      套图失败: %s' % str(e)[:80])
     elif comp and os.path.exists(dst):
         # 完整补完：识图 -> (霸屏则回视频重选) -> 横板裁图 -> 主体大小归一 -> 补背景
         try:
@@ -6138,7 +6217,9 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
                         os.remove(_f0)
                     except Exception:
                         pass
-            im, _fi = _fit_wide(im, _bb)
+            _im0, _bb0 = im.copy(), _bb
+            _fi = _fit_wide(im, _bb)[1]                    # 16:9 只用来算主体占比
+            im = _fit_portrait(im, _bb)                    # 海报固定 2:3
             note_w = 'AI补完（%s主体%.0f%%%s）' % (
                 _tag, _fi['r'] * 100, '·补背景' if _fi['filled'] else '')
             _poster_save(im, newp)
@@ -6178,6 +6259,11 @@ def _poster_refresh_one(iid, ai=False, enh=False, force=False, comp=False):
                         pass
                 elif FACE_LAST:
                     _log('      GFPGAN 原因: ' + FACE_LAST)
+            try:
+                _write_extra(p, _im0, _bb0)
+                note += '+套图'
+            except Exception as e:
+                _log('      套图失败: %s' % str(e)[:80])
         except Exception as e:
             return '补完失败: %s' % str(e)[:60]
         if enh:
@@ -7433,7 +7519,7 @@ pre{background:#0b0e13;border:1px solid #2a3140;border-radius:7px;padding:9px;ov
     </span>
     <span class="zone"><span class="zlab">维护</span>
       <button id="a-thumbs" style="background:#1e4a7a;border-color:#2b5f9a;color:#cfe6ff">刷新缩略图</button>
-      <label class="muted" title="AI 选图：抽帧评分，优先整体身体，其次脸部，再局部体态"><input type="checkbox" id="thumb-ai"> AI选图</label>
+      <label class="muted" title="AI 选图：抽帧评分，出四件套 poster(2:3)/fanart(16:9)/landscape/banner"><input type="checkbox" id="thumb-ai"> AI选图</label>
 <label class="muted" title="AI 补完：对现有/新封面重新构图（去黑边、按人脸位置裁切），不重新抽帧"><input type="checkbox" id="thumb-comp"> AI补完</label>
       <label class="muted" title="对现有/新建封面做 Real-ESRGAN 提升，不删原图重建（原图备份为 poster.old.jpg）"><input type="checkbox" id="thumb-enh"> 提升画质</label>
       <button id="a-models" title="下载智能补全所需模型（Qwen-Image 补全链，约 34GB，可断点续传）">补全模型</button>
