@@ -4586,6 +4586,131 @@ def _mosaic_refs():
     return out
 
 
+def _mosaic_verdict(counts, tot, log=None, tag=''):
+    """口径：清晰=无码；模糊=去码；马赛克/看不清=有码；没有证据返回 ''。"""
+    c = counts
+    if log:
+        log('    去码四档%s：清晰 %d / 模糊 %d / 马赛克 %d / 看不清 %d（有效 %d 帧）'
+            % (tag, c.get('清晰', 0), c.get('模糊', 0),
+               c.get('马赛克', 0), c.get('看不清', 0), tot))
+    if tot <= 0:
+        return ''
+    if c.get('清晰', 0) * 2 > tot:
+        return '好'
+    if c.get('模糊', 0) * 2 > tot:
+        return '一般'
+    if c.get('马赛克', 0) + c.get('看不清', 0) == 0:
+        return ''
+    return '有'
+
+
+def _mosaic_frames(vpath, n=24, width=720, offset=0.5):
+    """抽 n 帧；offset=相位偏移（第二轮换一批时间点）。"""
+    dur = video_duration(vpath) or 0
+    if dur < 20:
+        return [], 0
+    times = []
+    for i in range(n):
+        ph = ((i + offset) % max(1, n)) / float(n)
+        times.append(round(dur * ph, 2))
+    out = []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            bs = list(ex.map(lambda t: frame_at(vpath, t, width=width), times))
+    except Exception:
+        bs = [frame_at(vpath, t, width=width) for t in times]
+    for b in bs:
+        if b:
+            out.append(base64.b64encode(b).decode('ascii'))
+    return out, dur
+
+
+def _mosaic_labels(imgs, model=None, log=None, batch=24):
+    """把一组图（全局编号 1..N）交给模型，返回等长的标签列表。"""
+    labs = [''] * len(imgs)
+    model = model or ai_model()
+    for st in range(0, len(imgs), batch):
+        part = imgs[st:st + batch]
+        prompt = MOSAIC_REF_PROMPT.replace('{N}', str(len(part)))
+        try:
+            r = requests.post(OLLAMA + '/api/chat', timeout=1200,
+                              json={'model': model, 'stream': False,
+                                    'keep_alive': AI_KEEP_ALIVE, 'think': False,
+                                    'options': {'temperature': 0.1, 'num_predict': 400},
+                                    'messages': [{'role': 'user', 'content': prompt,
+                                                  'images': _mosaic_refs() + part}]})
+            txt = ((r.json() or {}).get('message') or {}).get('content') or ''
+        except Exception as e:
+            if log:
+                log('    批量判定失败: %s' % str(e)[:80])
+            continue
+        arr = extract_json_array(txt) or []
+        got = {}
+        for it in arr:
+            if isinstance(it, (list, tuple)) and len(it) >= 2:
+                try:
+                    got[int(it[0])] = str(it[1])
+                except Exception:
+                    pass
+        for k in range(len(part)):
+            if (k + 1) in got:
+                labs[st + k] = got[k + 1]
+    return labs
+
+
+def detect_mosaic_batch(pairs, n=24, model=None, log=None, batch=24):
+    """成组判：pairs=[(id, vpath)] -> {id: '有'/'好'/'一般'/''}。
+    第一轮 24 帧；没有有效帧的进第二轮（换相位再抽 24 帧）。"""
+    pairs = [(i, p) for i, p in pairs if p]
+    res = {}
+    if not pairs:
+        return res
+    frames, owner = [], []
+    for idx, (_iid, vp) in enumerate(pairs):
+        fs, _d = _mosaic_frames(vp, n=n, width=720, offset=0.5)
+        frames.extend(fs)
+        owner.extend([idx] * len(fs))
+    if log:
+        log('    批量去码：%d 条 / %d 帧（一轮）' % (len(pairs), len(frames)))
+    labs = _mosaic_labels(frames, model=model, log=log, batch=batch)
+    buckets = {}
+    for k, idx in enumerate(owner):
+        if labs[k] and labs[k] != '没':
+            buckets.setdefault(idx, []).append(labs[k])
+    todo = []
+    for idx, (_iid, vp) in enumerate(pairs):
+        ls = buckets.get(idx, [])
+        v = _mosaic_verdict({x: ls.count(x) for x in set(ls)}, len(ls),
+                            log=log, tag='（%d）' % _iid)
+        if v:
+            res[_iid] = v
+        else:
+            todo.append(idx)
+    # 第二轮：没找到证据的，换相位再抽一轮
+    if todo:
+        if log:
+            log('    批量去码：%d 条没找到证据，补抽第二轮' % len(todo))
+        f2, own2 = [], []
+        for idx in todo:
+            vp = pairs[idx][1]
+            fs, _d = _mosaic_frames(vp, n=n, width=720, offset=0.0)
+            f2.extend(fs)
+            own2.extend([idx] * len(fs))
+        labs2 = _mosaic_labels(f2, model=model, log=log, batch=batch)
+        b2 = {}
+        for k, idx in enumerate(own2):
+            if labs2[k] and labs2[k] != '没':
+                b2.setdefault(idx, []).append(labs2[k])
+        for idx in todo:
+            ls = b2.get(idx, [])
+            v = _mosaic_verdict({x: ls.count(x) for x in set(ls)}, len(ls),
+                                log=log, tag='（%d·二轮）' % pairs[idx][0])
+            if v:
+                res[pairs[idx][0]] = v
+    return res
+
+
 def detect_mosaic_ref(vpath, dur=None, model=None, log=None, n=12):
     """参照样本直接判：'有' / '好' / '一般' / ''（看不到）。失败返回 None 由调用方回退。"""
     refs = _mosaic_refs()
@@ -4637,18 +4762,8 @@ def detect_mosaic_ref(vpath, dur=None, model=None, log=None, n=12):
             log('    参照判定没解析出结果: %s' % txt[:80])
         return None   # 解析失败 -> 调用方回退旧打分法
     c = {k: labs.count(k) for k in ('清晰', '模糊', '马赛克', '看不清')}
-    tot = len(labs)
-    if log:
-        log('    去码四档：清晰 %d / 模糊 %d / 马赛克 %d / 看不清 %d（共 %d 帧，看不到的不算）'
-            % (c['清晰'], c['模糊'], c['马赛克'], c['看不清'], tot))
-    # 口径（房工定）：清晰=无码；模糊=去码；马赛克/看不清=有码
-    if c['清晰'] * 2 > tot:
-        return '好'
-    if c['模糊'] * 2 > tot:
-        return '一般'
-    if c['马赛克'] + c['看不清'] == 0:
-        return None
-    return '有'
+    v = _mosaic_verdict(c, len(labs), log=log)
+    return v if v else None
 
 
 def detect_subs_burn(vpath, dur=None, model=None, log=None, n=12):

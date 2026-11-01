@@ -2730,6 +2730,27 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
         _ensure_media(dbc)
         its = _items_by_ids(ids)
         _tick(0, max(1, len(its)))
+        # 去码改成「成组抽帧一起判」：一次给模型多条的画面，不再一条一调
+        _demo_pre = {}
+        if demo:
+            try:
+                _pl = []
+                for _it0 in its:
+                    _q1 = dbc.execute("SELECT COALESCE(demo,'') dd FROM items WHERE id=?",
+                                      (_it0['id'],)).fetchone()
+                    if (not force) and _q1 and _q1['dd']:
+                        continue
+                    _vs = _video_files(_it0['path'] or '')
+                    if not _vs:
+                        continue
+                    _vs = sorted(_vs, key=lambda p: os.path.getsize(p), reverse=True)
+                    _pl.append((_it0['id'], _vs[0]))
+                if _pl:
+                    _log('  去码：成组抽帧判定 %d 条（每条 24 帧，一起判）' % len(_pl))
+                    _demo_pre = mlib.detect_mosaic_batch(_pl, log=_log)
+                    _log('  去码：批量出结论 %d 条' % len(_demo_pre))
+            except Exception as _e:
+                _log('  去码批量失败，回退逐条: %s' % str(_e)[:100])
         ok = 0
         for i, it in enumerate(its):
             if _stop_req():
@@ -2813,8 +2834,8 @@ def _job_adtect(ids=None, mode='headtail', nested=False, force=False,
                             _dm = '好'          # 语义判为无码：默认去码优秀
                             _log('    去码检测：无码（语义：uncensored）')
                         else:
-                            _dms = []
-                            for _vi in range(min(3, len(vids))):
+                            _dms = ([_demo_pre[it['id']]] if _demo_pre.get(it['id']) else [])
+                            for _vi in ([] if _dms else range(min(3, len(vids)))):
                                 if _stop_req():
                                     break
                                 try:
