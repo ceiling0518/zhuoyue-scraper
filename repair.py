@@ -475,6 +475,28 @@ def untrunc_fix(corrupt, donor, out=None, log=None):
     return True, out
 
 
+def untrunc_auto(corrupt, donors, log=None, keep=3):
+    """按顺序拿多个候选当字典试；找得到同编码参数的就行，不用同一个文件。
+    返回 (ok, out_or_err, donor_used)。"""
+    donors = [d for d in (donors or []) if d and os.path.isfile(d)]
+    if not donors:
+        return False, '没有可用的 donor 候选', ''
+    tried = 0
+    for d in donors:
+        if tried >= keep:
+            break
+        tried += 1
+        try:
+            ok, out = untrunc_fix(corrupt, d, log=log)
+        except Exception as e:
+            ok, out = False, 'untrunc 异常: %s' % e
+        if ok:
+            return True, out, d
+        if log:
+            log('    候选 %s 不匹配，换下一个' % os.path.basename(d))
+    return False, '试了 %d 个候选都不匹配（编码参数差太多）' % tried, ''
+
+
 def plan_index(path):
     """只读：走 box 链定位被截的 stco，算缺失字节与预期新尺寸；不改文件。"""
     out = {'ok': False, 'kind': 'index', 'path': path}
