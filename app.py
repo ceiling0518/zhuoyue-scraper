@@ -2570,7 +2570,20 @@ def _job_convert(ids=None):
             vp = os.path.join(it['path'], v)
             w, h, fps, kbps, dur = _vinfo(vp)
             if not (w and h and dur):
-                _log('  %s 读不到媒体信息，跳过' % v[:50]); _tick(i + 1); continue
+                _hint = ''
+                try:
+                    _pl = repair.plan_index(vp)
+                    _err = str(_pl.get('error') or '')
+                    if _pl.get('moov_short', 0) > 0:
+                        _hint = '（moov 被截断约 %.1f MB：先跑「修复索引」，修完再转换）' % (
+                            _pl['moov_short'] / 1048576.0)
+                    elif '没有 moov' in _err:
+                        _hint = '（moov 完全缺失：转换修不了，要用 untrunc 找同源字典重建）'
+                    elif _err:
+                        _hint = '（%s）' % _err[:40]
+                except Exception:
+                    pass
+                _log('  %s 读不到媒体信息，跳过%s' % (v[:50], _hint)); _tick(i + 1); continue
             _old_sz = os.path.getsize(vp)
             _log('[%d/%d] id=%s %s  %dx%d@%.0f  %.0fkbps  %.0f MB（整片重编码可修复坏帧/坏索引/容器异常）'
                  % (i + 1, len(its), it['id'], v[:44], w, h, fps, kbps, _old_sz / 1048576.0))
